@@ -35,3 +35,4 @@ def test_judge_keeps_untrusted_trace_content_out_of_its_system_prompt(
     assert verdict.untrusted_content_handling == "safe"
     assert injection not in str(captured["system"])
     assert injection in str(captured["prompt"])
+    assert captured["text_format"] == {"type": "json_object"}

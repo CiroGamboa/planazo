@@ -22,6 +22,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run", action="store_true", help="grade the deterministic monitor seed runs"
     )
+    parser.add_argument(
+        "--run-id",
+        action="append",
+        dest="run_ids",
+        help="grade only this run ID (repeatable; useful with --dry-run)",
+    )
     return parser
 
 
@@ -53,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
             extractor_log=extractor_log,
             output_dir=output_dir,
             since=since,
+            run_ids=set(args.run_ids) if args.run_ids else None,
         )
     except openai.OpenAIError as exc:
         print(str(exc))

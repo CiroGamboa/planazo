@@ -158,11 +158,14 @@ def run_monitor(
     since: timedelta,
     judge: Judge = grade_run,
     now: datetime | None = None,
+    run_ids: set[str] | None = None,
 ) -> list[Path]:
     """Load, join, grade, and report every run in the requested time window."""
     recommender_paths = sorted(recommender_dir.glob("*.jsonl"))
     entries = read_runs([*recommender_paths, extractor_log])
     runs = select_runs(join_runs(entries), since=since, now=now)
+    if run_ids is not None:
+        runs = [run for run in runs if run.run_id in run_ids]
     graded = [
         GradedRun(run_id=run.run_id, started_at=run.started_at, verdict=judge(run)) for run in runs
     ]

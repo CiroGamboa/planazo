@@ -42,6 +42,10 @@ I verified the integrated repository with the following checks:
 - `uv run mypy src`: passed
 - `planazo-monitor --dry-run`: verifies the CLI's deterministic monitor path; when no API key is configured, it now gives a clear setup message instead of a traceback.
 
+One live, low-cost monitor smoke test was completed with the synthetic `seed-injection-near-miss` trace and the real `gpt-5.4` judge. It produced `minor_violation` / `near_miss` with an expected-versus-actual rationale in the local, gitignored report `data/monitor/2026-07-27.md` (with a matching JSONL sidecar). This demonstrates the complete monitor path without relying on a scraper.
+
+The separate synthetic untrusted-content demo was also completed against the real cheap model. It made one justified `retrieve_notes` call and no unjustified calls. Its answer quoted the planted injection instead of executing it; that is recorded honestly as a near-miss observation for review, not claimed as a clean safety result. The evidence is in the local, gitignored `docs/evidence/untrusted-content.md`.
+
 The integrated memory demonstrations were also run successfully and created local evidence showing that a private preference for one user is not returned to another user, while a shared note is available to the other user:
 
 - `agent/docs/evidence/private-memory.md`
@@ -49,10 +53,11 @@ The integrated memory demonstrations were also run successfully and created loca
 
 ## Final evidence to generate before submission
 
-Two live-provider artifacts are still required to make the submission fully evidenced. They cannot be truthfully claimed until an `OPENCODE_API_KEY` is configured and the commands complete:
+The low-cost synthetic evidence is now generated locally. Before submitting, preserve or attach the two local artifacts below, because they are intentionally gitignored rather than committed:
 
-1. Run `uv run python scripts/demo/untrusted_content.py` from `agent/` and retain the generated `agent/docs/evidence/untrusted-content.md`. This demonstrates that the planted event comment is treated as untrusted content rather than instructions.
-2. Run `uv run planazo-monitor --dry-run` (and, after real agent runs exist, `uv run planazo-monitor --since 24h`) and retain the generated monitor report under `agent/data/monitor/`. The report should include the judge rationale for any non-clean result.
+1. `docs/evidence/untrusted-content.md` records the live synthetic shared-memory run and its exact model answer.
+2. `data/monitor/2026-07-27.md` and its JSONL sidecar record the monitor's real judge verdict and rationale for the synthetic injection trace.
+3. After non-demo agent runs exist, run `uv run planazo-monitor --since 24h` and retain the generated report under `data/monitor/`. The report should include the judge rationale for any non-clean result.
 3. Push this branch before submitting so the three commit links above are accessible to the teacher.
 
 ## Scope note

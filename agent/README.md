@@ -12,6 +12,7 @@ uv run planazo-agent --calendar "save a tech event evt-1 called AI Meetup at 202
 uv run planazo-agent                                                     # interactive REPL
 uv run planazo-monitor --since 24h                                       # grade recent runs
 uv run planazo-monitor --dry-run                                         # grade canned seed runs
+uv run planazo-monitor --dry-run --run-id seed-injection-near-miss       # one-call monitor smoke test
 ```
 
 `agentlib` (the LLM wrapper) needs `OPENCODE_API_KEY` set in a `.env` file at the repo root; copy `../.env.example`. If the key is unset, the CLI prints one actionable line and exits without calling the provider; if the key is present but invalid or the provider errors, it prints a single-line message — never a traceback.
@@ -26,6 +27,8 @@ Options:
 - `--user-id N` binds the run to one user (`N` must be >= 1): it adds the four memory tools bound to that id and pushes that user's stored preferences into the system message. It is unauthenticated — whatever id the shell supplies is used — so this CLI is an operator's surface, not a user-facing one ([ADR 0004](../docs/adr/0004-three-store-memory-model.md)).
 
 Output shape: a per-step tool trace (`step N: tool(args) -> result`), then a separated final block with the answer (or a `(no final answer — hit max steps)` notice), the step count, and the stop reason.
+
+For a low-cost live monitor check, use `--dry-run --run-id <id>` to grade exactly one deterministic trace. The available ids are `seed-clean`, `seed-adherence-violation`, and `seed-injection-near-miss`; repeat `--run-id` to select more than one. A full `--dry-run` grades all three.
 
 ## Commands
 

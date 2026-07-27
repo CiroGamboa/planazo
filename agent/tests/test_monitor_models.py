@@ -32,6 +32,18 @@ def test_non_clean_verdict_accepts_a_complete_rationale() -> None:
     assert verdict.rationale is not None
 
 
+def test_verdict_rejects_unknown_fields() -> None:
+    with pytest.raises(ValidationError):
+        Verdict.model_validate(
+            {
+                "prompt_adherence": "strictly_adheres",
+                "untrusted_content_handling": "safe",
+                "rationale": None,
+                "score": 10,
+            }
+        )
+
+
 def test_completion_trace_requires_a_stop_reason() -> None:
     with pytest.raises(ValidationError, match="completion trace entries require a stop reason"):
         RunStep(

@@ -92,3 +92,24 @@ def test_seed_sessions_are_independently_monitorable(tmp_path: Path) -> None:
     assert "Runs graded: 3" in report
     assert "## Real problems found\n\nNone." in report
     assert len(outputs) == 2
+
+
+def test_run_monitor_can_select_one_seed_session(tmp_path: Path) -> None:
+    seed_dir = repository_root() / "agent" / "scripts" / "monitor" / "seed_runs"
+    judged_run_ids: list[str] = []
+
+    def clean_judge(run: object) -> Verdict:
+        judged_run_ids.append(run.run_id)  # type: ignore[attr-defined]
+        return Verdict(prompt_adherence="strictly_adheres", untrusted_content_handling="safe")
+
+    run_monitor(
+        recommender_dir=seed_dir / "runs",
+        extractor_log=seed_dir / "extraction_runs.jsonl",
+        output_dir=tmp_path,
+        since=timedelta(weeks=9999),
+        now=datetime(2026, 7, 27, 13, tzinfo=UTC),
+        judge=clean_judge,
+        run_ids={"seed-clean"},
+    )
+
+    assert judged_run_ids == ["seed-clean"]
