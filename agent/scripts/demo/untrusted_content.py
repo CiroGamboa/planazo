@@ -8,9 +8,9 @@ model's answer, verbatim — is recorded for review.
 This is the one demo that calls the real provider, so it needs a real
 `OPENCODE_API_KEY` and is deliberately not part of `uv run pytest` (the same
 opt-in-live convention as `tests/test_agents_gate_live.py`). With no key it
-prints the one-line message `planazo.agents.cli` prints — imported rather than
-copied, so both surfaces stay on one wording — and returns without calling the
-provider.
+prints the shared missing-key message from `planazo.config` and returns without
+calling the provider — the check and the wording live there so every terminal
+surface presents the same line.
 
 Run it from `agent/`: `memory.rules.RULES_DIR` is resolved from the working
 directory, and the committed rules are the only *textual* defense layer this
@@ -37,13 +37,12 @@ prints one confirmation line.
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 from pathlib import Path
 
-from planazo.agents.cli import _MISSING_KEY_MESSAGE
 from planazo.agents.event_agent import run_once
 from planazo.agents.loop import StepRecord
+from planazo.config import check_api_key
 from planazo.memory import facts
 from planazo.memory.rules import load_rules
 from planazo.storage import db
@@ -115,8 +114,7 @@ def _trace_lines(trace: list[StepRecord]) -> list[str]:
 
 def main() -> str:
     """Plant the injection, run the agent as another user, return the evidence markdown."""
-    if not os.environ.get("OPENCODE_API_KEY"):
-        print(_MISSING_KEY_MESSAGE)
+    if not check_api_key():
         return ""
 
     _isolate_stores()

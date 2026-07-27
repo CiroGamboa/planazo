@@ -29,7 +29,6 @@ around the LLM call — it makes no provider call itself (those go through
 """
 
 import argparse
-import os
 import sys
 from typing import Any
 
@@ -38,12 +37,8 @@ import openai
 from agentlib.core import MODELS
 from planazo.agents.event_agent import run_once
 from planazo.agents.loop import ApprovalGate, LoopResult, StepRecord
+from planazo.config import check_api_key
 from tools.tools import IRREVERSIBLE_TOOLS
-
-_MISSING_KEY_MESSAGE = (
-    "OPENCODE_API_KEY is not set. Copy ../.env.example to a .env file at the "
-    "repo root and set OPENCODE_API_KEY."
-)
 
 
 def _positive_int(value: str) -> int:
@@ -207,8 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     role = "strong" if args.strong else (args.model or "cheap")
     model = MODELS[role]
 
-    if not os.environ.get("OPENCODE_API_KEY"):
-        print(_MISSING_KEY_MESSAGE)
+    if not check_api_key():
         return 1
 
     if args.prompt is None:

@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
 import openai
 
-from planazo.agents.cli import _MISSING_KEY_MESSAGE
+from planazo.config import check_api_key
 from planazo.monitor.service import parse_since, repository_root, run_monitor
 
 
@@ -34,8 +33,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Run the monitor over live logs or deterministic seed logs."""
     args = _parser().parse_args(argv)
-    if not os.environ.get("OPENCODE_API_KEY"):
-        print(_MISSING_KEY_MESSAGE)
+    if not check_api_key():
         return 1
 
     root = repository_root()
