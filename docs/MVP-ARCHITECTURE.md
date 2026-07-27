@@ -193,8 +193,8 @@ Governed by planned **ADR 0006** (Instagram) and conditionally **ADR 0009** (Mee
 
 SQLite + JSON columns (via SQLite's JSON1). Domain-only — free-form agent memory lives elsewhere (§8).
 
-- **`storage/db.py`** — connection + migrations (`schema_v1.sql` applied idempotently on first run).
-- **`storage/dao.py`** — narrow DAO surface, no ORM.
+- **`storage/db.py`** — `connect()`: connection + migrations (`schema_v1.sql` applied idempotently on every connection open).
+- **`storage/dao.py`** — narrow DAO surface, no ORM. Two tiers: connection-parameterized primitives for internal composition, and the self-contained `save_event`/`search_events` wrappers that open their own connection and return a typed-error-or-success dict, so they are usable directly as LLM tools.
 
 Schema (v1):
 
@@ -258,9 +258,9 @@ erDiagram
     }
 ```
 
-In-memory (`:memory:`) DB for unit tests.
+Unit tests run against real SQLite in two tiers, matching how the two dao tiers open connections: the connection-parameterized primitives share one `:memory:` connection held across every call in a test, and the self-contained `save_event`/`search_events` wrappers — which open and close their own connection per call — run against a `tmp_path` file so state carries between calls.
 
-Governed by planned **ADR 0003 — SQLite + JSON columns for the domain store**. That ADR supersedes ADR 0002's JSON persistence for the *domain* surface only; `agent/var/*.json` files (candidates, calendar events) stay as reference until they're removed in the migration commit.
+Governed by [**ADR 0003 — SQLite + JSON columns for the domain store**](adr/0003-sqlite-domain-store.md). That ADR supersedes ADR 0002's JSON persistence for the *domain* surface only: `agent/var/event_candidates.json` and `agent/var/calendar_events.json`, and the two tools that read and write them, are retained as the calendar reference implementation until v0.2's real Google Calendar wiring replaces them — reachable via `run_once(calendar_enabled=True)` / `planazo-agent --calendar`.
 
 ### 8. Memory API — `agent/src/planazo/memory/`
 
@@ -508,7 +508,7 @@ Each is its own PR, blocked by its own ticket. This doc is what those PRs will p
 
 | # | Slug | What it decides |
 | --- | --- | --- |
-| 0003 | `sqlite-domain-store` | SQLite + JSON columns for `events`/`users`/`preferences`/`approvals`. Supersedes 0002's JSON persistence for the domain surface only. |
+| 0003 | [`sqlite-domain-store`](adr/0003-sqlite-domain-store.md) | SQLite + JSON columns for `events`/`users`/`preferences`/`approvals`. Supersedes 0002's JSON persistence for the domain surface only. |
 | 0004 | `three-store-memory-model` | Relational (SQLite), non-relational (JSON docstore), rules (markdown). Facts vs rules; private vs shared. |
 | 0005 | `multi-agent-shape` | Recommender + Extractor split. Delegation brief. `{status, result, needs_approval}` contract. Shared-memory traceability plan. |
 | 0006 | `instagram-extraction-approach` | Scraper choice, multimodal LLM tier, rate-limit handling, the "raw text never crosses into Recommender" invariant. |

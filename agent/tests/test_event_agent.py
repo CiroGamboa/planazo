@@ -81,10 +81,10 @@ def test_run_once_forwards_the_on_step_observer_to_the_loop(
     monkeypatch.setattr(loop, "call", MagicMock(side_effect=[turn_1, turn_2]))
     # Stub the tool so the forwarding test does not touch the on-disk store.
     stub_tool = MagicMock(return_value={"saved": "ok"})
-    monkeypatch.setattr(event_agent, "TOOL_REGISTRY", {"save_event_candidate": stub_tool})
+    monkeypatch.setattr("tools.tools.TOOL_REGISTRY", {"save_event_candidate": stub_tool})
 
     records: list[loop.StepRecord] = []
-    event_agent.run_once("hi", on_step=records.append)
+    event_agent.run_once("hi", on_step=records.append, calendar_enabled=True)
 
     assert records == [
         loop.StepRecord(
@@ -115,3 +115,37 @@ def test_run_once_forwards_max_output_tokens_to_the_loop(
     event_agent.run_once("hi", max_output_tokens=256)
 
     assert mock_run_loop.call_args.kwargs["max_output_tokens"] == 256
+
+
+def test_run_once_offers_only_search_events_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_run_loop = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))
+    monkeypatch.setattr(event_agent, "run_loop", mock_run_loop)
+
+    event_agent.run_once("hi")
+
+    assert set(mock_run_loop.call_args.kwargs["registry"]) == {"search_events"}
+    schema_names = {schema["name"] for schema in mock_run_loop.call_args.kwargs["tools"]}
+    assert schema_names == {"search_events"}
+
+
+def test_run_once_adds_the_calendar_tools_when_calendar_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_run_loop = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))
+    monkeypatch.setattr(event_agent, "run_loop", mock_run_loop)
+
+    event_agent.run_once("hi", calendar_enabled=True)
+
+    assert set(mock_run_loop.call_args.kwargs["registry"]) == {
+        "search_events",
+        "save_event_candidate",
+        "confirm_and_create_calendar_event",
+    }
+    schema_names = {schema["name"] for schema in mock_run_loop.call_args.kwargs["tools"]}
+    assert schema_names == {
+        "search_events",
+        "save_event_candidate",
+        "confirm_and_create_calendar_event",
+    }

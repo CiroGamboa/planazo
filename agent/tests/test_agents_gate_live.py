@@ -7,6 +7,10 @@ Both tests hit real OpenCode Zen through `agentlib`, the CHEAP model, with
 `max_output_tokens=256` and `max_steps=3` — a hard cost cap. Combined spend
 is expected under 1¢; ticket ceiling is 5¢.
 
+Both pass `calendar_enabled=True`: `confirm_and_create_calendar_event` is the
+only irreversible tool in the tree and it is opt-in, so without that flag the
+model is never offered the tool the gate exists to guard.
+
 Environment setup: `agent/tests/conftest.py` sets `OPENCODE_API_KEY` to a
 placeholder via `os.environ.setdefault(...)` for the mocked suite. The
 `_load_real_env` fixture below reloads `.env` with `override=True` — but
@@ -96,6 +100,7 @@ def test_gate_approve_path_with_real_llm(_redirect_stores: Path) -> None:
         max_output_tokens=256,
         max_steps=3,
         gate=gate,
+        calendar_enabled=True,
     )
 
     assert approve.called, "model did not call the gated tool at all"
@@ -124,6 +129,7 @@ def test_gate_decline_path_with_real_llm(_redirect_stores: Path) -> None:
         max_output_tokens=256,
         max_steps=3,
         gate=gate,
+        calendar_enabled=True,
     )
 
     assert approve.called, "model did not call the gated tool at all"

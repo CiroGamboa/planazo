@@ -8,11 +8,13 @@ it fires, then the final answer, step count, and stop reason follow. Model
 role is selectable through `agentlib` (default the cheap role;
 `--strong`/`--model` override) with no raw model id in this module.
 
-Every invocation gates the irreversible tool
-(`confirm_and_create_calendar_event`) behind a one-line terminal `y/N`
-prompt; the reversible tool (`save_event_candidate`) runs without a prompt.
-Declining a gated call skips the tool and tells the model the request was
-declined so it can adjust its answer.
+Without extra flags the model is offered one tool, `search_events`. The two
+calendar reference tools are enabled by `--calendar`; when they are, the
+irreversible one (`confirm_and_create_calendar_event`) is gated behind a
+one-line terminal `y/N` prompt and the reversible one
+(`save_event_candidate`) runs without a prompt. Declining a gated call skips
+the tool and tells the model the request was declined so it can adjust its
+answer.
 
 `import openai` here names `openai.OpenAIError` for the narrow `except`
 around the LLM call — it makes no provider call itself (those go through
@@ -73,6 +75,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="cap the number of loop steps (default: run_once's own default)",
     )
+    parser.add_argument(
+        "--calendar",
+        action="store_true",
+        help="add the calendar reference tools (save + gated confirm) to the tool set",
+    )
     return parser
 
 
@@ -117,20 +124,25 @@ def _terminal_approve(tool_name: str, arguments: dict[str, Any]) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
-def _run(prompt: str, *, model: str, max_steps: int | None) -> int:
+def _run(prompt: str, *, model: str, max_steps: int | None, calendar_enabled: bool) -> int:
     """Run one prompt, printing the live trace then the result block.
 
     Returns 0 on success, 1 if the provider raised. Only `openai.OpenAIError`
     is caught here — an unexpected error propagates as a real traceback.
     """
     gate = ApprovalGate(tool_names=frozenset(IRREVERSIBLE_TOOLS), approve=_terminal_approve)
+    # Any: run_once's **run_context accepts a heterogeneous option set (model
+    # id, step cap, bool flag, callables) — no single value type covers it.
+    run_context: dict[str, Any] = {
+        "model": model,
+        "on_step": _print_step,
+        "gate": gate,
+        "calendar_enabled": calendar_enabled,
+    }
+    if max_steps is not None:
+        run_context["max_steps"] = max_steps
     try:
-        if max_steps is None:
-            result = run_once(prompt, model=model, on_step=_print_step, gate=gate)
-        else:
-            result = run_once(
-                prompt, model=model, on_step=_print_step, max_steps=max_steps, gate=gate
-            )
+        result = run_once(prompt, **run_context)
     except openai.OpenAIError as exc:
         print(str(exc))
         return 1
@@ -138,7 +150,7 @@ def _run(prompt: str, *, model: str, max_steps: int | None) -> int:
     return 0
 
 
-def _repl(*, model: str, max_steps: int | None) -> int:
+def _repl(*, model: str, max_steps: int | None, calendar_enabled: bool) -> int:
     """Read prompts until exit/quit, EOF, or Ctrl-C; one run_once per line."""
     while True:
         try:
@@ -152,7 +164,7 @@ def _repl(*, model: str, max_steps: int | None) -> int:
         if stripped.lower() in ("exit", "quit"):
             print("bye")
             return 0
-        _run(stripped, model=model, max_steps=max_steps)
+        _run(stripped, model=model, max_steps=max_steps, calendar_enabled=calendar_enabled)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -166,8 +178,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.prompt is None:
-        return _repl(model=model, max_steps=args.max_steps)
-    return _run(args.prompt, model=model, max_steps=args.max_steps)
+        return _repl(model=model, max_steps=args.max_steps, calendar_enabled=args.calendar)
+    return _run(args.prompt, model=model, max_steps=args.max_steps, calendar_enabled=args.calendar)
 
 
 if __name__ == "__main__":
