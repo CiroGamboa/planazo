@@ -8,12 +8,13 @@ whether that final answer was complete (`"answered"`) or cut off by the
 output cap (`"truncated"`) — or once a caller-supplied step cap is hit
 (`"max_steps"`), whichever comes first.
 
-Callers can supply an `ApprovalGate` to require explicit approval before any
-tool call whose name is in the gate's `tool_names` is dispatched; a declined
-call is not run and a declined marker is fed back to the model as that
-call's tool output. An optional `system` string opens the run as a system
-message ahead of the user's; an optional `max_output_tokens` caps per-turn
-output length by forwarding to `agentlib.tools.call`.
+Callers can supply an `ApprovalGate` (from `planazo.approval.gate`) to
+require explicit approval before any tool call whose name is in the gate's
+`tool_names` is dispatched; a declined call is not run and a declined marker
+is fed back to the model as that call's tool output. An optional `system`
+string opens the run as a system message ahead of the user's; an optional
+`max_output_tokens` caps per-turn output length by forwarding to
+`agentlib.tools.call`.
 
 A tool call that fails — an unregistered name, a tool that raises, or a
 result the loop cannot serialize to feed back — is turned into a labeled
@@ -22,15 +23,34 @@ recorded in the trace and fed back to the model as that call's tool output.
 
 Completely opaque to what any given tool does: `tools`/`registry` are both
 supplied by the caller, so swapping in a different tool set requires zero
-changes here.
+changes here. This module deliberately holds no `planazo.` imports so a
+future runtime-kernel consolidation can move it under a shared kernel
+without dragging domain code along.
 """
 
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, Protocol
 
 from agentlib.tools import call
+
+
+class ApprovalGate(Protocol):
+    """The structural contract `run_loop` needs from an approval callback.
+
+    Any object with the two attributes below satisfies this Protocol; the
+    concrete `@dataclass(frozen=True)` implementation lives in
+    `planazo.approval.gate` (the approval bounded context). Declared here
+    structurally so this module holds no `planazo.` imports — a future
+    kernel-consolidation move can relocate `loop.py` without dragging any
+    domain package along, and a future non-domain caller (a WhatsApp
+    surface's own approve callback, a CI-injected fake) can conform to the
+    same shape without importing the domain class.
+    """
+
+    tool_names: frozenset[str]
+    approve: Callable[[str, dict[str, Any]], bool]  # Any: tool args, arbitrary per tool schema
 
 
 @dataclass(frozen=True)
@@ -55,22 +75,6 @@ class StepRecord:
     tool: str  # tool name dispatched
     arguments: dict[str, Any]  # Any: tool args, arbitrary per each tool's schema
     result: Any  # Any: tool return value, no fixed shape
-
-
-@dataclass(frozen=True)
-class ApprovalGate:
-    """A pair of (which tools to gate, how to ask for approval).
-
-    `tool_names` names the tools that require approval before dispatch — any
-    tool call whose `name` is in this set routes through `approve` first;
-    others dispatch unchanged. `approve(tool_name, arguments)` returns True
-    to run the tool and False to skip it (the model receives `DECLINED_RESULT`
-    as that call's output). The callback is synchronous — the loop blocks on
-    it, matching how `input()` and CI-injected approvers actually run.
-    """
-
-    tool_names: frozenset[str]
-    approve: Callable[[str, dict[str, Any]], bool]  # Any: tool args, arbitrary per tool schema
 
 
 DECLINED_RESULT: Final[dict[str, object]] = {

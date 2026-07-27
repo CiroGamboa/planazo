@@ -345,7 +345,7 @@ Governed by **[ADR 0007 — Monitor scheduling and categorical grades](adr/0007-
 | --- | --- |
 | Rule 1 — validate at boundary | Every Telegram update parsed into a `TelegramUpdate` Pydantic model in `bot/`. Every LLM tool return is a Pydantic model in `schemas/`. Every extractor result is `ExtractionResult`. No `dict[str, Any]` on any public surface. |
 | Rule 2 — untrusted text ≠ instructions | The Extraction Agent is the **only** module that ever holds raw scraped text in a prompt. It returns the parsed `Event` object to the Recommender — never the caption string. `sources/instagram/` returns `RawPost` only to the Extractor's `fetch_instagram_post` tool. Enforced by code shape, not by prompt discipline. |
-| Rule 3 — approval gate | Existing `ApprovalGate` (`agent/src/planazo/agents/loop.py`) stays. Telegram callback in `bot/approve.py`. Calendar wiring stays as reference; v0.2 turns it on. |
+| Rule 3 — approval gate | Existing `ApprovalGate` (`agent/src/planazo/approval/gate.py`) stays; `agents/loop.py` names the structural `ApprovalGate` Protocol it accepts so the runtime kernel holds no domain imports. Telegram callback in `bot/approve.py`. Calendar wiring stays as reference; v0.2 turns it on. |
 | Rule 4 — typed error branches | Every tool returns `error_type: str \| None` following the pattern already at `agent/src/tools/tools.py:79` and `:174`. |
 
 ## Multi-agent coordination

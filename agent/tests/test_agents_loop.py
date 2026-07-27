@@ -6,6 +6,7 @@ import pytest
 
 from agentlib.core import CHEAP, Result
 from planazo.agents import loop
+from planazo.approval import ApprovalGate
 
 
 def make_result(**overrides: object) -> Result:
@@ -291,7 +292,7 @@ def test_run_loop_bypasses_gate_when_tool_not_in_gated_set(
     turn_2 = make_result(text="done", tool_calls=[], output_items=[])
     monkeypatch.setattr(loop, "call", MagicMock(side_effect=[turn_1, turn_2]))
     approve = MagicMock(return_value=True)
-    gate = loop.ApprovalGate(tool_names=frozenset({"never_matches"}), approve=approve)
+    gate = ApprovalGate(tool_names=frozenset({"never_matches"}), approve=approve)
 
     result = loop.run_loop("echo hi", [_ECHO_SCHEMA], {"echo": _echo}, model=CHEAP, gate=gate)
 
@@ -317,7 +318,7 @@ def test_run_loop_calls_approve_before_dispatching_a_gated_tool_and_runs_on_true
     order: list[str] = []
     approve = MagicMock(side_effect=lambda *_a, **_kw: order.append("approve") or True)
     mock_echo = MagicMock(side_effect=lambda **kw: order.append("echo") or _echo(**kw))
-    gate = loop.ApprovalGate(tool_names=frozenset({"echo"}), approve=approve)
+    gate = ApprovalGate(tool_names=frozenset({"echo"}), approve=approve)
 
     result = loop.run_loop("echo hi", [_ECHO_SCHEMA], {"echo": mock_echo}, model=CHEAP, gate=gate)
 
@@ -355,7 +356,7 @@ def test_run_loop_skips_dispatch_and_emits_declined_result_when_approve_returns_
     monkeypatch.setattr(loop, "call", mock_call)
     approve = MagicMock(return_value=False)
     mock_echo = MagicMock(side_effect=_echo)
-    gate = loop.ApprovalGate(tool_names=frozenset({"echo"}), approve=approve)
+    gate = ApprovalGate(tool_names=frozenset({"echo"}), approve=approve)
 
     result = loop.run_loop("echo hi", [_ECHO_SCHEMA], {"echo": mock_echo}, model=CHEAP, gate=gate)
 
@@ -389,7 +390,7 @@ def test_run_loop_records_step_with_declined_result_for_declined_call(
     turn_1 = make_result(text="", tool_calls=[tool_call], output_items=[output_item])
     turn_2 = make_result(text="ok", tool_calls=[], output_items=[])
     monkeypatch.setattr(loop, "call", MagicMock(side_effect=[turn_1, turn_2]))
-    gate = loop.ApprovalGate(tool_names=frozenset({"echo"}), approve=lambda *_a, **_kw: False)
+    gate = ApprovalGate(tool_names=frozenset({"echo"}), approve=lambda *_a, **_kw: False)
 
     records: list[loop.StepRecord] = []
     loop.run_loop(

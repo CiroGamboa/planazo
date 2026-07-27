@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from planazo.schemas.domain import ApprovalDecision, Event, ExtractionRunIndexEntry
+from planazo.schemas.domain import Event, ExtractionRunIndexEntry
 from planazo.storage import dao, db
 from tools.schema import schema_for
 
@@ -188,26 +188,6 @@ def test_a_preference_row_written_outside_the_schema_is_rejected_on_read(
 
     with pytest.raises(ValidationError):
         dao.get_preferences(conn, user.id)
-
-
-def test_record_approval_round_trips_through_list_approvals(conn: sqlite3.Connection) -> None:
-    user = dao.get_or_create_user(conn, "tg-1", "Dani")
-    assert user.id is not None
-    event_db_id = dao.insert_event(conn, make_event())
-
-    approval_id = dao.record_approval(
-        conn,
-        ApprovalDecision(
-            user_id=user.id, artifact_kind="event", artifact_id=event_db_id, decision="approve"
-        ),
-    )
-
-    stored = dao.list_approvals(conn, user.id)
-    assert len(stored) == 1
-    assert stored[0].id == approval_id
-    assert stored[0].decision == "approve"
-    assert stored[0].artifact_id == event_db_id
-    assert stored[0].decided_at is not None
 
 
 def test_record_extraction_run_round_trips_through_list_extraction_runs(

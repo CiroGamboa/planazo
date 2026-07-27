@@ -15,7 +15,7 @@ draft/staged event"), not a class-exercise stand-in next to some other
   visible to a third party (AGENTS.md rule 3). An agent doing that on its
   own judgment is exactly what that rule exists to prevent, so callers gate
   this tool by including its name in an `ApprovalGate` before dispatch (see
-  `planazo.agents.loop.ApprovalGate`).
+  `planazo.approval.ApprovalGate`).
 
 Both tools validate their input through the Pydantic v2 boundary models in
 `planazo.schemas.events` (AGENTS.md rule 1) and return a typed error state
@@ -184,7 +184,7 @@ def confirm_and_create_calendar_event(
     action that actually creates the calendar entry and, when
     `notify_invitees="email_invite"`, emails the people listed in the
     comma-separated `invitee_emails`. It is gated behind human approval
-    before dispatch (see `planazo.agents.loop.ApprovalGate`). Do NOT call
+    before dispatch (see `planazo.approval.ApprovalGate`). Do NOT call
     this while only browsing or ranking candidates, and do NOT call it to
     check whether an event was already confirmed (it has no read-back
     behaviour).

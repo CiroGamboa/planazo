@@ -36,7 +36,8 @@ import openai
 
 from agentlib.core import MODELS
 from planazo.agents.event_agent import run_once
-from planazo.agents.loop import ApprovalGate, LoopResult, StepRecord
+from planazo.agents.loop import LoopResult, StepRecord
+from planazo.approval import ApprovalGate
 from planazo.config import check_api_key
 from tools.tools import IRREVERSIBLE_TOOLS
 
