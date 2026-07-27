@@ -36,12 +36,11 @@ _EVENT_ID = "E-123"
 _CONTENT = "loud venue, arrive early"
 
 
-def _isolate_stores() -> Path:
-    """Redirect both store roots into a fresh temp directory and return it."""
+def _isolate_stores() -> None:
+    """Redirect both store roots into a fresh temp directory."""
     root = Path(tempfile.mkdtemp(prefix="planazo-demo-"))
     facts.MEMORY_ROOT = root / "memory"
     db.DB_PATH = root / "planazo.db"
-    return root
 
 
 def _count(found: list[Note]) -> str:

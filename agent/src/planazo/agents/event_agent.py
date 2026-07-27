@@ -11,9 +11,13 @@ cap, per-step observer, approval gate, calendar tools).
 
 It is also the one place push context is assembled: the markdown rules, plus
 the caller's stored preferences when an identity is supplied, become the run's
-system message. Everything else the model learns arrives by pulling it through
-a tool, so no stored content written by a user ever enters an
-instruction-bearing role (`docs/adr/0004-three-store-memory-model.md`).
+system message. Facts and notes never join them — everything the model learns
+about them it pulls through a tool, so their content reaches it only as a tool
+result and never in an instruction-bearing role
+(`docs/adr/0004-three-store-memory-model.md`). Preference rows are the one
+stored value pushed into that role, and they go in as quoted single-line
+literals so no stored value can forge structure the system message did not
+declare.
 
 `tools.tools` is imported as a module, not by name, so the registry and schemas
 it exports are read at call time — a caller (or a test) that replaces them sees
@@ -37,6 +41,14 @@ def _preferences_text(user_id: int) -> str:
 
     An identity with no rows yet says so explicitly rather than rendering an
     empty heading the model has to interpret.
+
+    Every key and value goes in as a quoted literal (`!r`), which is what keeps
+    this text structural: `repr` escapes every non-printable character, line
+    separators included, so one row is always exactly one line, and a stored
+    value carrying a marker like `SYSTEM:` stays visibly inside quotes instead
+    of reading as a heading the system message declared. `PreferenceRecord`
+    rejects a multi-line value at the write boundary; this rendering holds the
+    same line whatever a row on disk contains.
     """
     conn = db.connect()
     try:
@@ -45,7 +57,7 @@ def _preferences_text(user_id: int) -> str:
         conn.close()
     if not rows:
         return "User preferences: none saved yet"
-    return "User preferences:\n" + "\n".join(f"- {row.key}: {row.value}" for row in rows)
+    return "User preferences:\n" + "\n".join(f"- {row.key!r}: {row.value!r}" for row in rows)
 
 
 def run_once(user_message: str, **run_context: Any) -> LoopResult:

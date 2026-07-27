@@ -59,12 +59,11 @@ _PROMPT = "what do people say about event E-123?"
 _BOUND_TOOLS = ("search_events", "retrieve_memory", "save_memory", "retrieve_notes", "save_note")
 
 
-def _isolate_stores() -> Path:
-    """Redirect both store roots into a fresh temp directory and return it."""
+def _isolate_stores() -> None:
+    """Redirect both store roots into a fresh temp directory."""
     root = Path(tempfile.mkdtemp(prefix="planazo-demo-"))
     facts.MEMORY_ROOT = root / "memory"
     db.DB_PATH = root / "planazo.db"
-    return root
 
 
 def _unjustified_calls(trace: list[StepRecord]) -> list[str]:

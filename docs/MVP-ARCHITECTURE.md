@@ -129,7 +129,7 @@ Numbering matches [`~/.claude/plans/rosy-purring-eclipse.md`](/) — the approve
 
 - **`bot/app.py`** — entrypoint; `python-telegram-bot` handlers, dispatch to command handlers.
 - **`bot/session.py`** — resolves the Telegram `user_id` to the internal `users.id` (create-on-first-contact). This is the multi-user seam.
-- **`bot/approve.py`** — supplies `ApprovalGate.approve` via an inline keyboard `[Approve] [Decline]`, mirrors `agent/src/planazo/agents/cli.py:104` (`_terminal_approve`).
+- **`bot/approve.py`** — supplies `ApprovalGate.approve` via an inline keyboard `[Approve] [Decline]`, mirrors `_terminal_approve` in `agent/src/planazo/agents/cli.py`.
 - **`bot/commands.py`** — `/start`, `/find <query>`, `/prefs`, `/me`, `/help`. `/find` is the only command that calls the LLM (via the Interpreter); the rest are pure CRUD on SQLite.
 
 The bot layer is deliberately dumb — no LLM inside — so swapping to an LLM-driven natural-language dispatcher later is a change to one file (`commands.py`), not a rewrite.
@@ -146,7 +146,7 @@ Governed by planned **ADR 0008 — Telegram bot interface abstraction**.
 
 ### 3. Recommender executor — extends `agent/src/planazo/agents/event_agent.py`
 
-- Same `run_once`-shaped front door (`agent/src/planazo/agents/event_agent.py:20`); signature grows to accept `user_id: int` and `intent: SearchIntent`.
+- Same `run_once`-shaped front door (`agent/src/planazo/agents/event_agent.py`); signature grows to accept `user_id: int` and `intent: SearchIntent`.
 - Bound tool registry (Recommender-side): `search_events`, `retrieve_memory`, `save_memory`, `save_preference`, `dispatch_extraction`, `ask_user`. Rank is called deterministically *after* the loop returns candidates — it is not a tool.
 - The existing `save_event_candidate` and `confirm_and_create_calendar_event` (ADR 0002) stay wired in-tree but disabled by default (`calendar_enabled=False`) — kept as the calendar reference implementation, not exposed to the bot until v0.2.
 - Runs on `CHEAP` unless the caller overrides.
@@ -279,7 +279,7 @@ Governed by [**ADR 0004 — Three-store memory model**](adr/0004-three-store-mem
 ### 9. Monitor — `agent/src/planazo/monitor/`
 
 - Standalone CLI: `uv run planazo-monitor [--since <date>] [--out data/monitor/]`.
-- Reads `data/runs/*.jsonl` (Recommender via an `on_step` hook — the seam already exists at `agent/src/planazo/agents/loop.py:101`) and `agent/var/extraction_runs.jsonl` (Extractor).
+- Reads `data/runs/*.jsonl` (Recommender via an `on_step` hook — the seam already exists as `run_loop`'s `on_step` parameter in `agent/src/planazo/agents/loop.py`) and `agent/var/extraction_runs.jsonl` (Extractor).
 - Judge LLM (`STRONG` tier) grades every run on two categorical axes:
 
 | Axis | Values | Line drawn |
@@ -325,7 +325,7 @@ Governed by planned **ADR 0007 — Monitor scheduling and grading axes**.
 | --- | --- |
 | Rule 1 — validate at boundary | Every Telegram update parsed into a `TelegramUpdate` Pydantic model in `bot/`. Every LLM tool return is a Pydantic model in `schemas/`. Every extractor result is `ExtractionResult`. No `dict[str, Any]` on any public surface. |
 | Rule 2 — untrusted text ≠ instructions | The Extraction Agent is the **only** module that ever holds raw scraped text in a prompt. It returns the parsed `Event` object to the Recommender — never the caption string. `sources/instagram/` returns `RawPost` only to the Extractor's `fetch_instagram_post` tool. Enforced by code shape, not by prompt discipline. |
-| Rule 3 — approval gate | Existing `ApprovalGate` (`agent/src/planazo/agents/loop.py:59`) stays. Telegram callback in `bot/approve.py`. Calendar wiring stays as reference; v0.2 turns it on. |
+| Rule 3 — approval gate | Existing `ApprovalGate` (`agent/src/planazo/agents/loop.py`) stays. Telegram callback in `bot/approve.py`. Calendar wiring stays as reference; v0.2 turns it on. |
 | Rule 4 — typed error branches | Every tool returns `error_type: str \| None` following the pattern already at `agent/src/tools/tools.py:79` and `:174`. |
 
 ## Multi-agent coordination (HW2 §4)
@@ -525,7 +525,7 @@ For a reviewer grepping this doc against the assignment: every HW2 ask maps to a
 | HW2 ask | Module | Demo trace | ADR |
 | --- | --- | --- | --- |
 | Three stores (SQL / JSON / MD) | `storage/`, `memory/facts.py`, `memory/rules.py` | (integrated across all traces) | 0003, 0004 |
-| Push + pull context | `event_agent.run_once` (push) + `TOOL_REGISTRY` (pull) | (integrated) | 0004 |
+| Push + pull context | `event_agent.run_once` (push) + the registry `run_once` composes (pull) | (integrated) | 0004 |
 | Facts (cued) vs rules (always-attached) | `memory/facts.py` vs `memory/rules.py` | `private-memory.md` shows a fact resurfacing on cue | 0004 |
 | Private vs shared memory | `var/memory/private/` vs `shared/` | `private-memory.md`, `shared-memory.md` | 0004 |
 | Shared content is untrusted | Extractor trust boundary + `save_note` quoting | `untrusted-content.md` | 0005 (invariant), 0006 (source) |
@@ -536,12 +536,12 @@ For a reviewer grepping this doc against the assignment: every HW2 ask maps to a
 
 The MVP-ARCHITECTURE doc itself is not code, so verification is:
 
-1. **Round-trip against existing ADRs.** Every claim that touches an already-locked-in decision (runtime, provider, existing tools, approval gate) is consistent with ADRs 0001 and 0002. Concretely — grep this doc for `agentlib`, `run_loop`, `ApprovalGate`, `IRREVERSIBLE_TOOLS`; every citation must match the API at the referenced `file:line`.
+1. **Round-trip against existing ADRs.** Every claim that touches an already-locked-in decision (runtime, provider, existing tools, approval gate) is consistent with ADRs 0001 and 0002. Concretely — grep this doc for `agentlib`, `run_loop`, `ApprovalGate`, `IRREVERSIBLE_TOOLS`; every citation must match the API at the referenced symbol.
 2. **HW2 traceability check.** The checklist above is the greppable proof: every ask has a module + a demo trace + an ADR.
 3. **Product-shape check.** Every product stage in [`PLANAZO-PROJECT-CONTEXT.md`](PLANAZO-PROJECT-CONTEXT.md) (goal → intent → sources → extraction → rank → response; calendar deferred) is locatable in §Layers.
 
 Post-doc, code verification happens in each follow-up ticket:
-- Existing test suite (`cd agent && uv run pytest`) stays green — this PR touches no code.
+- Existing test suite (`cd agent && uv run pytest`) stays green.
 - Each follow-up ticket adds its own tier (unit / integration / live) per `AGENTS.md` conventions.
 - Demo traces produced by `agent/scripts/demo/private_memory.py`, `shared_memory.py`, and `untrusted_content.py`; output lands in `docs/evidence/` (gitignored). The first two need no API key and are covered by `agent/tests/test_demo_scripts.py`; `untrusted_content.py` calls the real LLM, so it needs a live `OPENCODE_API_KEY` and is run by hand rather than by the suite.
 
@@ -549,7 +549,7 @@ Post-doc, code verification happens in each follow-up ticket:
 
 - **Instagram scraping fragility.** Any scraper breaks when Meta changes markup or throttles. Mitigation: the Extractor treats `sources/instagram/` as a swappable adapter behind `fetch_instagram_post`. If scraping proves too fragile, we swap to a manual "paste this URL + I'll paste the caption" flow without touching the Extractor agent. ADR 0006 will name the choice.
 - **Multimodal cost.** `STRONG` + image = material per-call cost. The delegation brief's effort budget (`max_steps=4`, one image per call) is the primary lever. Add a per-user daily cap in v0.2 if needed.
-- **Cue-match precision.** Token-overlap cue matching will over-surface (a fact cued "music" appearing on any query with the word). MVP acceptance bar: manual review shows no obviously-wrong surfacing across the three HW2 traces. Embeddings + cosine is a follow-up ADR.
+- **Cue-match precision.** Token-overlap cue matching will over-surface (a fact cued "music" appearing on any query with the word). MVP acceptance bar: manual review shows no obviously-wrong surfacing across `private-memory.md`, `shared-memory.md`, and `untrusted-content.md`. Embeddings + cosine is a follow-up ADR.
 - **Monitor bootstrapping.** The monitor needs run logs to grade. v1 accepts a one-run bootstrap: seed with a canned session, then have the monitor grade it as the demo. Real automated cadence lands with ADR 0007.
 
 ## Out of scope (v1)

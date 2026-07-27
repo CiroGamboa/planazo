@@ -38,12 +38,11 @@ _CONTENT = "pays for Spotify Premium"
 _QUERY = "music events tonight"
 
 
-def _isolate_stores() -> Path:
-    """Redirect both store roots into a fresh temp directory and return it."""
+def _isolate_stores() -> None:
+    """Redirect both store roots into a fresh temp directory."""
     root = Path(tempfile.mkdtemp(prefix="planazo-demo-"))
     facts.MEMORY_ROOT = root / "memory"
     db.DB_PATH = root / "planazo.db"
-    return root
 
 
 def _count(found: list[Fact]) -> str:

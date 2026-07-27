@@ -375,7 +375,7 @@ def search_events(
     field", so calling this with no arguments returns the earliest
     `max_results` events. An empty `events` list means nothing stored matches,
     not that the search failed. Do NOT call this to save an event (it has no
-    write behaviour — use `save_event`).
+    write behaviour).
     """
     parsed_start_after: datetime | None = None
     if start_after:
@@ -386,6 +386,15 @@ def search_events(
                 "error_type": "invalid_search_filter",
                 "message": f"invalid start_after: {exc}",
             }
+
+    # SQLite reads a negative LIMIT as "no limit", so a non-positive cap here
+    # would hand back the whole table instead of the bounded page the argument
+    # asks for.
+    if max_results < 1:
+        return {
+            "error_type": "invalid_search_filter",
+            "message": f"max_results must be at least 1, got {max_results}",
+        }
 
     conn = db.connect()
     try:
