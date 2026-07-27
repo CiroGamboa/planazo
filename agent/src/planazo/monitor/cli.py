@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 from pathlib import Path
 
+import openai
+
+from planazo.agents.cli import _MISSING_KEY_MESSAGE
 from planazo.monitor.service import parse_since, repository_root, run_monitor
 
 
@@ -20,9 +25,13 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     """Run the monitor over live logs or deterministic seed logs."""
-    args = _parser().parse_args()
+    args = _parser().parse_args(argv)
+    if not os.environ.get("OPENCODE_API_KEY"):
+        print(_MISSING_KEY_MESSAGE)
+        return 1
+
     root = repository_root()
     output_dir = Path(args.out)
     if not output_dir.is_absolute():
@@ -38,10 +47,19 @@ def main() -> None:
         extractor_log = root / "agent" / "var" / "extraction_runs.jsonl"
         since = parse_since(args.since)
 
-    written = run_monitor(
-        recommender_dir=recommender_dir,
-        extractor_log=extractor_log,
-        output_dir=output_dir,
-        since=since,
-    )
+    try:
+        written = run_monitor(
+            recommender_dir=recommender_dir,
+            extractor_log=extractor_log,
+            output_dir=output_dir,
+            since=since,
+        )
+    except openai.OpenAIError as exc:
+        print(str(exc))
+        return 1
     print(f"graded reports written: {', '.join(str(path) for path in written) or 'none'}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
