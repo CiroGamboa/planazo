@@ -4,12 +4,17 @@ An agentic Barcelona event-discovery assistant. A user asks for events matching 
 
 ## Quick start
 
+The agent runtime lives in [`agent/`](agent/):
+
 ```bash
+cd agent
 uv sync
 uv run pytest
-# App entry command goes here once it exists, e.g.:
-# uv run python -m planazo.bot
+uv run planazo-agent "save a tech event evt-1 called AI Meetup at 2026-08-01T19:00:00 in Barcelona, confidence 0.9"
+# uv run python -m planazo.bot   # Telegram bot entry command goes here once it exists
 ```
+
+See [`agent/README.md`](agent/README.md) for the full CLI, the two tools, and the approval-gate behavior.
 
 ## Working on the project
 
