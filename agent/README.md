@@ -66,9 +66,11 @@ uv run pytest -m live tests/test_agents_gate_live.py -v -s   # hits the real LLM
 ```
 agent/
 ├── pyproject.toml
+├── data/rules/            committed markdown rules; memory/rules.py re-reads them on every call
 ├── src/planazo/
-│   ├── schemas/           Pydantic v2 boundary models (events.py, domain.py)
+│   ├── schemas/           Pydantic v2 boundary models (events.py, domain.py, memory.py)
 │   ├── storage/           db.py (connection + schema_v1.sql), dao.py (the SQLite DAO)
+│   ├── memory/            facts.py (private/shared JSON docstore), rules.py (markdown rules)
 │   └── agents/            loop.py (generic), event_agent.py (tool binding), cli.py
 ├── src/tools/
 │   ├── schema.py           schema_for() — derives a tool's JSON schema from its signature/docstring

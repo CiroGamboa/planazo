@@ -266,7 +266,7 @@ Governed by [**ADR 0003 — SQLite + JSON columns for the domain store**](adr/00
 
 Two backends, one API. This is the non-relational and rules stores from HW2.
 
-- **`memory/facts.py`** — JSON docstore for **facts** (with cue) and **notes** (event-scoped, free-form). Files under `agent/var/memory/{private/{user_id}/, shared/}`.
+- **`memory/facts.py`** — JSON docstore for **facts** (with cue) and **notes** (event-scoped, free-form). Files under `agent/var/memory/{private/{user_id}/, shared/}`. All four entry points resolve their `(user_id, scope)` pair through a `MemoryScopeRequest` before a path is built, and build it from the *validated* `user_id`: the id selects a directory, so it is validated as an integer (`Field(ge=1)`) and a traversal-shaped value like `"1/../2"` — which the filesystem would resolve into another user's private directory — is a `ValidationError` instead.
   - `save_fact(user_id, cue, content, scope)` — scope is chosen by the model at save time.
   - `retrieve_facts(user_id, query, scope) -> list[Fact]` — cue match via token overlap (no embeddings v1).
   - `save_note(user_id, event_id, content, scope)` — event-scoped notes.
