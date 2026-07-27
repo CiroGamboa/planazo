@@ -235,3 +235,6 @@ Thumbs.db
 # Plans and personal notes never live in the tree
 plans/
 _private/
+
+# Demo evidence traces — regenerate with agent/scripts/demo/*.py
+docs/evidence/

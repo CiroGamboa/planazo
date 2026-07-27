@@ -77,12 +77,25 @@ It is completely generic over `tools`/`registry`, so it has no Planazo-specific 
 uv run pytest -m live tests/test_agents_gate_live.py -v -s   # hits the real LLM; needs a real OPENCODE_API_KEY
 ```
 
+## Memory model demos
+
+```bash
+uv run python scripts/demo/private_memory.py       # a private fact: its owner finds it, user 2 does not
+uv run python scripts/demo/shared_memory.py        # a shared note: user 2 reads user 1's note
+uv run python scripts/demo/untrusted_content.py    # an injection planted in a shared note (live LLM)
+```
+
+The first two call `planazo.memory.facts` directly and need no API key. `untrusted_content.py` records what a real model does when a prompt injection reaches it through shared memory, so it needs a real `OPENCODE_API_KEY` and is not part of `uv run pytest` — the same opt-in-live convention as the gate tests above. With no key it prints one line and returns without calling the provider.
+
+Each script redirects both store roots (`memory.facts.MEMORY_ROOT`, `storage.db.DB_PATH`) into a throwaway temp directory, so a demo run never writes to `var/`. Each writes its trace to `../docs/evidence/<name>.md`, gitignored — regenerate a trace by rerunning the script rather than committing it.
+
 ## Layout
 
 ```
 agent/
 ├── pyproject.toml
 ├── data/rules/            committed markdown rules; memory/rules.py re-reads them on every call
+├── scripts/demo/          the three memory model demos; traces land in ../docs/evidence/
 ├── src/planazo/
 │   ├── schemas/           Pydantic v2 boundary models (events.py, domain.py, memory.py)
 │   ├── storage/           db.py (connection + schema_v1.sql), dao.py (the SQLite DAO)
