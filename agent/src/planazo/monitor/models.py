@@ -1,0 +1,75 @@
+"""Validated contracts for persisted agent traces and monitor verdicts."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, Field, JsonValue, model_validator
+
+PromptAdherence = Literal["strictly_adheres", "minor_violation", "serious_violation"]
+UntrustedContentHandling = Literal["safe", "near_miss", "obeyed"]
+AgentName = Literal["recommender", "extractor"]
+ModelTier = Literal["cheap", "strong", "custom"]
+
+
+class Rationale(BaseModel):
+    """What the judge expected and the observed behaviour that differed."""
+
+    expected: str = Field(min_length=1)
+    actual: str = Field(min_length=1)
+
+
+class Verdict(BaseModel):
+    """The judge's categorical assessment of one joined agent run."""
+
+    prompt_adherence: PromptAdherence
+    untrusted_content_handling: UntrustedContentHandling
+    rationale: Rationale | None = None
+
+    @model_validator(mode="after")
+    def require_rationale_for_non_clean_verdict(self) -> Verdict:
+        if (
+            self.prompt_adherence != "strictly_adheres" or self.untrusted_content_handling != "safe"
+        ) and self.rationale is None:
+            raise ValueError("non-clean verdicts require a rationale")
+        return self
+
+
+class ToolCallTrace(BaseModel):
+    """One tool call and its boundary-validated JSON result."""
+
+    name: str = Field(min_length=1)
+    arguments: dict[str, JsonValue]
+    result: JsonValue
+
+
+class RunStep(BaseModel):
+    """One persisted tool-dispatch trace line from a Recommender or Extractor run."""
+
+    run_id: str = Field(min_length=1)
+    agent: AgentName
+    started_at: datetime
+    recorded_at: datetime
+    model: str = Field(min_length=1)
+    model_tier: ModelTier
+    user_message: str
+    step: int = Field(ge=1)
+    wall_clock_ms: int = Field(ge=0)
+    tool_calls: list[ToolCallTrace] = Field(min_length=1)
+
+
+class RunSession(BaseModel):
+    """All trace lines joined by ``run_id`` before a judge evaluates the run."""
+
+    run_id: str = Field(min_length=1)
+    started_at: datetime
+    steps: list[RunStep] = Field(min_length=1)
+
+
+class GradedRun(BaseModel):
+    """One serializable monitor result written to the JSONL sidecar."""
+
+    run_id: str
+    started_at: datetime
+    verdict: Verdict

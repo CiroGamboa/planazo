@@ -10,6 +10,8 @@ No agent framework, no API server, no frontend here (see `AGENTS.md` rule 5 and 
 uv sync                                                                  # install
 uv run planazo-agent "save a tech event evt-1 called AI Meetup at 2026-08-01T19:00:00 in Barcelona, confidence 0.9"  # one-shot
 uv run planazo-agent                                                     # interactive REPL
+uv run planazo-monitor --since 24h                                       # grade recent runs
+uv run planazo-monitor --dry-run                                         # grade canned seed runs
 ```
 
 `agentlib` (the LLM wrapper) needs `OPENCODE_API_KEY` set in a `.env` file at the repo root; copy `../.env.example`. If the key is unset, the CLI prints one actionable line and exits without calling the provider; if the key is present but invalid or the provider errors, it prints a single-line message — never a traceback.

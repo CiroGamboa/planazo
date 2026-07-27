@@ -10,10 +10,12 @@ supply only the message and any per-run options (model, step cap, per-turn
 output cap, per-step observer, approval gate).
 """
 
+from collections.abc import Callable
 from typing import Any
 
 from agentlib.core import CHEAP
-from planazo.agents.loop import LoopResult, run_loop
+from planazo.agents.loop import LoopResult, StepRecord, run_loop
+from planazo.monitor.logging import RunStepLogger
 from tools.tools import TOOL_REGISTRY, TOOL_SCHEMAS
 
 
@@ -35,18 +37,40 @@ def run_once(user_message: str, **run_context: Any) -> LoopResult:
     - `max_output_tokens` - per-turn output cap forwarded to every LLM
       call; defaults to `agentlib`'s own cap.
     - `on_step` - a per-step observer called with a `StepRecord` for each tool
-      call as it fires; omit for no trace.
+      call as it fires; it is invoked after the built-in JSONL trace writer.
+    - `run_id` - stable run identifier used by the trace writer; generated when omitted.
+    - `run_log_dir` - optional trace output directory, useful for isolated callers/tests.
+    - `record_runs` - set False only for callers that must not persist an audit trace.
     - `gate` - an `ApprovalGate` requiring approval before any tool call whose
       name is in its set is dispatched; omit to dispatch every tool call
       without an approval prompt.
     """
+    model = run_context.get("model", CHEAP)
+    supplied_observer = run_context.get("on_step")
+    logger: RunStepLogger | None = None
+    if run_context.get("record_runs", True):
+        logger = RunStepLogger(
+            user_message=user_message,
+            model=model,
+            run_id=run_context.get("run_id"),
+            output_dir=run_context.get("run_log_dir"),
+        )
+
+    def observe(record: StepRecord) -> None:
+        if logger is not None:
+            logger(record)
+        if supplied_observer is not None:
+            observer = supplied_observer
+            observer(record)
+
+    observer: Callable[[StepRecord], None] | None = observe if logger or supplied_observer else None
     return run_loop(
         user_message=user_message,
         tools=TOOL_SCHEMAS,
         registry=TOOL_REGISTRY,
-        model=run_context.get("model", CHEAP),
+        model=model,
         max_steps=run_context.get("max_steps", 8),
         max_output_tokens=run_context.get("max_output_tokens"),
-        on_step=run_context.get("on_step"),
+        on_step=observer,
         gate=run_context.get("gate"),
     )
