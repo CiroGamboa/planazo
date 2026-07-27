@@ -126,6 +126,57 @@ def test_run_once_forwards_the_gate_to_the_loop(monkeypatch: pytest.MonkeyPatch)
     assert mock_run_loop.call_args.kwargs["gate"] is gate
 
 
+def test_run_once_persists_a_validated_step_trace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tool_call = {
+        "name": "save_event_candidate",
+        "arguments": {"event_id": "evt-1"},
+        "call_id": "call_1",
+    }
+    turn_1 = make_result(
+        text="",
+        tool_calls=[tool_call],
+        output_items=[{"type": "function_call", "call_id": "call_1"}],
+    )
+    turn_2 = make_result(text="done", tool_calls=[], output_items=[])
+    monkeypatch.setattr(loop, "call", MagicMock(side_effect=[turn_1, turn_2]))
+    monkeypatch.setattr(
+        "tools.tools.TOOL_REGISTRY",
+        {"save_event_candidate": MagicMock(return_value={"saved": True})},
+    )
+
+    event_agent.run_once(
+        "save an event",
+        run_id="run-123",
+        run_log_dir=tmp_path,
+        calendar_enabled=True,
+    )
+
+    trace = (tmp_path / "run-123.jsonl").read_text(encoding="utf-8")
+    assert '"run_id":"run-123"' in trace
+    assert '"model_tier":"cheap"' in trace
+    assert '"tool_calls"' in trace
+    assert '"phase":"completion"' in trace
+    assert '"final_answer":"done"' in trace
+
+
+def test_run_once_records_a_no_tool_answer_for_the_monitor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        loop,
+        "call",
+        MagicMock(return_value=make_result(text="No events found", tool_calls=[], output_items=[])),
+    )
+
+    event_agent.run_once("find events", run_id="no-tools", run_log_dir=tmp_path)
+
+    trace = (tmp_path / "no-tools.jsonl").read_text(encoding="utf-8")
+    assert '"phase":"completion"' in trace
+    assert '"final_answer":"No events found"' in trace
+
+
 def test_run_once_forwards_max_output_tokens_to_the_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

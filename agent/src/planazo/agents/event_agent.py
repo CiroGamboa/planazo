@@ -28,9 +28,10 @@ from collections.abc import Callable
 from typing import Any
 
 from agentlib.core import CHEAP
-from planazo.agents.loop import LoopResult, run_loop
+from planazo.agents.loop import LoopResult, StepRecord, run_loop
 from planazo.memory.api import build_memory_tools
 from planazo.memory.rules import load_rules
+from planazo.monitor.logging import RunStepLogger
 from planazo.storage import dao, db
 from tools import tools as calendar_tools
 from tools.schema import schema_for
@@ -97,7 +98,10 @@ def run_once(user_message: str, **run_context: Any) -> LoopResult:
     - `max_output_tokens` - per-turn output cap forwarded to every LLM
       call; defaults to `agentlib`'s own cap.
     - `on_step` - a per-step observer called with a `StepRecord` for each tool
-      call as it fires; omit for no trace.
+      call as it fires; it is invoked after the built-in JSONL trace writer.
+    - `run_id` - stable run identifier used by the trace writer; generated when omitted.
+    - `run_log_dir` - optional trace output directory, useful for isolated callers/tests.
+    - `record_runs` - set False only for callers that must not persist an audit trace.
     - `gate` - an `ApprovalGate` requiring approval before any tool call whose
       name is in its set is dispatched; omit to dispatch every tool call
       without an approval prompt.
@@ -119,16 +123,37 @@ def run_once(user_message: str, **run_context: Any) -> LoopResult:
         preferences = _preferences_text(user_id)
         system_text = f"{system_text}\n\n{preferences}" if system_text else preferences
 
-    return run_loop(
+    model = run_context.get("model", CHEAP)
+    supplied_observer = run_context.get("on_step")
+    logger: RunStepLogger | None = None
+    if run_context.get("record_runs", True):
+        logger = RunStepLogger(
+            user_message=user_message,
+            model=model,
+            run_id=run_context.get("run_id"),
+            output_dir=run_context.get("run_log_dir"),
+        )
+
+    def observe(record: StepRecord) -> None:
+        if logger is not None:
+            logger(record)
+        if supplied_observer is not None:
+            supplied_observer(record)
+
+    observer: Callable[[StepRecord], None] | None = observe if logger or supplied_observer else None
+    result = run_loop(
         user_message=user_message,
         tools=tool_schemas,
         registry=registry,
-        model=run_context.get("model", CHEAP),
+        model=model,
         max_steps=run_context.get("max_steps", 8),
         max_output_tokens=run_context.get("max_output_tokens"),
-        on_step=run_context.get("on_step"),
+        on_step=observer,
         gate=run_context.get("gate"),
         # No rules on disk and no identity leaves nothing to push, and an empty
         # system message is worse than none at all.
         system=system_text or None,
     )
+    if logger is not None:
+        logger.complete(result)
+    return result

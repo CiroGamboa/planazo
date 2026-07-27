@@ -236,5 +236,8 @@ Thumbs.db
 plans/
 _private/
 
+# Runtime audit traces and generated monitor reports
+data/runs/
+data/monitor/
 # Demo evidence traces — regenerate with agent/scripts/demo/*.py
 docs/evidence/

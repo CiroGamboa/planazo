@@ -20,6 +20,7 @@ dev = [
 
 [project.scripts]
 planazo-agent = "planazo.agents.cli:main"
+planazo-monitor = "planazo.monitor.cli:main"
 
 [build-system]
 requires = ["hatchling"]

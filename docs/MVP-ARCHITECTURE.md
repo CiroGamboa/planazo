@@ -317,7 +317,7 @@ sequenceDiagram
 
 The join-by-`run_id` step is what makes the shared-memory coordination between the two agents debuggable — the monitor sees both sides of the delegation and can point at a race or a swallowed error even when neither agent complained.
 
-Governed by planned **ADR 0007 — Monitor scheduling and grading axes**.
+Governed by **[ADR 0007 — Monitor scheduling and categorical grades](adr/0007-monitor-scheduling-and-grades.md)**.
 
 ## Trust boundaries — where AGENTS.md rules live in code
 
@@ -512,7 +512,7 @@ Each is its own PR, blocked by its own ticket. This doc is what those PRs will p
 | 0004 | [`three-store-memory-model`](adr/0004-three-store-memory-model.md) | Relational (SQLite), non-relational (JSON docstore), rules (markdown). Facts vs rules; private vs shared. |
 | 0005 | `multi-agent-shape` | Recommender + Extractor split. Delegation brief. `{status, result, needs_approval}` contract. Shared-memory traceability plan. |
 | 0006 | `instagram-extraction-approach` | Scraper choice, multimodal LLM tier, rate-limit handling, the "raw text never crosses into Recommender" invariant. |
-| 0007 | `monitor-scheduling-and-grades` | Categorical axes, rationale requirement, cron/GHA plan. |
+| 0007 | [`monitor-scheduling-and-grades`](adr/0007-monitor-scheduling-and-grades.md) | Categorical axes, rationale requirement, cron/GHA plan. |
 | 0008 | `telegram-bot-interface` | Bot layer, no-LLM-in-bot invariant, approval callback, interpreter step wiring. |
 | 0009 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
 
