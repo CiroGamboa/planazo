@@ -38,7 +38,8 @@ from dotenv import find_dotenv, load_dotenv
 
 from agentlib.core import CHEAP
 from planazo.agents.event_agent import run_once
-from planazo.agents.loop import ApprovalGate, LoopResult
+from planazo.agents.loop import LoopResult
+from planazo.approval import ApprovalGate
 
 pytestmark = pytest.mark.live
 

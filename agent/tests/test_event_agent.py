@@ -6,7 +6,8 @@ import pytest
 
 from agentlib.core import CHEAP, MODELS, STRONG, Result
 from planazo.agents import event_agent, loop
-from planazo.agents.loop import ApprovalGate, LoopResult
+from planazo.agents.loop import LoopResult
+from planazo.approval import ApprovalGate
 from planazo.memory import facts, rules
 from planazo.storage import dao, db
 

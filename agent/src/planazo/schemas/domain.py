@@ -14,11 +14,8 @@ is written.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
-
-ApprovalOutcome = Literal["approve", "reject"]
 
 
 class Event(BaseModel):
@@ -78,17 +75,6 @@ class PreferenceRecord(BaseModel):
         if value and value.splitlines() != [value]:
             raise ValueError(f"preference value must be a single line: {value!r}")
         return value
-
-
-class ApprovalDecision(BaseModel):
-    """One `approvals` row — the audit trail for an approval-gate decision."""
-
-    id: int | None = None
-    user_id: int = Field(ge=1)
-    artifact_kind: str = Field(min_length=1)
-    artifact_id: int
-    decision: ApprovalOutcome
-    decided_at: datetime | None = None
 
 
 class ExtractionRunIndexEntry(BaseModel):
