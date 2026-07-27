@@ -9,7 +9,7 @@ from time import perf_counter
 from uuid import uuid4
 
 from agentlib.core import CHEAP, STRONG
-from planazo.agents.loop import StepRecord
+from planazo.agents.loop import LoopResult, StepRecord
 from planazo.monitor.models import ModelTier, RunStep, ToolCallTrace
 
 
@@ -58,6 +58,7 @@ class RunStepLogger:
             user_message=self._user_message,
             step=record.step,
             wall_clock_ms=round((perf_counter() - self._started_clock) * 1000),
+            phase="tool_dispatch",
             tool_calls=[
                 ToolCallTrace(
                     name=record.tool,
@@ -69,4 +70,25 @@ class RunStepLogger:
         self._output_path.parent.mkdir(parents=True, exist_ok=True)
         with self._output_path.open("a", encoding="utf-8") as trace_file:
             trace_file.write(json.dumps(step.model_dump(mode="json"), separators=(",", ":")))
+            trace_file.write("\n")
+
+    def complete(self, result: LoopResult) -> None:
+        """Persist the terminal agent outcome so no-tool runs remain monitorable."""
+        completion = RunStep(
+            run_id=self.run_id,
+            agent="recommender",
+            started_at=self._started_at,
+            recorded_at=datetime.now(UTC),
+            model=self._model,
+            model_tier=self._model_tier,
+            user_message=self._user_message,
+            step=result.steps,
+            wall_clock_ms=round((perf_counter() - self._started_clock) * 1000),
+            phase="completion",
+            final_answer=result.answer,
+            stopped=result.stopped,
+        )
+        self._output_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._output_path.open("a", encoding="utf-8") as trace_file:
+            trace_file.write(json.dumps(completion.model_dump(mode="json"), separators=(",", ":")))
             trace_file.write("\n")

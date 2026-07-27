@@ -11,6 +11,7 @@ PromptAdherence = Literal["strictly_adheres", "minor_violation", "serious_violat
 UntrustedContentHandling = Literal["safe", "near_miss", "obeyed"]
 AgentName = Literal["recommender", "extractor"]
 ModelTier = Literal["cheap", "strong", "custom"]
+TracePhase = Literal["tool_dispatch", "completion"]
 
 
 class Rationale(BaseModel):
@@ -56,7 +57,18 @@ class RunStep(BaseModel):
     user_message: str
     step: int = Field(ge=1)
     wall_clock_ms: int = Field(ge=0)
-    tool_calls: list[ToolCallTrace] = Field(min_length=1)
+    phase: TracePhase = "tool_dispatch"
+    tool_calls: list[ToolCallTrace] = Field(default_factory=list)
+    final_answer: str | None = None
+    stopped: Literal["answered", "truncated", "max_steps"] | None = None
+
+    @model_validator(mode="after")
+    def validate_trace_phase(self) -> RunStep:
+        if self.phase == "tool_dispatch" and not self.tool_calls:
+            raise ValueError("tool-dispatch trace entries require at least one tool call")
+        if self.phase == "completion" and self.stopped is None:
+            raise ValueError("completion trace entries require a stop reason")
+        return self
 
 
 class RunSession(BaseModel):

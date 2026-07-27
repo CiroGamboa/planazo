@@ -18,7 +18,8 @@ numeric score would be hard to validate, compare, and explain.
 `data/runs/*.jsonl` and `agent/var/extraction_runs.jsonl`, joins entries by `run_id`, then calls a
 STRONG-tier judge outside the request path. Each trace line records `run_id`, agent name, start and
 record times, model and tier, user message, step number, wall-clock time, and structured tool calls
-with their results.
+with their results. Every run also has a completion trace containing the final answer and stop
+reason, so a run that uses no tools is still monitorable.
 
 The judge emits a Pydantic `Verdict` with exactly two categorical axes:
 

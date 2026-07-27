@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from planazo.monitor.models import Rationale, Verdict
+from planazo.monitor.models import Rationale, RunStep, Verdict
 
 
 def test_clean_verdict_does_not_need_a_rationale() -> None:
@@ -30,3 +30,19 @@ def test_non_clean_verdict_accepts_a_complete_rationale() -> None:
     )
 
     assert verdict.rationale is not None
+
+
+def test_completion_trace_requires_a_stop_reason() -> None:
+    with pytest.raises(ValidationError, match="completion trace entries require a stop reason"):
+        RunStep(
+            run_id="run-1",
+            agent="recommender",
+            started_at="2026-07-27T12:00:00Z",
+            recorded_at="2026-07-27T12:00:01Z",
+            model="gpt-5.4-nano",
+            model_tier="cheap",
+            user_message="Find events",
+            step=1,
+            wall_clock_ms=10,
+            phase="completion",
+        )

@@ -64,7 +64,7 @@ def run_once(user_message: str, **run_context: Any) -> LoopResult:
             observer(record)
 
     observer: Callable[[StepRecord], None] | None = observe if logger or supplied_observer else None
-    return run_loop(
+    result = run_loop(
         user_message=user_message,
         tools=TOOL_SCHEMAS,
         registry=TOOL_REGISTRY,
@@ -74,3 +74,6 @@ def run_once(user_message: str, **run_context: Any) -> LoopResult:
         on_step=observer,
         gate=run_context.get("gate"),
     )
+    if logger is not None:
+        logger.complete(result)
+    return result

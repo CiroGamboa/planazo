@@ -134,6 +134,24 @@ def test_run_once_persists_a_validated_step_trace(
     assert '"run_id":"run-123"' in trace
     assert '"model_tier":"cheap"' in trace
     assert '"tool_calls"' in trace
+    assert '"phase":"completion"' in trace
+    assert '"final_answer":"done"' in trace
+
+
+def test_run_once_records_a_no_tool_answer_for_the_monitor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        loop,
+        "call",
+        MagicMock(return_value=make_result(text="No events found", tool_calls=[], output_items=[])),
+    )
+
+    event_agent.run_once("find events", run_id="no-tools", run_log_dir=tmp_path)
+
+    trace = (tmp_path / "no-tools.jsonl").read_text(encoding="utf-8")
+    assert '"phase":"completion"' in trace
+    assert '"final_answer":"No events found"' in trace
 
 
 def test_run_once_forwards_max_output_tokens_to_the_loop(
