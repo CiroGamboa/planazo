@@ -5,7 +5,7 @@
 calendar reference tools receive from the LLM, and `SearchIntent` is the
 structured output the query interpreter emits from a free-text `/find`
 query. `domain.py` holds the SQLite domain store's remaining row models —
-`Event`, `UserRecord`, `PreferenceRecord`, and `ExtractionRunIndexEntry`.
+`Event` and `ExtractionRunIndexEntry`.
 `memory.py` holds the JSON docstore's own row shapes (`Fact`, `Note`) plus
 the `MemoryScopeRequest` that validates the identity selecting their
 directory — the memory store's rows, not entries in that table. `ApprovalDecision`
