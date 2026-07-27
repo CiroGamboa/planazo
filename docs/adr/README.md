@@ -10,7 +10,7 @@ Write an ADR when:
 - A decision was contested — there was a real alternative, and we want future readers to know why we chose this one.
 - Reversing the decision would require coordinated changes in more than one place.
 
-Examples for this project: LLM provider choice, the agent-loop shape (hand-rolled vs framework), the tool interface & registration convention, the approval-gate contract for irreversible actions, the persistence store, the event-source integrations added or removed, the extraction-error taxonomy.
+Examples for this project: LLM provider choice, the agent-loop shape (hand-rolled vs framework), the tool interface & registration convention, the approval-gate contract for irreversible actions, the persistence store, the event-source integrations added or removed, the extraction-error taxonomy. The MVP itself will spawn a stack of these — see the ADR table in [`../MVP-ARCHITECTURE.md`](../MVP-ARCHITECTURE.md) for the ones already scheduled (SQLite domain store, three-store memory model, multi-agent shape, Instagram extraction, monitor scheduling, Telegram bot interface).
 
 Do **not** write an ADR for:
 

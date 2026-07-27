@@ -22,6 +22,7 @@ Non-negotiable rules. Any PR that violates one gets rejected regardless of how n
 | Question | Where to look |
 | --- | --- |
 | What is the product supposed to do? | [`docs/PLANAZO-PROJECT-CONTEXT.md`](docs/PLANAZO-PROJECT-CONTEXT.md) |
+| What's the MVP shape? | [`docs/MVP-ARCHITECTURE.md`](docs/MVP-ARCHITECTURE.md) |
 | What did we decide and why? | [`docs/adr/`](docs/adr/) (numbered ADRs) |
 | How do I write a new ADR? | [`docs/adr/README.md`](docs/adr/README.md) |
 | What is being worked on right now? | Open GitHub issues + `~/.claude/plans/planazo/` |
