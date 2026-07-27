@@ -25,8 +25,8 @@ Non-negotiable rules. Any PR that violates one gets rejected regardless of how n
 | What did we decide and why? | [`docs/adr/`](docs/adr/) (numbered ADRs) |
 | How do I write a new ADR? | [`docs/adr/README.md`](docs/adr/README.md) |
 | What is being worked on right now? | Open GitHub issues + `~/.claude/plans/planazo/` |
-| How do I run the app? | This file, "Setup & commands" below |
-| What are the tool contracts / event shape? | `src/planazo/schemas/` (Pydantic is authoritative) |
+| How do I run the app? | This file, "Setup & commands" below, and [`agent/README.md`](agent/README.md) |
+| What are the tool contracts / event shape? | `agent/src/planazo/schemas/` (Pydantic is authoritative) |
 | What agents (Claude Code) exist and what do they do? | `.claude/agents/` |
 
 ## Project Overview
@@ -39,18 +39,20 @@ The system is agentic in the strict sense: **observe → reason → act → veri
 
 ## Setup & Commands
 
+The agent runtime lives in `agent/` (its own `pyproject.toml`, its own `.python-version`) — see [`agent/README.md`](agent/README.md) for the full picture. From `agent/`:
+
 ```
 uv sync                                          # install
-uv run pytest                                    # tests
+uv run pytest                                    # tests (LLM mocked; live tests are opt-in, see agent/README.md)
 uv run ruff check                                # lint
 uv run ruff format                               # format
 uv run mypy src                                  # types
+uv run planazo-agent "<prompt>"                  # run the agent loop once
+uv run planazo-agent                             # interactive REPL
 ```
 
-Python is pinned in `.python-version`.
-
 <!--
-Add the app entry command once it exists, e.g.:
+Add the Telegram bot entry command once it exists, e.g.:
     uv run python -m planazo.bot                 # start the Telegram bot
 -->
 
@@ -92,7 +94,7 @@ These are the shapes that flow between the agent loop, its tools, persisted stat
 | `CalendarDraft` | Proposed Google Calendar event (title, start, end, description, invitees) — pending user confirmation |
 | `ApprovalDecision` | Which artifact, user id, decision (approve/reject), timestamp |
 
-The authoritative Pydantic models live in `src/planazo/schemas/`.
+The authoritative Pydantic models live in `agent/src/planazo/schemas/`. `events.py` currently covers the tool-boundary input for `save_event_candidate`/`confirm_and_create_calendar_event` (see [`docs/adr/0002-event-tool-contracts-and-approval-gate.md`](docs/adr/0002-event-tool-contracts-and-approval-gate.md)); the entities above land as later tickets add them.
 
 ## Out of Scope (first version)
 
