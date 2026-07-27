@@ -1,6 +1,6 @@
 # 0006 — Instagram extraction approach
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-28
 - **Deciders:** cirogam22
 - **Relates to:** [`0008-domain-driven-module-layout.md`](0008-domain-driven-module-layout.md) (bounded contexts; this ADR settles the `discovery/` placeholder name as `sources/`), [`0010-extensibility-interfaces.md`](0010-extensibility-interfaces.md) (the `EventSource`/`RawPost`/`MediaAsset` Protocols this ADR conforms to), [`../MVP-ARCHITECTURE.md`](../MVP-ARCHITECTURE.md#5-sources--connectors-srcplanazosources).
@@ -59,7 +59,7 @@ Threaded into the container via Compose env. Owner sets it once locally by inspe
 - **Third-party session provider.** External paid dependency, out of scope.
 
 **6. Rate-limit envelope — surface, do not retry.**
-Per-account cadence (default 6h) enforced by the future scheduler (out of scope), not by the adapter. The adapter itself surfaces `rate_limited` when instaloader raises its 429-shaped exception (exact class-name reconciled at Stage 2 implementation time); it never retries internally. Retry policy belongs to whoever calls the adapter.
+Per-account cadence (default 6h) enforced by the future scheduler (out of scope), not by the adapter. The adapter itself surfaces `rate_limited` when instaloader raises its 429-shaped exception (`TooManyRequestsException` in `instaloader==4.15.3`); it never retries internally. Retry policy belongs to whoever calls the adapter.
 
 *Alternatives rejected:*
 - **Exponential-backoff retry inside the adapter.** A `fetch_post` call that blocks for `2^n * base` seconds while sleeping through a retry loop is worse than a fast typed error the scheduler can respect; also gives Meta more requests than a single scheduled cadence would.

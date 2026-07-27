@@ -1,12 +1,11 @@
-"""Unit tests for `InstagramSource` — static-post happy path and the five
-typed error branches.
+"""Unit tests for `InstagramSource` — happy paths across the three supported
+`typename` shapes, the four error branches an adapter can produce, and the
+config-driven `plan_for` strategy hook.
 
 The adapter's client is injected as a fake with the same `fetch_metadata`
 shape as `InstagramClient`; no network is touched. The exception-class-to-
 error-type reconciliation lives in one parametrized fixture so a future
-scraper-version bump changes one place instead of five tests (plan Stage 2,
-Behaviour bullet — "Test parametrization takes the exception class as a
-fixture so the class-name reconciliation touches one place").
+scraper-version bump changes one place instead of five tests.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ from instaloader.exceptions import (
 )
 
 from planazo.sources.base import ErrorType
-from planazo.sources.config import MediaTypeFlags, SourceConfig
+from planazo.sources.config import AccountConfig, MediaTypeFlags, SourceConfig
 from planazo.sources.instagram.adapter import InstagramSource
 from planazo.sources.instagram.client import InstagramClientError
 from planazo.sources.instagram.model_view import InstaloaderPostView
@@ -105,7 +104,110 @@ def test_fetch_post_unsupported_source_when_url_not_instagram() -> None:
     assert client.calls == []
 
 
-def test_fetch_post_unsupported_media_for_non_image_typename() -> None:
+def test_fetch_post_carousel_all_image_nodes_returns_one_asset_per_node() -> None:
+    payload: dict[str, Any] = {
+        "shortcode": "SIDE1",
+        "typename": "GraphSidecar",
+        "caption": "carousel",
+        "date_utc": datetime(2026, 7, 20, 14, 30, tzinfo=UTC),
+        "owner_username": "test_venue",
+        "url": "https://scontent.cdninstagram.com/thumb.jpg",
+        "video_url": None,
+        "video_duration": None,
+        "mediacount": 3,
+        "sidecar_nodes": [
+            {
+                "is_video": False,
+                "display_url": "https://scontent.cdninstagram.com/1.jpg",
+                "video_url": None,
+                "video_duration": None,
+            },
+            {
+                "is_video": False,
+                "display_url": "https://scontent.cdninstagram.com/2.jpg",
+                "video_url": None,
+                "video_duration": None,
+            },
+            {
+                "is_video": False,
+                "display_url": "https://scontent.cdninstagram.com/3.jpg",
+                "video_url": None,
+                "video_duration": None,
+            },
+        ],
+    }
+    view = InstaloaderPostView.model_validate(payload)
+    client = _FakeClient(view=view)
+    adapter = InstagramSource(_source_config(), client)  # type: ignore[arg-type]
+
+    url = "https://www.instagram.com/p/SIDE1/"
+    result = adapter.fetch_post(url)
+
+    assert isinstance(result, RawPost)
+    assert len(result.media) == 3
+    assert [asset.kind for asset in result.media] == ["image", "image", "image"]
+    assert [asset.url for asset in result.media] == [
+        "https://scontent.cdninstagram.com/1.jpg",
+        "https://scontent.cdninstagram.com/2.jpg",
+        "https://scontent.cdninstagram.com/3.jpg",
+    ]
+
+
+def test_fetch_post_carousel_mixed_image_and_video_nodes_expands_video_to_pair() -> None:
+    payload: dict[str, Any] = {
+        "shortcode": "SIDE2",
+        "typename": "GraphSidecar",
+        "caption": "mixed carousel",
+        "date_utc": datetime(2026, 7, 20, 14, 30, tzinfo=UTC),
+        "owner_username": "test_venue",
+        "url": "https://scontent.cdninstagram.com/thumb.jpg",
+        "video_url": None,
+        "video_duration": None,
+        "mediacount": 3,
+        "sidecar_nodes": [
+            {
+                "is_video": False,
+                "display_url": "https://scontent.cdninstagram.com/1.jpg",
+                "video_url": None,
+                "video_duration": None,
+            },
+            {
+                "is_video": True,
+                "display_url": "https://scontent.cdninstagram.com/2thumb.jpg",
+                "video_url": "https://scontent.cdninstagram.com/2.mp4",
+                "video_duration": 5.4,
+            },
+            {
+                "is_video": False,
+                "display_url": "https://scontent.cdninstagram.com/3.jpg",
+                "video_url": None,
+                "video_duration": None,
+            },
+        ],
+    }
+    view = InstaloaderPostView.model_validate(payload)
+    client = _FakeClient(view=view)
+    adapter = InstagramSource(_source_config(), client)  # type: ignore[arg-type]
+
+    url = "https://www.instagram.com/p/SIDE2/"
+    result = adapter.fetch_post(url)
+
+    assert isinstance(result, RawPost)
+    assert [asset.kind for asset in result.media] == [
+        "image",
+        "video",
+        "thumbnail",
+        "image",
+    ]
+    # video asset carries duration and video URL
+    assert result.media[1].url == "https://scontent.cdninstagram.com/2.mp4"
+    assert result.media[1].duration_seconds == 5.4
+    # sibling thumbnail carries the display URL
+    assert result.media[2].url == "https://scontent.cdninstagram.com/2thumb.jpg"
+    assert result.media[2].duration_seconds is None
+
+
+def test_fetch_post_video_returns_video_then_thumbnail_media() -> None:
     payload: dict[str, Any] = {
         "shortcode": "REEL42",
         "typename": "GraphVideo",
@@ -125,9 +227,39 @@ def test_fetch_post_unsupported_media_for_non_image_typename() -> None:
     url = "https://www.instagram.com/reel/REEL42/"
     result = adapter.fetch_post(url)
 
+    assert isinstance(result, RawPost)
+    assert len(result.media) == 2
+    assert result.media[0].kind == "video"
+    assert result.media[0].url == "https://scontent.cdninstagram.com/v.mp4"
+    assert result.media[0].duration_seconds == 12.4
+    assert result.media[1].kind == "thumbnail"
+    assert result.media[1].url == "https://scontent.cdninstagram.com/thumb.jpg"
+
+
+def test_fetch_post_video_without_video_url_returns_unsupported_media() -> None:
+    payload: dict[str, Any] = {
+        "shortcode": "REEL99",
+        "typename": "GraphVideo",
+        "caption": "a login-walled reel",
+        "date_utc": datetime(2026, 7, 20, 14, 30, tzinfo=UTC),
+        "owner_username": "test_venue",
+        "url": "https://scontent.cdninstagram.com/thumb.jpg",
+        "video_url": None,
+        "video_duration": None,
+        "mediacount": 1,
+        "sidecar_nodes": [],
+    }
+    view = InstaloaderPostView.model_validate(payload)
+    client = _FakeClient(view=view)
+    adapter = InstagramSource(_source_config(), client)  # type: ignore[arg-type]
+
+    url = "https://www.instagram.com/reel/REEL99/"
+    result = adapter.fetch_post(url)
+
     assert isinstance(result, dict)
     assert result["error_type"] == "unsupported_media"
-    assert "GraphVideo" in result["message"]
+    assert "video url not resolvable" in result["message"]
+    assert result["url"] == url
 
 
 @pytest.mark.parametrize(
@@ -163,8 +295,6 @@ def test_fetch_post_maps_instaloader_exception_to_typed_error(
 
 
 def test_targets_iterates_configured_account_urls() -> None:
-    from planazo.sources.config import AccountConfig
-
     config = SourceConfig(
         default_cadence=timedelta(hours=6),
         default_media_types=MediaTypeFlags(),
@@ -193,3 +323,51 @@ def test_fetch_post_accepts_reel_and_tv_url_shapes() -> None:
     # `unsupported_source`.
     assert isinstance(adapter.fetch_post("https://www.instagram.com/reel/ABC123/"), RawPost)
     assert isinstance(adapter.fetch_post("https://instagram.com/tv/ABC123/"), RawPost)
+
+
+def test_plan_for_skips_disabled_media_types_from_resolved_flags() -> None:
+    """`plan_for` honours the account's resolved `MediaTypeFlags`.
+
+    An account with `reels: false` in its resolved flags never yields a
+    `("<url>", "reels")` pair — the scheduler consumes this to decide which
+    fetches to run per cadence tick.
+    """
+    account = AccountConfig(
+        url="https://instagram.com/venue_a",
+        media_types=MediaTypeFlags(reels=False),
+    )
+    config = SourceConfig(
+        default_cadence=timedelta(hours=6),
+        default_media_types=MediaTypeFlags(),
+        accounts=[account],
+    )
+    client = _FakeClient(view=_static_post_view())
+    adapter = InstagramSource(config, client)  # type: ignore[arg-type]
+
+    plan = adapter.plan_for(account)
+
+    assert ("https://instagram.com/venue_a", "reels") not in plan
+    # the other three enabled kinds are present, in declaration order
+    assert plan == [
+        ("https://instagram.com/venue_a", "static_posts"),
+        ("https://instagram.com/venue_a", "carousels"),
+        ("https://instagram.com/venue_a", "video_posts"),
+    ]
+
+
+def test_plan_for_falls_back_to_source_default_media_types() -> None:
+    """An account without `media_types` inherits the source-wide defaults."""
+    account = AccountConfig(url="https://instagram.com/venue_b")
+    config = SourceConfig(
+        default_cadence=timedelta(hours=6),
+        default_media_types=MediaTypeFlags(video_posts=False),
+        accounts=[account],
+    )
+    client = _FakeClient(view=_static_post_view())
+    adapter = InstagramSource(config, client)  # type: ignore[arg-type]
+
+    plan = adapter.plan_for(account)
+
+    kinds = [kind for _, kind in plan]
+    assert "video_posts" not in kinds
+    assert set(kinds) == {"static_posts", "reels", "carousels"}

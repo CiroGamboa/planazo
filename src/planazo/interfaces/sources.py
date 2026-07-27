@@ -1,22 +1,21 @@
 """The event-source adapter contract.
 
-Swap axis: Instagram (M2, first concrete), TikTok, YouTube, news pages,
+Swap axis: Instagram (first concrete), TikTok, YouTube, news pages,
 Meetup, Eventbrite — every source drops into this slot without changing
-the interface. The concrete Instagram implementation is scoped by
-[M2 (#16)](https://github.com/CiroGamboa/planazo/issues/16) +
+the interface. The concrete Instagram implementation lives in
+`planazo.sources.instagram`; the shape here is what every `EventSource`
+adapter satisfies. See
 [ADR 0006 — Instagram extraction approach](../../../docs/adr/0006-instagram-extraction-approach.md)
-(Status: Proposed until Stage 3 flips it to Accepted); the shape here
-reflects what that ticket will land.
+for the scraper choice + container + rate-limit envelope + session policy.
 
 `RawPost` + `MediaAsset` are the media-type-agnostic payload every adapter
 returns: static posts, reels, carousels, and video posts all fit the same
-Pydantic v2 model. The Extractor (M3) branches on `media[*].kind` when it
+Pydantic v2 model. The Extractor branches on `media[*].kind` when it
 probes the multimodal LLM.
 
-This module intentionally forward-declares the shapes without importing
-concrete Pydantic models — those live in `planazo.sources.models` and will
-be added when M2 lands. Downstream milestones (M2 for the concrete adapter,
-M3 for the extractor consuming it) type against these Protocols.
+This module forward-declares the shapes without importing concrete Pydantic
+models — those live in `planazo.sources.models`. Downstream milestones type
+their consumers against these Protocols so the four axes swap independently.
 """
 
 from __future__ import annotations

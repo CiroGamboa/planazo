@@ -14,6 +14,9 @@ from datetime import UTC, datetime, timedelta
 from planazo.interfaces.sources import EventSource as EventSourceProtocol
 from planazo.interfaces.sources import MediaAsset as MediaAssetProtocol
 from planazo.interfaces.sources import RawPost as RawPostProtocol
+from planazo.sources.config import MediaTypeFlags, SourceConfig
+from planazo.sources.instagram.adapter import InstagramSource
+from planazo.sources.instagram.client import InstagramClient
 from planazo.sources.models import MediaAsset, RawPost
 from planazo.sources.stub import StubEventSource
 
@@ -27,6 +30,10 @@ def _conforms_raw_post(p: RawPost) -> RawPostProtocol:
 
 
 def _conforms_stub(s: StubEventSource) -> EventSourceProtocol:
+    return s
+
+
+def _conforms_ig(s: InstagramSource) -> EventSourceProtocol:
     return s
 
 
@@ -54,3 +61,14 @@ def test_stub_event_source_conforms_to_interface_protocol() -> None:
     stub = StubEventSource(name="stub", cadence=timedelta(hours=6))
 
     assert _conforms_stub(stub) is stub
+
+
+def test_instagram_source_conforms_to_interface_protocol() -> None:
+    config = SourceConfig(
+        default_cadence=timedelta(hours=6),
+        default_media_types=MediaTypeFlags(),
+        accounts=[],
+    )
+    adapter = InstagramSource(config, InstagramClient())
+
+    assert _conforms_ig(adapter) is adapter
