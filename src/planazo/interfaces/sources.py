@@ -3,8 +3,10 @@
 Swap axis: Instagram (M2, first concrete), TikTok, YouTube, news pages,
 Meetup, Eventbrite — every source drops into this slot without changing
 the interface. The concrete Instagram implementation is scoped by
-[M2 (#16)](https://github.com/CiroGamboa/planazo/issues/16) + planned
-ADR 0006; the shape here reflects what that ticket will land.
+[M2 (#16)](https://github.com/CiroGamboa/planazo/issues/16) +
+[ADR 0006 — Instagram extraction approach](../../../docs/adr/0006-instagram-extraction-approach.md)
+(Status: Proposed until Stage 3 flips it to Accepted); the shape here
+reflects what that ticket will land.
 
 `RawPost` + `MediaAsset` are the media-type-agnostic payload every adapter
 returns: static posts, reels, carousels, and video posts all fit the same
@@ -20,7 +22,7 @@ M3 for the extractor consuming it) type against these Protocols.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Literal, Protocol
 
 
@@ -52,7 +54,8 @@ class RawPost(Protocol):
     permalink: str
     title: str | None
     caption: str | None
-    posted_at: str  # ISO-8601; a downstream field-validator parses to datetime
+    # Pydantic v2 auto-parses ISO-8601 strings into datetime at model_validate time
+    posted_at: datetime
     author_handle: str | None
     media: list[MediaAsset]
 
