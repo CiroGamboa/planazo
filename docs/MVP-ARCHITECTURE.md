@@ -121,9 +121,29 @@ sequenceDiagram
 
 The Interpreter is called once per user turn. The Recommender loop then owns the rest — it can call `retrieve_memory` more than once, or `search_events` more than once, and it can delegate to the Extractor mid-loop (next flow). Rank runs deterministically after the loop finishes, not as a tool.
 
+## Bounded contexts
+
+Under `agent/src/planazo/`, each domain concept lives in a self-contained folder that carries its models, its repository (or store), and its LLM tool adapters. Two shared-kernel packages (`agentlib/`, `tools/`) sit outside `planazo/` as product-agnostic infrastructure. Governed by [`ADR 0008 — Domain-driven module layout`](adr/0008-domain-driven-module-layout.md).
+
+| Context | Owns | Aggregates |
+| --- | --- | --- |
+| `catalog/` | Persisted event catalog | `Event`, `ExtractionRunIndexEntry`, `save_event`/`search_events` tools |
+| `identity/` | Users + structured preferences | `UserRecord`, `PreferenceRecord` |
+| `approval/` | Approval-gate audit | `ApprovalDecision`, `ApprovalGate` protocol |
+| `calendar/` | Reference calendar tools (v0.2 real Google Calendar replaces this) | `EventCandidateInput`, `CalendarConfirmationInput`, `CandidateStore` (JSON), `save_event_candidate`/`confirm_and_create_calendar_event` tools |
+| `query/` | Free-text → structured intent | `SearchIntent`, `interpret()` |
+| `discovery/` | Source adapters + Extraction Agent | `RawEventCandidate`, `ExtractionError`, `sources/instagram/`, `agents/extractor.py` — landed by M2 + M3 |
+| `memory/` | Facts + notes + rules (private/shared) | `Fact`, `Note`, `MemoryScopeRequest`, closured memory tools |
+| `recommendation/` | Deterministic ranker (LLM re-ranker deferred) | `RankedEventList` — landed by M4 |
+| `monitor/` | Out-of-band LLM-as-judge grader | `RunStep`, `RunSession`, `Verdict`, `GradedRun` |
+
+**Shared kernel** — `agentlib/` (LLM wrapper) and `tools/schema.py` (function-signature reflection). Product-agnostic; imported by every context; may not import any context.
+
+**Application layer** — `planazo/agents/{loop,event_agent,cli}.py`. Composes contexts into runnable surfaces. `loop.py` is fully generic; `event_agent.py::run_once` is the composition root; `cli.py` is the terminal surface. Bot surface lands under `planazo/bot/` in M5.
+
 ## Layers
 
-Numbering matches [`~/.claude/plans/rosy-purring-eclipse.md`](/) — the approved architecture plan.
+The layers below each map to one bounded context (annotated per layer). Numbering matches [`~/.claude/plans/rosy-purring-eclipse.md`](/) — the approved architecture plan.
 
 ### 1. Telegram bot — `agent/src/planazo/bot/`
 
@@ -134,7 +154,7 @@ Numbering matches [`~/.claude/plans/rosy-purring-eclipse.md`](/) — the approve
 
 The bot layer is deliberately dumb — no LLM inside — so swapping to an LLM-driven natural-language dispatcher later is a change to one file (`commands.py`), not a rewrite.
 
-Governed by planned **ADR 0008 — Telegram bot interface abstraction**.
+Governed by planned **ADR 0009 — Telegram bot interface abstraction**.
 
 ### 2. Query interpreter — `agent/src/planazo/query/interpreter.py`
 
@@ -180,7 +200,7 @@ Governed by planned **ADR 0005 — Multi-agent shape** and **ADR 0006 — Instag
 - **`sources/eventbrite/`** — POC stub. May not ship v1.
 - Registration is config-driven via `SOURCES: dict[str, EventSource]` (module constant), monkeypatched in tests.
 
-Governed by planned **ADR 0006** (Instagram) and conditionally **ADR 0009** (Meetup/Eventbrite).
+Governed by planned **ADR 0006** (Instagram) and conditionally **ADR 0010** (Meetup/Eventbrite).
 
 ### 6. Ranking — `agent/src/planazo/rank/scorer.py`
 
@@ -513,8 +533,9 @@ Each is its own PR, blocked by its own ticket. This doc is what those PRs will p
 | 0005 | `multi-agent-shape` | Recommender + Extractor split. Delegation brief. `{status, result, needs_approval}` contract. Shared-memory traceability plan. |
 | 0006 | `instagram-extraction-approach` | Scraper choice, multimodal LLM tier, rate-limit handling, the "raw text never crosses into Recommender" invariant. |
 | 0007 | [`monitor-scheduling-and-grades`](adr/0007-monitor-scheduling-and-grades.md) | Categorical axes, rationale requirement, cron/GHA plan. |
-| 0008 | `telegram-bot-interface` | Bot layer, no-LLM-in-bot invariant, approval callback, interpreter step wiring. |
-| 0009 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
+| 0008 | [`domain-driven-module-layout`](adr/0008-domain-driven-module-layout.md) | Bounded-context folder layout under `planazo/`; per-aggregate `models.py` + `repository.py` (+ `tools.py`); preserves ADR 0003/0004 API contracts. |
+| 0009 | `telegram-bot-interface` | Bot layer, no-LLM-in-bot invariant, approval callback, interpreter step wiring. |
+| 0010 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
 
 Until each ADR lands, its section here reads as "planned — ADR NNNN"; when it lands, the entry is edited in place to link the accepted ADR.
 
