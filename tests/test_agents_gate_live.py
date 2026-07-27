@@ -19,7 +19,7 @@ schema and every line of pushed rules text the run carries. So the retry in
 observation, and prints the attempt it took; the assertions each test makes
 about the gate run once, on the attempt that produced a gated call.
 
-Environment setup: `agent/tests/conftest.py` sets `OPENCODE_API_KEY` to a
+Environment setup: `tests/conftest.py` sets `OPENCODE_API_KEY` to a
 placeholder via `os.environ.setdefault(...)` for the mocked suite. The
 `_load_real_env` fixture below reloads `.env` with `override=True` — but
 only when a live test actually runs, so the mocked suite keeps its

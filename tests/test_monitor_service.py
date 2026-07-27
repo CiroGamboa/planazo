@@ -74,7 +74,7 @@ def test_parse_since_rejects_invalid_windows() -> None:
 
 
 def test_seed_sessions_are_independently_monitorable(tmp_path: Path) -> None:
-    seed_dir = repository_root() / "agent" / "scripts" / "monitor" / "seed_runs"
+    seed_dir = repository_root() / "scripts" / "monitor" / "seed_runs"
 
     def clean_judge(_run: object) -> Verdict:
         return Verdict(prompt_adherence="strictly_adheres", untrusted_content_handling="safe")
@@ -95,7 +95,7 @@ def test_seed_sessions_are_independently_monitorable(tmp_path: Path) -> None:
 
 
 def test_run_monitor_can_select_one_seed_session(tmp_path: Path) -> None:
-    seed_dir = repository_root() / "agent" / "scripts" / "monitor" / "seed_runs"
+    seed_dir = repository_root() / "scripts" / "monitor" / "seed_runs"
     judged_run_ids: list[str] = []
 
     def clean_judge(run: object) -> Verdict:

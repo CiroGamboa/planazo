@@ -2,7 +2,7 @@
 
 **Status:** authoritative for MVP scope. Product spec: [`PLANAZO-PROJECT-CONTEXT.md`](PLANAZO-PROJECT-CONTEXT.md). Rulebook: [`../AGENTS.md`](../AGENTS.md). Decisions: [`adr/`](adr/).
 
-The MVP grows the existing runtime in `agent/` — a hand-rolled agent loop, boundary-validated tools, an approval gate — into a two-agent system with a Telegram bot as the UI, three memory stores, and an out-of-band LLM-as-judge monitor. Nothing already in `agent/` is being rewritten; every new layer plugs into a seam that already exists (`TOOL_REGISTRY`, `ApprovalGate`, `on_step`, `run_once`).
+The MVP grows the existing runtime under `src/planazo/` — a hand-rolled agent loop, boundary-validated tools, an approval gate — into a two-agent system with a Telegram bot as the UI, three memory stores, and an out-of-band LLM-as-judge monitor. Nothing already there is being rewritten; every new layer plugs into a seam that already exists (`TOOL_REGISTRY`, `ApprovalGate`, `on_step`, `run_once`).
 
 ## System context (Level 1)
 
@@ -123,7 +123,7 @@ The Interpreter is called once per user turn. The Recommender loop then owns the
 
 ## Bounded contexts
 
-Under `agent/src/planazo/`, each domain concept lives in a self-contained folder that carries its models, its repository (or store), and its LLM tool adapters. Two shared-kernel packages (`agentlib/`, `tools/`) sit outside `planazo/` as product-agnostic infrastructure. Governed by [`ADR 0008 — Domain-driven module layout`](adr/0008-domain-driven-module-layout.md).
+Under `src/planazo/`, each domain concept lives in a self-contained folder that carries its models, its repository (or store), and its LLM tool adapters. Two shared-kernel packages (`agentlib/`, `tools/`) sit outside `planazo/` as product-agnostic infrastructure. Governed by [`ADR 0008 — Domain-driven module layout`](adr/0008-domain-driven-module-layout.md).
 
 | Context | Owns | Aggregates |
 | --- | --- | --- |
@@ -145,35 +145,35 @@ Under `agent/src/planazo/`, each domain concept lives in a self-contained folder
 
 The layers below each map to one bounded context (annotated per layer). Numbering matches [`~/.claude/plans/rosy-purring-eclipse.md`](/) — the approved architecture plan.
 
-### 1. Telegram bot — `agent/src/planazo/bot/`
+### 1. Telegram bot — `src/planazo/bot/`
 
 - **`bot/app.py`** — entrypoint; `python-telegram-bot` handlers, dispatch to command handlers.
 - **`bot/session.py`** — resolves the Telegram `user_id` to the internal `users.id` (create-on-first-contact). This is the multi-user seam.
-- **`bot/approve.py`** — supplies `ApprovalGate.approve` via an inline keyboard `[Approve] [Decline]`, mirrors `_terminal_approve` in `agent/src/planazo/agents/cli.py`.
+- **`bot/approve.py`** — supplies `ApprovalGate.approve` via an inline keyboard `[Approve] [Decline]`, mirrors `_terminal_approve` in `src/planazo/agents/cli.py`.
 - **`bot/commands.py`** — `/start`, `/find <query>`, `/prefs`, `/me`, `/help`. `/find` is the only command that calls the LLM (via the Interpreter); the rest are pure CRUD on SQLite.
 
 The bot layer is deliberately dumb — no LLM inside — so swapping to an LLM-driven natural-language dispatcher later is a change to one file (`commands.py`), not a rewrite.
 
-Governed by planned **ADR 0009 — Telegram bot interface abstraction**.
+Governed by planned **ADR 0010 — Telegram bot interface abstraction**.
 
-### 2. Query interpreter — `agent/src/planazo/query/interpreter.py`
+### 2. Query interpreter — `src/planazo/query/interpreter.py`
 
-- Single Zen `call()` on `CHEAP` with a function-call tool schema derived by `schema_for` from a signature-mirror of `SearchIntent` (`_record_search_intent` in `agent/src/planazo/query/interpreter.py`). `categories` travels the wire as a comma-separated string; `radius_km` and `budget_cents` use negative sentinels to signal "unspecified" — the same wire convention `confirm_and_create_calendar_event` and `search_events` already use for optional arguments.
+- Single Zen `call()` on `CHEAP` with a function-call tool schema derived by `schema_for` from a signature-mirror of `SearchIntent` (`_record_search_intent` in `src/planazo/query/interpreter.py`). `categories` travels the wire as a comma-separated string; `radius_km` and `budget_cents` use negative sentinels to signal "unspecified" — the same wire convention `confirm_and_create_calendar_event` and `search_events` already use for optional arguments.
 - **Pydantic-validates** the returned arguments. On malformed output, returns a degraded intent (`window=today+72h, categories=[], geo=Barcelona`) plus a typed `error_type="interpreter_fallback"` — never raises, never silently defaults.
 - Called only from the bot's `/find` handler; the Recommender loop never calls it.
 
-`SearchIntent` lives in `agent/src/planazo/schemas/events.py` next to `EventCategory` (see [`AGENTS.md`](../AGENTS.md#data-contracts-compatibility-surfaces)).
+`SearchIntent` lives in `src/planazo/schemas/events.py` next to `EventCategory` (see [`AGENTS.md`](../AGENTS.md#data-contracts-compatibility-surfaces)).
 
-### 3. Recommender executor — extends `agent/src/planazo/agents/event_agent.py`
+### 3. Recommender executor — extends `src/planazo/agents/event_agent.py`
 
-- Same `run_once`-shaped front door (`agent/src/planazo/agents/event_agent.py`); signature grows to accept `user_id: int` and `intent: SearchIntent`.
+- Same `run_once`-shaped front door (`src/planazo/agents/event_agent.py`); signature grows to accept `user_id: int` and `intent: SearchIntent`.
 - Bound tool registry (Recommender-side): `search_events`, `retrieve_memory`, `save_memory`, `save_preference`, `dispatch_extraction`, `ask_user`. Rank is called deterministically *after* the loop returns candidates — it is not a tool.
 - The existing `save_event_candidate` and `confirm_and_create_calendar_event` (ADR 0002) stay wired in-tree but disabled by default (`calendar_enabled=False`) — kept as the calendar reference implementation, not exposed to the bot until v0.2.
 - Runs on `CHEAP` unless the caller overrides.
 
 Push-context (attached before the loop starts): `load_rules()` output, the user's `preferences` row, the parsed `SearchIntent`.
 
-### 4. Extraction Agent — `agent/src/planazo/agents/extractor.py` (new peer of `event_agent.py`)
+### 4. Extraction Agent — `src/planazo/agents/extractor.py` (new peer of `event_agent.py`)
 
 - Multimodal, `STRONG` model tier.
 - Front door: `extract_once(url: str, delegator_user_id: int) -> ExtractionResult`.
@@ -183,16 +183,16 @@ Push-context (attached before the loop starts): `load_rules()` output, the user'
   ExtractionResult = {
       "status": "ok" | "error" | "needs_clarification",
       "event": Event | None,
-      "needs_approval": False,          # extraction is reversible
-      "notes": str,                      # short summary for the recommender
-      "error_type": str | None,          # typed branch, per AGENTS.md rule 4
+      "needs_approval": False,  # extraction is reversible
+      "notes": str,  # short summary for the recommender
+      "error_type": str | None,  # typed branch, per AGENTS.md rule 4
   }
   ```
 - `dispatch_extraction` on the Recommender side calls `extract_once` and returns the structured object only. The caption text never enters the Recommender's messages — see §Trust boundaries below.
 
 Governed by planned **ADR 0005 — Multi-agent shape** and **ADR 0006 — Instagram extraction approach**.
 
-### 5. Sources / connectors — `agent/src/planazo/sources/`
+### 5. Sources / connectors — `src/planazo/sources/`
 
 - **`sources/base.py`** — `EventSource` protocol: `search(intent) -> list[Event]`, `fetch_post(url) -> RawPost | None`.
 - **`sources/instagram/`** — the real adapter for the extraction path. Small scraping helper (likely `instaloader`, choice deferred to ADR 0006). Only ever returns `RawPost` to the Extractor's `fetch_instagram_post` tool — never to the Recommender's tools.
@@ -200,16 +200,16 @@ Governed by planned **ADR 0005 — Multi-agent shape** and **ADR 0006 — Instag
 - **`sources/eventbrite/`** — POC stub. May not ship v1.
 - Registration is config-driven via `SOURCES: dict[str, EventSource]` (module constant), monkeypatched in tests.
 
-Governed by planned **ADR 0006** (Instagram) and conditionally **ADR 0010** (Meetup/Eventbrite).
+Governed by planned **ADR 0006** (Instagram) and conditionally **ADR 0011** (Meetup/Eventbrite).
 
-### 6. Ranking — `agent/src/planazo/rank/scorer.py`
+### 6. Ranking — `src/planazo/rank/scorer.py`
 
 - `rank(candidates, intent, prefs, memory_view) -> list[RankedEvent]`.
 - Deterministic weighted sum: `freshness × proximity × preference_match × confidence`. Weights are a module constant, tuneable, tested.
 - Every returned row carries a `reason: str` synthesized from which weight dominated — no LLM, no hallucination surface.
 - **LLM re-ranker is an explicit future extension point.** Do not add now.
 
-### 7. Storage — `agent/src/planazo/storage/`
+### 7. Storage — `src/planazo/storage/`
 
 SQLite + JSON columns (via SQLite's JSON1). Domain-only — free-form agent memory lives elsewhere (§8).
 
@@ -280,26 +280,26 @@ erDiagram
 
 Unit tests run against real SQLite in two tiers, matching how the two dao tiers open connections: the connection-parameterized primitives share one `:memory:` connection held across every call in a test, and the self-contained `save_event`/`search_events` wrappers — which open and close their own connection per call — run against a `tmp_path` file so state carries between calls.
 
-Governed by [**ADR 0003 — SQLite + JSON columns for the domain store**](adr/0003-sqlite-domain-store.md). That ADR supersedes ADR 0002's JSON persistence for the *domain* surface only: `agent/var/event_candidates.json` and `agent/var/calendar_events.json`, and the two tools that read and write them, are retained as the calendar reference implementation until v0.2's real Google Calendar wiring replaces them — reachable via `run_once(calendar_enabled=True)` / `planazo-agent --calendar`.
+Governed by [**ADR 0003 — SQLite + JSON columns for the domain store**](adr/0003-sqlite-domain-store.md). That ADR supersedes ADR 0002's JSON persistence for the *domain* surface only: `var/event_candidates.json` and `var/calendar_events.json`, and the two tools that read and write them, are retained as the calendar reference implementation until v0.2's real Google Calendar wiring replaces them — reachable via `run_once(calendar_enabled=True)` / `planazo-agent --calendar`.
 
-### 8. Memory API — `agent/src/planazo/memory/`
+### 8. Memory API — `src/planazo/memory/`
 
 Two backends, one API — the non-relational store (facts + notes) and the rules store.
 
-- **`memory/facts.py`** — JSON docstore for **facts** (with cue) and **notes** (event-scoped, free-form). Files under `agent/var/memory/{private/{user_id}/, shared/}`. All four entry points resolve their `(user_id, scope)` pair through a `MemoryScopeRequest` before a path is built, and build it from the *validated* `user_id`: the id selects a directory, so it is validated as an integer (`Field(ge=1)`) and a traversal-shaped value like `"1/../2"` — which the filesystem would resolve into another user's private directory — is a `ValidationError` instead.
+- **`memory/facts.py`** — JSON docstore for **facts** (with cue) and **notes** (event-scoped, free-form). Files under `var/memory/{private/{user_id}/, shared/}`. All four entry points resolve their `(user_id, scope)` pair through a `MemoryScopeRequest` before a path is built, and build it from the *validated* `user_id`: the id selects a directory, so it is validated as an integer (`Field(ge=1)`) and a traversal-shaped value like `"1/../2"` — which the filesystem would resolve into another user's private directory — is a `ValidationError` instead.
   - `save_fact(user_id, cue, content, scope)` — scope is chosen by the model at save time.
   - `retrieve_facts(user_id, query, scope) -> list[Fact]` — cue match via token overlap (no embeddings v1).
   - `save_note(user_id, event_id, content, scope)` — event-scoped notes.
   - `retrieve_notes(user_id, event_id, scope) -> list[Note]`.
-- **`memory/rules.py`** — `load_rules() -> str` reads every `.md` file under `agent/data/rules/` (committed, human-editable) and returns concatenated content. **Pushed** into the system prompt on every agent run (both agents).
+- **`memory/rules.py`** — `load_rules() -> str` reads every `.md` file under `data/rules/` (committed, human-editable) and returns concatenated content. **Pushed** into the system prompt on every agent run (both agents).
 - **`memory/api.py`** — the LLM-facing surface. `build_memory_tools(user_id)` returns one run's schemas plus registry for four tool-visible names: `retrieve_memory`, `save_memory`, `retrieve_notes`, `save_note`. `user_id` is closure-bound, not a tool parameter — it appears in no schema, so no tool-call argument can point a tool at another user's private facts.
 
 Governed by [**ADR 0004 — Three-store memory model**](adr/0004-three-store-memory-model.md).
 
-### 9. Monitor — `agent/src/planazo/monitor/`
+### 9. Monitor — `src/planazo/monitor/`
 
 - Standalone CLI: `uv run planazo-monitor [--since <date>] [--out data/monitor/]`.
-- Reads `data/runs/*.jsonl` (Recommender via an `on_step` hook — the seam already exists as `run_loop`'s `on_step` parameter in `agent/src/planazo/agents/loop.py`) and `agent/var/extraction_runs.jsonl` (Extractor).
+- Reads `data/runs/*.jsonl` (Recommender via an `on_step` hook — the seam already exists as `run_loop`'s `on_step` parameter in `src/planazo/agents/loop.py`) and `var/extraction_runs.jsonl` (Extractor).
 - Judge LLM (`STRONG` tier) grades every run on two categorical axes:
 
 | Axis | Values | Line drawn |
@@ -345,8 +345,8 @@ Governed by **[ADR 0007 — Monitor scheduling and categorical grades](adr/0007-
 | --- | --- |
 | Rule 1 — validate at boundary | Every Telegram update parsed into a `TelegramUpdate` Pydantic model in `bot/`. Every LLM tool return is a Pydantic model in `schemas/`. Every extractor result is `ExtractionResult`. No `dict[str, Any]` on any public surface. |
 | Rule 2 — untrusted text ≠ instructions | The Extraction Agent is the **only** module that ever holds raw scraped text in a prompt. It returns the parsed `Event` object to the Recommender — never the caption string. `sources/instagram/` returns `RawPost` only to the Extractor's `fetch_instagram_post` tool. Enforced by code shape, not by prompt discipline. |
-| Rule 3 — approval gate | Existing `ApprovalGate` (`agent/src/planazo/approval/gate.py`) stays; `agents/loop.py` names the structural `ApprovalGate` Protocol it accepts so the runtime kernel holds no domain imports. Telegram callback in `bot/approve.py`. Calendar wiring stays as reference; v0.2 turns it on. |
-| Rule 4 — typed error branches | Every tool returns `error_type: str \| None` following the pattern already at `agent/src/tools/tools.py:79` and `:174`. |
+| Rule 3 — approval gate | Existing `ApprovalGate` (`src/planazo/approval/gate.py`) stays; `agents/loop.py` names the structural `ApprovalGate` Protocol it accepts so the runtime kernel holds no domain imports. Telegram callback in `bot/approve.py`. Calendar wiring stays as reference; v0.2 turns it on. |
+| Rule 4 — typed error branches | Every tool returns `error_type: str \| None` following the pattern already at `src/tools/tools.py:79` and `:174`. |
 
 ## Multi-agent coordination
 
@@ -365,9 +365,7 @@ Copied verbatim into the Extractor's system prompt (also lives as `DELEGATION_BR
 Both agents branch on the field, not on prose. The hand-off from `dispatch_extraction`:
 
 ```python
-{"status": "ok" | "error" | "needs_clarification",
- "result": Event | None,
- "needs_approval": False}
+{"status": "ok" | "error" | "needs_clarification", "result": Event | None, "needs_approval": False}
 ```
 
 ### Flow — extraction delegation
@@ -410,7 +408,7 @@ The trust boundary is the return type: `E` returns a validated `Event` object (o
 ### Shared memory
 
 - **Primary:** the `events` table in SQLite. Recommender reads what Extractor writes.
-- **Audit:** `agent/var/extraction_runs.jsonl` — every extraction turn, timing, LLM call. Joinable to the Recommender's `data/runs/*.jsonl` on `run_id`.
+- **Audit:** `var/extraction_runs.jsonl` — every extraction turn, timing, LLM call. Joinable to the Recommender's `data/runs/*.jsonl` on `run_id`.
 
 Shared mutable state between two agents is the **hardest kind of coordination to debug**: no return-value chain, so a race between "Extractor writes an `Event`" and "Recommender's next `search_events` reads it" is silent. Traceability plan:
 
@@ -534,8 +532,9 @@ Each is its own PR, blocked by its own ticket. This doc is what those PRs will p
 | 0006 | `instagram-extraction-approach` | Scraper choice, multimodal LLM tier, rate-limit handling, the "raw text never crosses into Recommender" invariant. |
 | 0007 | [`monitor-scheduling-and-grades`](adr/0007-monitor-scheduling-and-grades.md) | Categorical axes, rationale requirement, cron/GHA plan. |
 | 0008 | [`domain-driven-module-layout`](adr/0008-domain-driven-module-layout.md) | Bounded-context folder layout under `planazo/`; per-aggregate `models.py` + `repository.py` (+ `tools.py`); preserves ADR 0003/0004 API contracts. |
-| 0009 | `telegram-bot-interface` | Bot layer, no-LLM-in-bot invariant, approval callback, interpreter step wiring. |
-| 0010 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
+| 0009 | [`repo-root-layout`](adr/0009-repo-root-layout.md) | Flatten the outer `agent/` directory. `src/planazo/`, `tests/`, `pyproject.toml` at repo root. Supersedes ADR 0001's layout paragraph only. |
+| 0010 | `telegram-bot-interface` | Bot layer, no-LLM-in-bot invariant, approval callback, interpreter step wiring. |
+| 0011 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
 
 Until each ADR lands, its section here reads as "planned — ADR NNNN"; when it lands, the entry is edited in place to link the accepted ADR.
 
@@ -564,7 +563,7 @@ The MVP-ARCHITECTURE doc itself is not code, so verification is:
 Post-doc, code verification happens in each follow-up ticket:
 - Existing test suite (`cd agent && uv run pytest`) stays green.
 - Each follow-up ticket adds its own tier (unit / integration / live) per `AGENTS.md` conventions.
-- Memory scenario traces produced by `agent/scripts/demo/private_memory.py`, `shared_memory.py`, and `untrusted_content.py`; output lands in `docs/evidence/` (gitignored). The first two need no API key and are covered by `agent/tests/test_demo_scripts.py`; `untrusted_content.py` calls the real LLM, so it needs a live `OPENCODE_API_KEY` and is run by hand rather than by the suite.
+- Memory scenario traces produced by `scripts/demo/private_memory.py`, `shared_memory.py`, and `untrusted_content.py`; output lands in `docs/evidence/` (gitignored). The first two need no API key and are covered by `tests/test_demo_scripts.py`; `untrusted_content.py` calls the real LLM, so it needs a live `OPENCODE_API_KEY` and is run by hand rather than by the suite.
 
 ## Risks / open questions
 

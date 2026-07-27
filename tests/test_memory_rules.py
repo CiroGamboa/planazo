@@ -56,7 +56,7 @@ def test_seed_rules_stay_within_the_context_budget(monkeypatch: pytest.MonkeyPat
     # The one test here that reads the real committed rules, so it overrides the
     # autouse fixture's tmp_path in-body. The directory is resolved from this
     # file rather than the cwd — `RULES_DIR`'s own default is cwd-relative, so
-    # running the suite from anywhere but `agent/` would otherwise load "" and
+    # running the suite from anywhere but the repo root would otherwise load "" and
     # let both caps pass vacuously.
     monkeypatch.setattr(rules, "RULES_DIR", Path(__file__).resolve().parents[1] / "data" / "rules")
 

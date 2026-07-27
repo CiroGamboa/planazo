@@ -12,7 +12,7 @@ prints the shared missing-key message from `planazo.config` and returns without
 calling the provider — the check and the wording live there so every terminal
 surface presents the same line.
 
-Run it from `agent/`: `memory.rules.RULES_DIR` is resolved from the working
+Run it from the repo root: `memory.rules.RULES_DIR` is resolved from the working
 directory, and the committed rules are the only *textual* defense layer this
 demo is evidence about, so the evidence records whether they were loaded.
 

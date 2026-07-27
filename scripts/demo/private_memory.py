@@ -8,7 +8,7 @@ there is no LLM in the loop and no `OPENCODE_API_KEY` is needed.
 Both store roots — `memory.facts.MEMORY_ROOT` and `storage.db.DB_PATH` — are
 reassigned into one throwaway `tempfile.mkdtemp()` directory before anything is
 written. Both, not only the docstore this demo reads: the guarantee is that no
-demo run creates a file under `agent/var/`, and a uniform redirect makes that
+demo run creates a file under `var/`, and a uniform redirect makes that
 true by construction rather than by auditing which store each demo happens to
 touch. These are scripts, not tests, so the redirect is a plain module-global
 assignment — `facts.py` and `db.py` each read their path constant inside the
@@ -74,7 +74,7 @@ def main() -> str:
     lines = [
         "# Evidence — a private fact stays private",
         "",
-        "Produced by `agent/scripts/demo/private_memory.py` against real files, with no LLM in",
+        "Produced by `scripts/demo/private_memory.py` against real files, with no LLM in",
         f"the loop. Docstore root for this run: `{memory_root}`.",
         "",
         f"## 1. User {_OWNER} saves a private fact",

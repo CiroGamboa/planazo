@@ -59,7 +59,7 @@ def isolated_stores(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
     Mirrors the fixture in `test_event_agent.py` — `run_once(user_id=...)`
     reads all three, so leaving any at its default would touch committed
-    rules or create `agent/var/` files.
+    rules or create `var/` files.
     """
     rules_dir = tmp_path / "rules"
     rules_dir.mkdir()
@@ -317,13 +317,13 @@ def test_tool_schema_is_derived_via_schema_for_not_hand_rolled() -> None:
 
 
 def test_no_source_module_outside_planazo_query_imports_the_interpreter() -> None:
-    # The plan's tree-grep contract: `rg -l "from planazo.query" agent/src`
-    # and `rg -l "planazo.query.interpreter" agent/src` return no path
+    # The plan's tree-grep contract: `rg -l "from planazo.query" src`
+    # and `rg -l "planazo.query.interpreter" src` return no path
     # outside the query package. Both patterns are the actual reach
     # channels — a mention of `planazo.query` in prose (e.g. `events.py`'s
     # docstring pointing back here) is not a consumer.
     query_dir = Path(query_interpreter.__file__).resolve().parent
-    src_root = query_dir.parent.parent  # agent/src
+    src_root = query_dir.parent.parent  # src/
     offenders: list[tuple[Path, str]] = []
     for py in src_root.rglob("*.py"):
         if query_dir in py.parents or py == query_dir:

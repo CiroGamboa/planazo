@@ -21,8 +21,13 @@ class MonitorDataError(ValueError):
 
 
 def repository_root() -> Path:
-    """Find the repository root from this installed source tree."""
-    return Path(__file__).resolve().parents[4]
+    """Find the repository root from this installed source tree.
+
+    `service.py` lives at `src/planazo/monitor/service.py`; walking three
+    parents up lands on the repo root (ADR 0009 — the outer `agent/`
+    directory was retired in favor of a flat repo-root layout).
+    """
+    return Path(__file__).resolve().parents[3]
 
 
 def parse_since(value: str) -> timedelta:

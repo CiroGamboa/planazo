@@ -36,7 +36,7 @@ def isolated_stores(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """Point the rules dir, the docstore, and the domain store at a test tree.
 
     `run_once(user_id=...)` reads all three, so leaving any of them at its
-    default would read the repo's committed rules or create `agent/var/`
+    default would read the repo's committed rules or create `var/`
     files. Returns the rules directory, which several tests write into.
     """
     rules_dir = tmp_path / "rules"

@@ -101,23 +101,30 @@ Each script redirects both store roots (`memory.facts.MEMORY_ROOT`, `storage.db.
 ## Layout
 
 ```
-agent/
+.                                (repo root)
 ├── pyproject.toml
 ├── data/rules/            committed markdown rules; memory/rules.py re-reads them on every call
-├── scripts/demo/          the three memory model demos; traces land in ../docs/evidence/
-├── src/planazo/
-│   ├── schemas/           Pydantic v2 boundary models (events.py, domain.py, memory.py)
-│   ├── storage/           db.py (connection + schema_v1.sql), dao.py (the SQLite DAO)
-│   ├── memory/            facts.py (private/shared JSON docstore), rules.py (markdown rules), api.py (the user-bound memory tools)
-│   ├── query/             interpreter.py (natural-language -> SearchIntent, one Zen call, typed fallback)
-│   └── agents/            loop.py (generic), event_agent.py (tool binding), cli.py
+├── scripts/demo/          the three memory-model demos; traces land in docs/evidence/
+├── src/planazo/           the domain package (one folder per bounded context)
+│   ├── catalog/           Event + repository + save_event/search_events tools
+│   ├── identity/          UserRecord + PreferenceRecord + repository
+│   ├── approval/          ApprovalDecision + repository + ApprovalGate
+│   ├── memory/            facts.py (private/shared JSON docstore), rules.py (markdown rules), api.py (user-bound memory tools)
+│   ├── query/             interpreter.py (natural-language → SearchIntent, one Zen call, typed fallback)
+│   ├── monitor/           out-of-band LLM-as-judge over run logs
+│   ├── schemas/           Pydantic v2 boundary models still colocated here (events.py, memory.py)
+│   ├── storage/           db.py (connection + schema_v1.sql only)
+│   ├── config.py          shared env-check helper
+│   └── agents/            loop.py (generic runtime), event_agent.py (composition root), cli.py
 ├── src/tools/
 │   ├── schema.py           schema_for() — derives a tool's JSON schema from its signature/docstring
-│   └── tools.py             the two calendar reference tools
+│   └── tools.py             the two calendar reference tools (kept until v0.2's real Google Calendar)
 ├── src/agentlib/
 │   ├── core.py             call() / Result / cost() — the OpenCode Zen wrapper
 │   └── tools.py             tool-calling entry point (re-exports core)
 └── tests/
 ```
 
-See [`../AGENTS.md`](../AGENTS.md) for conventions and the full data-contract table, and [`../docs/adr/`](../docs/adr/) for why this stack and this tool/gate shape were chosen.
+Layout is governed by [ADR 0008 — Domain-driven module layout](docs/adr/0008-domain-driven-module-layout.md) (bounded contexts) and [ADR 0009 — Repository root layout](docs/adr/0009-repo-root-layout.md) (why the outer `agent/` folder was retired).
+
+See [`AGENTS.md`](AGENTS.md) for conventions and the full data-contract table, and [`docs/adr/`](docs/adr/) for why this stack and this tool/gate shape were chosen.

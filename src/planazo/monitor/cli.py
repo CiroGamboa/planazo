@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir = root / output_dir
 
     if args.dry_run:
-        seed_dir = root / "agent" / "scripts" / "monitor" / "seed_runs"
+        seed_dir = root / "scripts" / "monitor" / "seed_runs"
         recommender_dir = seed_dir / "runs"
         extractor_log = seed_dir / "extraction_runs.jsonl"
         since = parse_since("9999w")
