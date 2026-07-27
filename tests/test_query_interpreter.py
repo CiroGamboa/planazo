@@ -12,7 +12,7 @@ from planazo.agents.loop import LoopResult
 from planazo.memory import facts, rules
 from planazo.query import interpret
 from planazo.query import interpreter as query_interpreter
-from planazo.schemas.events import EventCategory, SearchIntent
+from planazo.query.models import EventCategory, SearchIntent
 from planazo.storage import db
 
 
@@ -317,11 +317,14 @@ def test_tool_schema_is_derived_via_schema_for_not_hand_rolled() -> None:
 
 
 def test_no_source_module_outside_planazo_query_imports_the_interpreter() -> None:
-    # The plan's tree-grep contract: `rg -l "from planazo.query" src`
-    # and `rg -l "planazo.query.interpreter" src` return no path
-    # outside the query package. Both patterns are the actual reach
-    # channels — a mention of `planazo.query` in prose (e.g. `events.py`'s
-    # docstring pointing back here) is not a consumer.
+    # The invariant this locks is tighter than "no `from planazo.query`":
+    # `planazo.query.models` is a *data* module (SearchIntent, EventCategory)
+    # that other bounded contexts legitimately import — the Recommender for
+    # its intent argument, the calendar boundary for the shared category
+    # literal. What must never be imported outside `planazo.query/` is the
+    # *runtime* — `interpret`, `_record_search_intent`, `TOOL_SCHEMA`. Those
+    # only ever reach the tree through `planazo.query.interpreter` (or
+    # `planazo.query import interpret` from the package `__init__`).
     query_dir = Path(query_interpreter.__file__).resolve().parent
     src_root = query_dir.parent.parent  # src/
     offenders: list[tuple[Path, str]] = []
@@ -329,10 +332,10 @@ def test_no_source_module_outside_planazo_query_imports_the_interpreter() -> Non
         if query_dir in py.parents or py == query_dir:
             continue
         text = py.read_text(encoding="utf-8")
-        for pattern in ("from planazo.query", "planazo.query.interpreter"):
+        for pattern in ("planazo.query.interpreter", "from planazo.query import"):
             if pattern in text:
                 offenders.append((py, pattern))
-    assert offenders == [], f"interpreter is imported outside its own module: {offenders}"
+    assert offenders == [], f"interpreter runtime is imported outside its own module: {offenders}"
 
 
 def test_run_once_never_composes_the_interpreter_into_the_agent_registry(

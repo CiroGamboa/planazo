@@ -25,7 +25,7 @@ import tempfile
 from pathlib import Path
 
 from planazo.memory import facts
-from planazo.schemas.memory import Fact
+from planazo.memory.models import Fact
 from planazo.storage import db
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]

@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from planazo.schemas.events import SearchIntent
+from planazo.query.models import SearchIntent
 
 
 def _happy_intent(**overrides: object) -> SearchIntent:

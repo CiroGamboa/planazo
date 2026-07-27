@@ -29,7 +29,7 @@ from typing import Any, get_args
 
 from agentlib.core import CHEAP
 from agentlib.tools import call
-from planazo.schemas.events import EventCategory, SearchIntent
+from planazo.query.models import EventCategory, SearchIntent
 from tools.schema import schema_for
 
 _CATEGORY_LIST = ", ".join(get_args(EventCategory))

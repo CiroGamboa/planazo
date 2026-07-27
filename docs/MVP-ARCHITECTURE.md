@@ -162,7 +162,7 @@ Governed by planned **ADR 0010 — Telegram bot interface abstraction**.
 - **Pydantic-validates** the returned arguments. On malformed output, returns a degraded intent (`window=today+72h, categories=[], geo=Barcelona`) plus a typed `error_type="interpreter_fallback"` — never raises, never silently defaults.
 - Called only from the bot's `/find` handler; the Recommender loop never calls it.
 
-`SearchIntent` lives in `src/planazo/schemas/events.py` next to `EventCategory` (see [`AGENTS.md`](../AGENTS.md#data-contracts-compatibility-surfaces)).
+`SearchIntent` lives in `src/planazo/query/models.py` next to `EventCategory` (see [`AGENTS.md`](../AGENTS.md#data-contracts-compatibility-surfaces)).
 
 ### 3. Recommender executor — extends `src/planazo/agents/event_agent.py`
 
@@ -343,7 +343,7 @@ Governed by **[ADR 0007 — Monitor scheduling and categorical grades](adr/0007-
 
 | Rule | Enforcement site |
 | --- | --- |
-| Rule 1 — validate at boundary | Every Telegram update parsed into a `TelegramUpdate` Pydantic model in `bot/`. Every LLM tool return is a Pydantic model in `schemas/`. Every extractor result is `ExtractionResult`. No `dict[str, Any]` on any public surface. |
+| Rule 1 — validate at boundary | Every Telegram update parsed into a `TelegramUpdate` Pydantic model in `bot/`. Every LLM tool return is a Pydantic model in its owning bounded context's `models.py`. Every extractor result is `ExtractionResult`. No `dict[str, Any]` on any public surface. |
 | Rule 2 — untrusted text ≠ instructions | The Extraction Agent is the **only** module that ever holds raw scraped text in a prompt. It returns the parsed `Event` object to the Recommender — never the caption string. `sources/instagram/` returns `RawPost` only to the Extractor's `fetch_instagram_post` tool. Enforced by code shape, not by prompt discipline. |
 | Rule 3 — approval gate | Existing `ApprovalGate` (`src/planazo/approval/gate.py`) stays; `agents/loop.py` names the structural `ApprovalGate` Protocol it accepts so the runtime kernel holds no domain imports. Telegram callback in `bot/approve.py`. Calendar wiring stays as reference; v0.2 turns it on. |
 | Rule 4 — typed error branches | Every tool returns `error_type: str \| None` following the pattern already at `src/tools/tools.py:79` and `:174`. |
