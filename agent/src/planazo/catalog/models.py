@@ -1,14 +1,13 @@
-"""Pydantic v2 row models for the SQLite domain store, one per table.
+"""Pydantic v2 row models for the catalog aggregate — `events` + `extraction_runs_index`.
 
 Every field matches its column in `planazo/storage/schema_v1.sql` 1:1, so a
-row is validated on the way in (AGENTS.md rule 1 — a `ValidationError` at the
-dao boundary becomes an `invalid_event_data` typed error, never a partial row)
-and reconstructed on the way out.
+row is validated on the way in (AGENTS.md rule 1 — a `ValidationError` at
+the repository boundary becomes an `invalid_event_data` typed error, never
+a partial row) and reconstructed on the way out.
 
 `id` and the `*_at` timestamps are `None` until the row exists: a caller
-builds an `Event` to insert without knowing its id, and the dao stamps
-`ingested_at`/`created_at`/`decided_at`/`started_at`/`updated_at` when the row
-is written.
+builds an `Event` to insert without knowing its id, and the repository
+stamps `ingested_at` / `started_at` when the row is written.
 """
 
 from __future__ import annotations
