@@ -58,6 +58,10 @@ Every tool returns a typed `error_type` on bad input rather than persisting some
 
 `scope` is `private`/`shared` on a write and `private`/`shared`/`both` on a read. **`user_id` is not a parameter of any of them**: each is a closure over the id the caller bound, so it appears in no tool schema and a tool call that supplies one fails outright instead of reading another user's private facts ([ADR 0004](../docs/adr/0004-three-store-memory-model.md)). Bad input comes back as a typed `invalid_memory_data` (writes) or `invalid_memory_query` (reads).
 
+### The query interpreter
+
+`planazo.query.interpret(text)` translates a free-text `/find` message into a validated `planazo.schemas.events.SearchIntent` via a single Zen `call()` on the CHEAP model with one function-call tool (`_record_search_intent`, whose signature `schema_for` reflects into the tool schema). It is **not a registered tool** — the Recommender's loop never sees it; the bot's `/find` handler (M6) will be its only caller. On any failure — the LLM raises, the reply carries no tool call, the tool name does not match, or Pydantic rejects the wire arguments — `interpret` returns a degraded `SearchIntent` (today -> today+72h, `city="Barcelona"`, empty `categories`) tagged `error_type="interpreter_fallback"` instead of raising or silently defaulting. Callers **must** branch on `error_type` before reading any other field; the two shapes are structurally identical apart from that tag.
+
 ### The calendar reference tools
 
 These two are the calendar reference implementation, reachable only via `--calendar` (or `run_once(calendar_enabled=True)`). They are JSON-backed and stay untouched until v0.2's real Google Calendar wiring replaces them; `confirm_and_create_calendar_event` is the only irreversible tool in the tree, so it is also the approval gate's only end-to-end demonstration.
@@ -105,6 +109,7 @@ agent/
 │   ├── schemas/           Pydantic v2 boundary models (events.py, domain.py, memory.py)
 │   ├── storage/           db.py (connection + schema_v1.sql), dao.py (the SQLite DAO)
 │   ├── memory/            facts.py (private/shared JSON docstore), rules.py (markdown rules), api.py (the user-bound memory tools)
+│   ├── query/             interpreter.py (natural-language -> SearchIntent, one Zen call, typed fallback)
 │   └── agents/            loop.py (generic), event_agent.py (tool binding), cli.py
 ├── src/tools/
 │   ├── schema.py           schema_for() — derives a tool's JSON schema from its signature/docstring
