@@ -87,7 +87,7 @@ These are the shapes that flow between the agent loop, its tools, persisted stat
 
 | Entity | Holds |
 | --- | --- |
-| `UserRequest` | Original prompt, extracted time window, interests, location bias |
+| `SearchIntent` | Time window, categories, city, optional radius and budget — the interpreter's parsed `/find` intent handed to the Recommender |
 | `UserPreferences` | Category interests, disliked sources, preferred hours, contacts to invite |
 | `RawEventCandidate` | Source, source URL, raw payload / caption text |
 | `Event` | Title, start, end, location, price, category, source, source URL, confidence score |
@@ -96,7 +96,7 @@ These are the shapes that flow between the agent loop, its tools, persisted stat
 | `CalendarDraft` | Proposed Google Calendar event (title, start, end, description, invitees) — pending user confirmation |
 | `ApprovalDecision` | Which artifact, user id, decision (approve/reject), timestamp |
 
-The authoritative Pydantic models live in `agent/src/planazo/schemas/`. `events.py` covers the tool-boundary input for `save_event_candidate`/`confirm_and_create_calendar_event` (see [`docs/adr/0002-event-tool-contracts-and-approval-gate.md`](docs/adr/0002-event-tool-contracts-and-approval-gate.md)). `domain.py` holds `Event` and `ApprovalDecision` as the SQLite domain store's row models, alongside `UserRecord`, `PreferenceRecord`, and `ExtractionRunIndexEntry` (see [`docs/adr/0003-sqlite-domain-store.md`](docs/adr/0003-sqlite-domain-store.md)). `UserRequest`, `UserPreferences`, `RawEventCandidate`, `ExtractionError`, `RankedEventList`, and `CalendarDraft` land as later tickets add them.
+The authoritative Pydantic models live in `agent/src/planazo/schemas/`. `events.py` is the boundary layer for two neighbouring surfaces: it validates the tool-boundary input for `save_event_candidate`/`confirm_and_create_calendar_event` (see [`docs/adr/0002-event-tool-contracts-and-approval-gate.md`](docs/adr/0002-event-tool-contracts-and-approval-gate.md)) and it houses `SearchIntent`, the query interpreter's parsed `/find` output. `domain.py` holds `Event` and `ApprovalDecision` as the SQLite domain store's row models, alongside `UserRecord`, `PreferenceRecord`, and `ExtractionRunIndexEntry` (see [`docs/adr/0003-sqlite-domain-store.md`](docs/adr/0003-sqlite-domain-store.md)). `UserPreferences`, `RawEventCandidate`, `ExtractionError`, `RankedEventList`, and `CalendarDraft` land as later tickets add them.
 
 ## Out of Scope (first version)
 
