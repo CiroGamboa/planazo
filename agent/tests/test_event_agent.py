@@ -5,11 +5,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from agentlib.core import CHEAP, MODELS, STRONG, Result
+from planazo import identity
 from planazo.agents import event_agent, loop
 from planazo.agents.loop import LoopResult
 from planazo.approval import ApprovalGate
 from planazo.memory import facts, rules
-from planazo.storage import dao, db
+from planazo.storage import db
 
 
 def make_result(**overrides: object) -> Result:
@@ -304,9 +305,9 @@ def test_run_once_pushes_the_users_preferences_only_when_an_identity_is_supplied
     try:
         # A preferences row for a user_id with no `users` row is a FOREIGN KEY
         # violation, so the identity has to exist first.
-        user = dao.get_or_create_user(conn, "tg-1", "Ada")
+        user = identity.get_or_create_user(conn, "tg-1", "Ada")
         assert user.id is not None
-        dao.set_preference(conn, user.id, "city", "Barcelona")
+        identity.set_preference(conn, user.id, "city", "Barcelona")
     finally:
         conn.close()
     mock_run_loop = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))
@@ -337,9 +338,9 @@ def test_a_stored_preference_cannot_forge_structure_in_the_pushed_system_text(
     (isolated_stores / "000-core-rules.md").write_text("CORE-RULE-TEXT", encoding="utf-8")
     conn = db.connect()
     try:
-        user = dao.get_or_create_user(conn, "tg-1", "Ada")
+        user = identity.get_or_create_user(conn, "tg-1", "Ada")
         assert user.id is not None
-        dao.set_preference(conn, user.id, "city", payload)
+        identity.set_preference(conn, user.id, "city", payload)
     finally:
         conn.close()
     mock_run_loop = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))

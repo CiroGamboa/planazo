@@ -29,6 +29,7 @@ from typing import Any
 
 from agentlib.core import CHEAP
 from planazo.agents.loop import LoopResult, StepRecord, run_loop
+from planazo.identity import get_preferences
 from planazo.memory.api import build_memory_tools
 from planazo.memory.rules import load_rules
 from planazo.monitor.logging import RunStepLogger
@@ -53,7 +54,7 @@ def _preferences_text(user_id: int) -> str:
     """
     conn = db.connect()
     try:
-        rows = dao.get_preferences(conn, user_id)
+        rows = get_preferences(conn, user_id)
     finally:
         conn.close()
     if not rows:
