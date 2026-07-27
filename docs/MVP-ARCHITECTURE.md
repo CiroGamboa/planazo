@@ -194,13 +194,19 @@ Governed by planned **ADR 0005 — Multi-agent shape** and **ADR 0006 — Instag
 
 ### 5. Sources / connectors — `src/planazo/sources/`
 
-- **`sources/base.py`** — `EventSource` protocol: `search(intent) -> list[Event]`, `fetch_post(url) -> RawPost | None`.
-- **`sources/instagram/`** — the real adapter for the extraction path. Small scraping helper (likely `instaloader`, choice deferred to ADR 0006). Only ever returns `RawPost` to the Extractor's `fetch_instagram_post` tool — never to the Recommender's tools.
-- **`sources/meetup/`** — POC adapter against public GraphQL. Ships only if cheap.
-- **`sources/eventbrite/`** — POC stub. May not ship v1.
+- **`sources/base.py`** — `EventSource` protocol. Generalized enough that Instagram, TikTok, YouTube, news pages, Meetup, and Eventbrite all drop into the same slot without a signature change — the design goal is a swap seam, not one Instagram-specific interface.
+- **`sources/models.py`** — `RawPost` + `MediaAsset` (Pydantic v2). Media-type-agnostic: `RawPost` carries `title`, `caption`, `posted_at`, `author_handle`, `permalink`, and a `media: list[MediaAsset]` where each asset has a `kind` (`image` / `video` / `thumbnail`) plus its URL and metadata (duration for videos, dimensions for images). Reels and carousels return the same shape as static posts; the Extractor (M3) branches on `media[*].kind` when it decides how to probe the multimodal LLM.
+- **`sources/config.py`** — Pydantic-validated config loader. Reads `data/sources.yaml` at startup: target accounts (URLs) per source, per-source or per-account scrape cadence (`every: 6h`), and per-account media-type flags (`static_posts`, `reels`, `carousels`, `video_posts`). Malformed config is a boot-time failure, not a per-scrape surprise.
+- **`sources/instagram/`** — the real adapter, running inside a Docker service (see below). Reads the config, respects per-source cadence, attempts static posts (must work) + reels / carousels / video posts (exploratory — the ticket's acceptance bar is "each type either produces a validated `RawPost` or a typed `unsupported_media` error"). Returns `RawPost` to the Extractor's `fetch_instagram_post` tool only; never to the Recommender's tools.
+- **`sources/meetup/`** — future adapter against public GraphQL (ADR 0011, conditional).
+- **`sources/eventbrite/`** — future adapter (ADR 0011, conditional).
 - Registration is config-driven via `SOURCES: dict[str, EventSource]` (module constant), monkeypatched in tests.
 
-Governed by planned **ADR 0006** (Instagram) and conditionally **ADR 0011** (Meetup/Eventbrite).
+**Docker isolation.** Instagram scraping is fragile — the runtime lives in a container (`docker/sources.Dockerfile` + `compose.yaml`'s `sources-instagram` service) so it's isolated from the local machine's Python version, cookie state, and IP hygiene. Dev flow: `docker compose up sources-instagram` runs the adapter against the mounted `data/sources.yaml`. CI runs the same image against a stubbed network fixture — no real Instagram calls in the test suite.
+
+**Typed error branches** (rule 4): `unsupported_source`, `rate_limited`, `auth_failed`, `not_found`, `unsupported_media`. The adapter never raises on the happy path.
+
+Governed by planned **ADR 0006 — Instagram extraction approach** (scraper choice, container base, rate-limit envelope, cookie/session policy, per-media-type fallback rules, plus the generalized-protocol argument that TikTok/YouTube/news adapters drop into the same slot). Meetup and Eventbrite ADR 0011, conditional.
 
 ### 6. Ranking — `src/planazo/rank/scorer.py`
 
