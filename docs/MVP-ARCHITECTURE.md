@@ -158,11 +158,11 @@ Governed by planned **ADR 0009 — Telegram bot interface abstraction**.
 
 ### 2. Query interpreter — `agent/src/planazo/query/interpreter.py`
 
-- Single Zen `call()` on `CHEAP` with a function-call tool schema derived from `SearchIntent` (via `schema_for` at `agent/src/tools/schema.py`).
+- Single Zen `call()` on `CHEAP` with a function-call tool schema derived by `schema_for` from a signature-mirror of `SearchIntent` (`_record_search_intent` in `agent/src/planazo/query/interpreter.py`). `categories` travels the wire as a comma-separated string; `radius_km` and `budget_cents` use negative sentinels to signal "unspecified" — the same wire convention `confirm_and_create_calendar_event` and `search_events` already use for optional arguments.
 - **Pydantic-validates** the returned arguments. On malformed output, returns a degraded intent (`window=today+72h, categories=[], geo=Barcelona`) plus a typed `error_type="interpreter_fallback"` — never raises, never silently defaults.
 - Called only from the bot's `/find` handler; the Recommender loop never calls it.
 
-`SearchIntent` is added to `agent/src/planazo/schemas/` alongside the entities already listed as pending in `agent/src/planazo/schemas/__init__.py`.
+`SearchIntent` lives in `agent/src/planazo/schemas/events.py` next to `EventCategory` (see [`AGENTS.md`](../AGENTS.md#data-contracts-compatibility-surfaces)).
 
 ### 3. Recommender executor — extends `agent/src/planazo/agents/event_agent.py`
 
@@ -519,7 +519,7 @@ Three canonical scenarios covered by the model. Each produces a trace under `doc
 
 | Direction | What | Where in code |
 | --- | --- | --- |
-| **Push** — attached before every run | Markdown rules (`load_rules()`), plus the bound user's `preferences` rows when `run_once` is given a `user_id`. The Interpreter ticket adds its `SearchIntent` here. | Assembled in `run_once`, passed as `run_loop`'s `system` argument |
+| **Push** — attached before every run | Markdown rules (`load_rules()`), plus the bound user's `preferences` rows when `run_once` is given a `user_id`. The Interpreter's parsed `SearchIntent` is pushed here. | Assembled in `run_once`, passed as `run_loop`'s `system` argument |
 | **Pull** — fetched mid-run by the model via a tool | Facts by cue (`retrieve_memory`), event notes (`retrieve_notes`), stored events (`search_events`) | All exposed as tools in the registry `run_once` composes |
 
 ## ADRs the MVP will spawn
