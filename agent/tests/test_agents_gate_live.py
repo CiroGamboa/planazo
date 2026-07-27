@@ -4,8 +4,20 @@ Opt-in only: default `pytest` runs skip these (see `addopts = "-m 'not live'"`).
 Run them with `uv run pytest -m live tests/test_agents_gate_live.py -v -s`.
 
 Both tests hit real OpenCode Zen through `agentlib`, the CHEAP model, with
-`max_output_tokens=256` and `max_steps=3` — a hard cost cap. Combined spend
-is expected under 1¢; ticket ceiling is 5¢.
+`max_output_tokens=256` and `max_steps=3` — a hard cost cap. Each retries its
+precondition up to 3 times, so the worst case is two tests at 3 attempts each,
+≈0.5¢ per call: ≈3¢ against the ticket's documented 5¢ ceiling.
+
+Both pass `calendar_enabled=True`: `confirm_and_create_calendar_event` is the
+only irreversible tool in the tree and it is opt-in, so without that flag the
+model is never offered the tool the gate exists to guard.
+
+Whether the model *requests* the gated tool is a model-behaviour observation,
+not a property of this code, and it competes for attention with every tool
+schema and every line of pushed rules text the run carries. So the retry in
+`_run_until_the_model_requests_the_gated_tool` covers obtaining that
+observation, and prints the attempt it took; the assertions each test makes
+about the gate run once, on the attempt that produced a gated call.
 
 Environment setup: `agent/tests/conftest.py` sets `OPENCODE_API_KEY` to a
 placeholder via `os.environ.setdefault(...)` for the mocked suite. The
@@ -26,7 +38,7 @@ from dotenv import find_dotenv, load_dotenv
 
 from agentlib.core import CHEAP
 from planazo.agents.event_agent import run_once
-from planazo.agents.loop import ApprovalGate
+from planazo.agents.loop import ApprovalGate, LoopResult
 
 pytestmark = pytest.mark.live
 
@@ -34,6 +46,8 @@ _LIVE_PROMPT = (
     "Please confirm and create the calendar event for event_id 'evt-42', "
     "with no invitees to notify."
 )
+
+_MAX_ATTEMPTS = 3
 
 
 def _real_key_present() -> bool:
@@ -83,6 +97,44 @@ def _redirect_stores(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return calendar_path
 
 
+def _run_until_the_model_requests_the_gated_tool(
+    approve: MagicMock, gate: ApprovalGate
+) -> LoopResult:
+    """Run the live prompt until the model actually requests the gated tool.
+
+    Shared by both tests so their preconditions cannot drift apart. Retries the
+    *observation* only, never an assertion: a run in which the model simply
+    chose not to act says nothing about the gate, while what the gate does once
+    the model acts — and whether the loop recovers from a refusal — is ours and
+    is asserted exactly once, on the returned run.
+
+    The attempt count is printed unconditionally (this file is run with `-v -s`).
+    Silence would let the retry absorb decay: at a degraded request rate, three
+    attempts still pass most of the time, so a real suppression regression would
+    read as a flake that a re-run clears. Record the printed number.
+    """
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        result = run_once(
+            _LIVE_PROMPT,
+            model=CHEAP,
+            max_output_tokens=256,
+            max_steps=3,
+            gate=gate,
+            calendar_enabled=True,
+        )
+        if approve.called:
+            print(f"\n[live gate] gated tool requested on attempt {attempt}/{_MAX_ATTEMPTS}")
+            return result
+
+    print(f"\n[live gate] gated tool never requested in {_MAX_ATTEMPTS} attempts")
+    pytest.fail(
+        f"model did not request the gated tool in {_MAX_ATTEMPTS} attempts — this is a "
+        "model-behaviour observation, not a gate defect; check whether recently added "
+        "tools or rules text are suppressing it. (An assertion that fails *after* a "
+        "gated call landed is the other case, and that one is a gate defect.)"
+    )
+
+
 def test_gate_approve_path_with_real_llm(_redirect_stores: Path) -> None:
     calendar_path = _redirect_stores
     approve = MagicMock(return_value=True)
@@ -90,21 +142,16 @@ def test_gate_approve_path_with_real_llm(_redirect_stores: Path) -> None:
         tool_names=frozenset({"confirm_and_create_calendar_event"}), approve=approve
     )
 
-    result = run_once(
-        _LIVE_PROMPT,
-        model=CHEAP,
-        max_output_tokens=256,
-        max_steps=3,
-        gate=gate,
-    )
+    result = _run_until_the_model_requests_the_gated_tool(approve, gate)
 
-    assert approve.called, "model did not call the gated tool at all"
     tool_name, args = approve.call_args.args
     assert tool_name == "confirm_and_create_calendar_event"
     assert args.get("event_id") == "evt-42"
 
     assert calendar_path.exists(), "approved tool call did not persist"
     entries = json.loads(calendar_path.read_text())
+    # `>= 1`, not `== 1`: the file accumulates across retry attempts, and an
+    # earlier attempt that dispatched before this one is not a defect.
     assert len(entries) >= 1
     assert entries[0]["event_id"] == "evt-42"
 
@@ -118,15 +165,8 @@ def test_gate_decline_path_with_real_llm(_redirect_stores: Path) -> None:
         tool_names=frozenset({"confirm_and_create_calendar_event"}), approve=approve
     )
 
-    result = run_once(
-        _LIVE_PROMPT,
-        model=CHEAP,
-        max_output_tokens=256,
-        max_steps=3,
-        gate=gate,
-    )
+    result = _run_until_the_model_requests_the_gated_tool(approve, gate)
 
-    assert approve.called, "model did not call the gated tool at all"
     tool_name, _ = approve.call_args.args
     assert tool_name == "confirm_and_create_calendar_event"
 

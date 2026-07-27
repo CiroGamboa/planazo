@@ -7,7 +7,8 @@ import openai
 import pytest
 
 from agentlib.core import CHEAP, MODELS, STRONG, Result
-from planazo.agents import cli, loop
+from planazo.agents import cli, event_agent, loop
+from planazo.agents.loop import LoopResult
 
 
 def make_result(**overrides: object) -> Result:
@@ -130,7 +131,7 @@ def test_one_shot_prints_the_tool_trace_the_answer_and_the_tally(
     monkeypatch.setattr(loop, "call", MagicMock(side_effect=[turn_1, turn_2]))
     _redirect_stores(monkeypatch, tmp_path)
 
-    code = cli.main(["save the AI Meetup event"])
+    code = cli.main(["--calendar", "save the AI Meetup event"])
 
     out = capsys.readouterr().out
     assert code == 0
@@ -313,7 +314,7 @@ def test_max_steps_run_reports_no_final_answer(
     monkeypatch.setattr(loop, "call", MagicMock(return_value=forever))
     _redirect_stores(monkeypatch, tmp_path)
 
-    code = cli.main(["--max-steps", "2", "loop forever"])
+    code = cli.main(["--calendar", "--max-steps", "2", "loop forever"])
 
     out = capsys.readouterr().out
     assert code == 0
@@ -358,7 +359,7 @@ def test_cli_prompts_for_approval_before_dispatching_irreversible_tool(
     fake_input = MagicMock(return_value="y")
     monkeypatch.setattr("builtins.input", fake_input)
 
-    code = cli.main(["confirm the calendar event for evt-1"])
+    code = cli.main(["--calendar", "confirm the calendar event for evt-1"])
 
     out = capsys.readouterr().out
     assert code == 0
@@ -382,7 +383,7 @@ def test_cli_declines_when_user_answers_no(
     _seed_candidate(tmp_path / "candidates.json")
     monkeypatch.setattr("builtins.input", MagicMock(return_value="n"))
 
-    code = cli.main(["confirm the calendar event for evt-1"])
+    code = cli.main(["--calendar", "confirm the calendar event for evt-1"])
 
     out = capsys.readouterr().out
     assert code == 0
@@ -401,10 +402,22 @@ def test_cli_does_not_prompt_for_reversible_tool(
     fake_input = MagicMock()
     monkeypatch.setattr("builtins.input", fake_input)
 
-    code = cli.main(["save the AI Meetup event"])
+    code = cli.main(["--calendar", "save the AI Meetup event"])
 
     assert code == 0
     fake_input.assert_not_called()
+
+
+def test_calendar_tools_are_unreachable_without_the_calendar_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_run_loop = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))
+    monkeypatch.setattr(event_agent, "run_loop", mock_run_loop)
+
+    code = cli.main(["hi"])
+
+    assert code == 0
+    assert set(mock_run_loop.call_args.kwargs["registry"]) == {"search_events"}
 
 
 def test_cli_declines_on_eof_at_approval_prompt(
@@ -416,7 +429,7 @@ def test_cli_declines_on_eof_at_approval_prompt(
     _seed_candidate(tmp_path / "candidates.json")
     monkeypatch.setattr("builtins.input", MagicMock(side_effect=EOFError))
 
-    code = cli.main(["confirm the calendar event for evt-1"])
+    code = cli.main(["--calendar", "confirm the calendar event for evt-1"])
 
     out = capsys.readouterr().out
     assert code == 0
@@ -434,10 +447,44 @@ def test_cli_declines_on_keyboard_interrupt_at_approval_prompt(
     _seed_candidate(tmp_path / "candidates.json")
     monkeypatch.setattr("builtins.input", MagicMock(side_effect=KeyboardInterrupt))
 
-    code = cli.main(["confirm the calendar event for evt-1"])
+    code = cli.main(["--calendar", "confirm the calendar event for evt-1"])
 
     out = capsys.readouterr().out
     assert code == 0
     assert not calendar_path.exists()
     assert "'declined': True" in out
     assert "Traceback" not in out
+
+
+def test_user_id_flag_is_forwarded_to_run_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_run_once = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))
+    monkeypatch.setattr(cli, "run_once", mock_run_once)
+
+    code = cli.main(["--user-id", "1", "hi"])
+
+    assert code == 0
+    assert mock_run_once.call_args.kwargs["user_id"] == 1
+
+
+def test_no_user_id_flag_forwards_no_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_run_once = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))
+    monkeypatch.setattr(cli, "run_once", mock_run_once)
+
+    code = cli.main(["hi"])
+
+    assert code == 0
+    assert "user_id" not in mock_run_once.call_args.kwargs
+
+
+def test_user_id_below_one_is_a_usage_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    # argparse rejects it before composition. With a plain `type=int`, `0` would
+    # reach build_memory_tools and surface as an uncaught ValidationError
+    # traceback instead of a one-line usage message.
+    mock_call = MagicMock()
+    monkeypatch.setattr(loop, "call", mock_call)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["--user-id", "0", "hi"])
+
+    assert excinfo.value.code == 2
+    mock_call.assert_not_called()

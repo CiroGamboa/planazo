@@ -100,6 +100,11 @@ def _build_input(
 ) -> list[dict[str, Any]]:
     if prompt is not None and messages is not None:
         raise ValueError("call() takes either `prompt` or `messages`, not both")
+    if system is not None and messages is not None:
+        raise ValueError(
+            "call() cannot combine `system` with `messages`: a `messages` history carries "
+            "its own roles, so prepend {'role': 'system', ...} to `messages` instead"
+        )
     if messages is not None:
         return list(messages)
     if prompt is None:
