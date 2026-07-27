@@ -60,13 +60,13 @@ Every tool returns a typed `error_type` on bad input rather than persisting some
 
 ### The query interpreter
 
-`planazo.query.interpret(text)` translates a free-text `/find` message into a validated `planazo.schemas.events.SearchIntent` via a single Zen `call()` on the CHEAP model with one function-call tool (`_record_search_intent`, whose signature `schema_for` reflects into the tool schema). It is **not a registered tool** — the Recommender's loop never sees it; the bot's `/find` handler (M6) will be its only caller. On any failure — the LLM raises, the reply carries no tool call, the tool name does not match, or Pydantic rejects the wire arguments — `interpret` returns a degraded `SearchIntent` (today -> today+72h, `city="Barcelona"`, empty `categories`) tagged `error_type="interpreter_fallback"` instead of raising or silently defaulting. Callers **must** branch on `error_type` before reading any other field; the two shapes are structurally identical apart from that tag.
+`planazo.query.interpret(text)` translates a free-text `/find` message into a validated `planazo.query.models.SearchIntent` via a single Zen `call()` on the CHEAP model with one function-call tool (`_record_search_intent`, whose signature `schema_for` reflects into the tool schema). It is **not a registered tool** — the Recommender's loop never sees it; the bot's `/find` handler (M6) will be its only caller. On any failure — the LLM raises, the reply carries no tool call, the tool name does not match, or Pydantic rejects the wire arguments — `interpret` returns a degraded `SearchIntent` (today -> today+72h, `city="Barcelona"`, empty `categories`) tagged `error_type="interpreter_fallback"` instead of raising or silently defaulting. Callers **must** branch on `error_type` before reading any other field; the two shapes are structurally identical apart from that tag.
 
 ### The calendar reference tools
 
 These two are the calendar reference implementation, reachable only via `--calendar` (or `run_once(calendar_enabled=True)`). They are JSON-backed and stay untouched until v0.2's real Google Calendar wiring replaces them; `confirm_and_create_calendar_event` is the only irreversible tool in the tree, so it is also the approval gate's only end-to-end demonstration.
 
-- **`save_event_candidate`** (reversible) — persists one normalized event candidate to `var/event_candidates.json`. Runs without approval; re-saving a correction is just another write. Validates input through `planazo.schemas.events.EventCandidateInput` and returns a typed `error_type` (`invalid_event_data`, `low_confidence_extraction`) instead of persisting bad or unreliable data.
+- **`save_event_candidate`** (reversible) — persists one normalized event candidate to `var/event_candidates.json`. Runs without approval; re-saving a correction is just another write. Validates input through `planazo.calendar.EventCandidateInput` and returns a typed `error_type` (`invalid_event_data`, `low_confidence_extraction`) instead of persisting bad or unreliable data.
 - **`confirm_and_create_calendar_event`** (irreversible) — looks up a previously saved candidate by `event_id` and creates the calendar entry in `var/calendar_events.json`, optionally emailing invitees. This is visible to a third party, so the CLI gates it behind a terminal `y/N` approval prompt before dispatch; declining feeds the model a `DECLINED_RESULT` marker instead of running the tool. Returns a typed `error_type` (`invalid_confirmation_data`, `missing_invitees`, `event_not_found`) on bad input instead of silently creating a broken entry.
 
 ## The loop
@@ -112,7 +112,6 @@ Each script redirects both store roots (`memory.facts.MEMORY_ROOT`, `storage.db.
 │   ├── memory/            facts.py (private/shared JSON docstore), rules.py (markdown rules), api.py (user-bound memory tools)
 │   ├── query/             interpreter.py (natural-language → SearchIntent, one Zen call, typed fallback)
 │   ├── monitor/           out-of-band LLM-as-judge over run logs
-│   ├── schemas/           Pydantic v2 boundary models still colocated here (events.py, memory.py)
 │   ├── storage/           db.py (connection + schema_v1.sql only)
 │   ├── config.py          shared env-check helper
 │   └── agents/            loop.py (generic runtime), event_agent.py (composition root), cli.py

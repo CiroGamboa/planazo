@@ -26,7 +26,7 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
-from planazo.schemas.memory import Fact, MemoryScopeRequest, Note, ReadScope, Scope
+from planazo.memory.models import Fact, MemoryScopeRequest, Note, ReadScope, Scope
 
 MEMORY_ROOT: Path = Path("var/memory")
 

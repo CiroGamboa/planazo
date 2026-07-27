@@ -1,4 +1,4 @@
-"""Pydantic v2 models for the JSON docstore: its rows and its scope resolution.
+"""Pydantic v2 row models for the JSON docstore: its rows and its scope resolution.
 
 `Fact` and `Note` are the two row shapes appended to `facts.jsonl` and
 `notes.jsonl`; every append is validated through one of them before it touches

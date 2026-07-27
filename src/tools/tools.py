@@ -18,7 +18,7 @@ draft/staged event"), not a class-exercise stand-in next to some other
   `planazo.approval.ApprovalGate`).
 
 Both tools validate their input through the Pydantic v2 boundary models in
-`planazo.schemas.events` (AGENTS.md rule 1) and return a typed error state
+`planazo.calendar.models` (AGENTS.md rule 1) and return a typed error state
 — an `error_type` key in the result — rather than raising or silently
 persisting a partial/unreliable record (AGENTS.md rule 4). A tool that
 raises anyway (a disk error, a bug) is still caught, but one layer up, by
@@ -39,7 +39,7 @@ from typing import Literal, TypedDict
 
 from pydantic import ValidationError
 
-from planazo.schemas.events import CalendarConfirmationInput, EventCandidateInput
+from planazo.calendar import CalendarConfirmationInput, EventCandidateInput
 from tools.schema import schema_for
 
 # --------------------------------------------------------------------------

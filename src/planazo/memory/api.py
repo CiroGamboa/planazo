@@ -35,7 +35,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from planazo.memory import facts
-from planazo.schemas.memory import MemoryScopeRequest, ReadScope, Scope
+from planazo.memory.models import MemoryScopeRequest, ReadScope, Scope
 from tools.schema import schema_for
 
 
