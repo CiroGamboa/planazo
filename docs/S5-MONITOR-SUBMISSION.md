@@ -1,7 +1,8 @@
 # S5 individual submission — run monitor
 
-**Student:** Daniel  
-**Contribution:** Issue #4 — independent LLM-as-judge run monitor  
+**Student:** Daniel
+
+**Contribution:** Issue #4 — independent LLM-as-judge run monitor
 **Commit links:** Replace these with the GitHub links after pushing `feat/run-monitor`:
 
 - Monitor implementation: `COMMIT_LINK_1`
