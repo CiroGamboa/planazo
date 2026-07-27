@@ -26,8 +26,8 @@ Non-negotiable rules. Any PR that violates one gets rejected regardless of how n
 | What did we decide and why? | [`docs/adr/`](docs/adr/) (numbered ADRs) |
 | How do I write a new ADR? | [`docs/adr/README.md`](docs/adr/README.md) |
 | What is being worked on right now? | Open GitHub issues + `~/.claude/plans/planazo/` |
-| How do I run the app? | This file, "Setup & commands" below, and [`agent/README.md`](agent/README.md) |
-| What are the tool contracts / event shape? | `agent/src/planazo/<context>/models.py` — each aggregate lives beside its repository under a bounded-context folder (see [`docs/adr/0008-domain-driven-module-layout.md`](docs/adr/0008-domain-driven-module-layout.md)) |
+| How do I run the app? | This file, "Setup & commands" below, and [`README-package.md`](README-package.md) |
+| What are the tool contracts / event shape? | `src/planazo/<context>/models.py` — each aggregate lives beside its repository under a bounded-context folder (see [`docs/adr/0008-domain-driven-module-layout.md`](docs/adr/0008-domain-driven-module-layout.md)) |
 | What agents (Claude Code) exist and what do they do? | `.claude/agents/` |
 
 ## Project Overview
@@ -40,11 +40,11 @@ The system is agentic in the strict sense: **observe → reason → act → veri
 
 ## Setup & Commands
 
-The agent runtime lives in `agent/` (its own `pyproject.toml`, its own `.python-version`) — see [`agent/README.md`](agent/README.md) for the full picture. From `agent/`:
+The agent runtime lives under `src/planazo/` — see [`README-package.md`](README-package.md) for the full picture. From the repo root:
 
 ```
 uv sync                                          # install
-uv run pytest                                    # tests (LLM mocked; live tests are opt-in, see agent/README.md)
+uv run pytest                                    # tests (LLM mocked; live tests are opt-in, see README-package.md)
 uv run ruff check                                # lint
 uv run ruff format                               # format
 uv run mypy src                                  # types
@@ -96,7 +96,7 @@ These are the shapes that flow between the agent loop, its tools, persisted stat
 | `CalendarDraft` | Proposed Google Calendar event (title, start, end, description, invitees) — pending user confirmation |
 | `ApprovalDecision` | Which artifact, user id, decision (approve/reject), timestamp |
 
-Each aggregate lives beside its repository under `agent/src/planazo/<context>/`, one folder per bounded context (see [`docs/adr/0008-domain-driven-module-layout.md`](docs/adr/0008-domain-driven-module-layout.md) and [`docs/MVP-ARCHITECTURE.md`](docs/MVP-ARCHITECTURE.md#bounded-contexts) for the full map). The Pydantic aggregate models live in `<context>/models.py`; the data-access primitives + flat-scalar tool wrappers live in `<context>/repository.py` and `<context>/tools.py` respectively. `catalog/` owns `Event`, `ExtractionRunIndexEntry`, and the `save_event`/`search_events` tools (see [`docs/adr/0003-sqlite-domain-store.md`](docs/adr/0003-sqlite-domain-store.md)); `identity/` owns `UserRecord` + `PreferenceRecord`; `approval/` owns `ApprovalDecision` and the `ApprovalGate` protocol; `calendar/` owns `EventCandidateInput`, `CalendarConfirmationInput`, and the reference calendar tools (see [`docs/adr/0002-event-tool-contracts-and-approval-gate.md`](docs/adr/0002-event-tool-contracts-and-approval-gate.md)); `query/` owns `SearchIntent`; `memory/` owns `Fact`, `Note`, and `MemoryScopeRequest` (see [`docs/adr/0004-three-store-memory-model.md`](docs/adr/0004-three-store-memory-model.md)); `monitor/` owns `RunStep`, `RunSession`, `Verdict`, and `GradedRun` (see [`docs/adr/0007-monitor-scheduling-and-grades.md`](docs/adr/0007-monitor-scheduling-and-grades.md)). `UserPreferences`, `RawEventCandidate`, `ExtractionError`, `RankedEventList`, and `CalendarDraft` land in their respective contexts as later tickets add them.
+Each aggregate lives beside its repository under `src/planazo/<context>/`, one folder per bounded context (see [`docs/adr/0008-domain-driven-module-layout.md`](docs/adr/0008-domain-driven-module-layout.md) and [`docs/MVP-ARCHITECTURE.md`](docs/MVP-ARCHITECTURE.md#bounded-contexts) for the full map). The Pydantic aggregate models live in `<context>/models.py`; the data-access primitives + flat-scalar tool wrappers live in `<context>/repository.py` and `<context>/tools.py` respectively. `catalog/` owns `Event`, `ExtractionRunIndexEntry`, and the `save_event`/`search_events` tools (see [`docs/adr/0003-sqlite-domain-store.md`](docs/adr/0003-sqlite-domain-store.md)); `identity/` owns `UserRecord` + `PreferenceRecord`; `approval/` owns `ApprovalDecision` and the `ApprovalGate` protocol; `calendar/` owns `EventCandidateInput`, `CalendarConfirmationInput`, and the reference calendar tools (see [`docs/adr/0002-event-tool-contracts-and-approval-gate.md`](docs/adr/0002-event-tool-contracts-and-approval-gate.md)); `query/` owns `SearchIntent`; `memory/` owns `Fact`, `Note`, and `MemoryScopeRequest` (see [`docs/adr/0004-three-store-memory-model.md`](docs/adr/0004-three-store-memory-model.md)); `monitor/` owns `RunStep`, `RunSession`, `Verdict`, and `GradedRun` (see [`docs/adr/0007-monitor-scheduling-and-grades.md`](docs/adr/0007-monitor-scheduling-and-grades.md)). `UserPreferences`, `RawEventCandidate`, `ExtractionError`, `RankedEventList`, and `CalendarDraft` land in their respective contexts as later tickets add them.
 
 ## Out of Scope (first version)
 
