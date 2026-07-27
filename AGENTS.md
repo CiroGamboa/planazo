@@ -60,12 +60,13 @@ Add the Telegram bot entry command once it exists, e.g.:
 ## Development Workflow
 
 1. **Scope a ticket** — use `/writing-development-tickets`. One intent per issue; a defined "done"; links to any relevant ADR.
-2. **Execute the ticket** — use `/executing-development-tickets`. That skill drives: `system-architect-planner` writes a plan (proposing any needed ADR) → `plan-critic` reviews it → user approval gate → `plan-stage-implementer` implements each stage in a fresh context → `branch-code-reviewer` reviews the whole branch → PR opened with the plan file as body.
-3. **Plans live outside the repo** — at `~/.claude/plans/planazo/<YYYY-MM-DD>-<slug>.md`. They flow into PR bodies at `gh pr create` time via `--body-file`. Never commit a plan file.
-4. **ADRs live in the repo** — at `docs/adr/NNNN-slug.md`. Any decision that satisfies the criteria in rule 6 must land as an ADR in the same PR that acts on it.
-5. **Branches** — `feat/<slug>`, `fix/<slug>`, `chore/<slug>`. One PR per branch.
-6. **Commits** — imperative subject under 72 chars; body explains why.
-7. **PR body** — the approved plan, plus a Test plan checklist. The PR template covers the shape.
+2. **Execute a single ticket** — use `/executing-development-tickets <N>`. That skill drives: `system-architect-planner` writes a plan (proposing any needed ADR) → `plan-critic` reviews it → user approval gate → `plan-stage-implementer` implements each stage in a fresh context → `branch-code-reviewer` reviews the whole branch → PR opened with the plan file as body.
+3. **Execute a whole milestone** — use `/implement-milestone <N>`. That skill runs the per-ticket pipeline serially against a dedicated integration branch `feat/<milestone-slug>`, squash-merges each PR into it, keeps a running design journal, and — once every issue is closed — opens one consolidation PR from the integration branch to `main` for human review.
+4. **Plans live outside the repo** — at `~/.claude/plans/planazo/<YYYY-MM-DD>-<slug>.md` (per-issue) and `~/.claude/plans/planazo/milestone-<N>-integration.md` (running design journal for a milestone). They flow into PR bodies at `gh pr create` time via `--body-file`. Never commit a plan file.
+5. **ADRs live in the repo** — at `docs/adr/NNNN-slug.md`. Any decision that satisfies the criteria in rule 6 must land as an ADR in the same PR that acts on it.
+6. **Branches** — `feat/<slug>`, `fix/<slug>`, `chore/<slug>` for per-ticket work; `feat/<milestone-slug>` for milestone integration branches (created and owned exclusively by `/implement-milestone`). One PR per branch.
+7. **Commits** — imperative subject under 72 chars; body explains why.
+8. **PR body** — the approved plan, plus a Test plan checklist. The PR template covers the shape.
 
 ## Conventions
 

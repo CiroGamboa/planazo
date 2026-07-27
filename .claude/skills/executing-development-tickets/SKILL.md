@@ -13,6 +13,16 @@ architect  →  critic  →  USER APPROVAL  →  implementer × N stages  →  r
 
 You are the orchestrator. You dispatch each agent, gate on the user's approval, and produce the final PR. You do not write plans, code, or reviews yourself — you route.
 
+## Invocation
+
+```
+/executing-development-tickets <issue-number> [base_branch=<ref>]
+```
+
+or natural language: "execute issue #23", "let's do #14".
+
+**Base branch.** Optional, defaults to `main`. Direct invocations should almost always use the default. `/implement-milestone` passes `base_branch=feat/<milestone-slug>` so per-issue branches stack on the milestone integration branch and per-issue PRs target it rather than `main`. When set, it replaces `main` in Phase 4 (branch creation) and Phase 7 (PR creation). Nothing else changes — the critic, implementer, and reviewer are agnostic to the base branch.
+
 ## When to invoke
 
 - User names an issue: "let's work on #23", "execute ticket #14".
@@ -26,7 +36,7 @@ Before starting:
 - The user has named a specific issue (or you've asked which one).
 - `gh issue view <N>` succeeds — the issue exists.
 - Working tree is clean (`git status`). If not, stop and tell the user.
-- You are on `main` (or the user's designated integration branch). If not, ask.
+- You are on the base branch (default `main`, or `<base_branch>` if the caller passed one). If not, `git checkout <base_branch> && git pull --ff-only origin <base_branch>` before proceeding.
 
 ## Pipeline
 
@@ -64,9 +74,11 @@ Ask explicitly: "Approve this plan? (or: suggest changes.)"
 
 ### Phase 4 — Branch
 
-Create the branch the planner proposed:
+Create the branch the planner proposed, branching off the base branch (default `main`, or `<base_branch>` if the caller passed one):
 
 ```bash
+git checkout <base_branch>
+git pull --ff-only origin <base_branch>
 git checkout -b <feat|fix|chore>/<slug>
 ```
 
@@ -97,13 +109,13 @@ Between stages, do not touch the working tree yourself. The implementer commits.
 
 ### Phase 7 — PR
 
-Open the PR:
+Open the PR against the base branch (default `main`, or `<base_branch>` if the caller passed one):
 
 ```bash
 gh pr create \
   --title "<type>(<scope>): <subject>" \
   --body-file <plan-file-path> \
-  --base main
+  --base <base_branch>
 ```
 
 Then append to the PR body:
@@ -112,7 +124,7 @@ Then append to the PR body:
 - **Follow-ups discovered:** the accumulated list from implementers, if any. Note whether each will be filed as its own issue (do it via `gh issue create` before merge).
 - **Closes #<N>** — the ticket being executed.
 
-Return the PR URL to the user. Stop. Do not merge; the user or CI does that.
+Return the PR URL to the user. Stop. Do not merge; the user or CI does that. When invoked by `/implement-milestone`, that skill drives the CI/merge/bookkeeping steps that follow.
 
 ## Rules the Orchestrator Follows
 
