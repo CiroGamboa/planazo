@@ -1,17 +1,21 @@
-"""Pydantic v2 boundary models for Planazo's data contracts.
+"""Pydantic v2 boundary models still colocated under `schemas/`.
 
-`events.py` holds two neighbouring tool-boundary surfaces (AGENTS.md rule 1):
-`EventCandidateInput`/`CalendarConfirmationInput` validate the payloads the
-calendar reference tools receive from the LLM, and `SearchIntent` is the
-structured output the query interpreter emits from a free-text `/find`
-query. `domain.py` holds the SQLite domain store's remaining row models —
-`Event` and `ExtractionRunIndexEntry`.
-`memory.py` holds the JSON docstore's own row shapes (`Fact`, `Note`) plus
-the `MemoryScopeRequest` that validates the identity selecting their
-directory — the memory store's rows, not entries in that table. `ApprovalDecision`
-lives beside its repository under `planazo/approval/` per the bounded-context
-layout ([ADR 0008](../../../../docs/adr/0008-domain-driven-module-layout.md)).
-Later tickets add the remaining entities from that table (UserPreferences,
-RawEventCandidate, ExtractionError, RankedEventList, CalendarDraft) as they
-land.
+Only the tool-boundary surfaces without an owning bounded context yet live
+here (AGENTS.md rule 1):
+
+- `events.py` — `EventCandidateInput`/`CalendarConfirmationInput` for the
+  calendar reference tools, plus `SearchIntent` (the query interpreter's
+  parsed `/find` output).
+- `memory.py` — `Fact`, `Note`, and `MemoryScopeRequest` for the JSON
+  docstore, colocated with `planazo.memory`'s own module.
+
+Aggregate models that already have a bounded-context home live there instead
+(see [ADR 0008](../../../../docs/adr/0008-domain-driven-module-layout.md)):
+`Event` + `ExtractionRunIndexEntry` in `planazo.catalog.models`;
+`UserRecord` + `PreferenceRecord` in `planazo.identity.models`;
+`ApprovalDecision` in `planazo.approval.models`.
+
+Later tickets add the remaining entities from AGENTS.md's Data Contracts
+table (UserPreferences, RawEventCandidate, ExtractionError, RankedEventList,
+CalendarDraft) in the bounded context that owns each.
 """

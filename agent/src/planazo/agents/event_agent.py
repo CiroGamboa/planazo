@@ -29,11 +29,12 @@ from typing import Any
 
 from agentlib.core import CHEAP
 from planazo.agents.loop import LoopResult, StepRecord, run_loop
+from planazo.catalog import search_events
 from planazo.identity import get_preferences
 from planazo.memory.api import build_memory_tools
 from planazo.memory.rules import load_rules
 from planazo.monitor.logging import RunStepLogger
-from planazo.storage import dao, db
+from planazo.storage import db
 from tools import tools as calendar_tools
 from tools.schema import schema_for
 
@@ -107,8 +108,8 @@ def run_once(user_message: str, **run_context: Any) -> LoopResult:
       name is in its set is dispatched; omit to dispatch every tool call
       without an approval prompt.
     """
-    tool_schemas: list[dict[str, Any]] = [schema_for(dao.search_events)]  # Any: see schema_for
-    registry: dict[str, Callable[..., dict[str, object]]] = {"search_events": dao.search_events}
+    tool_schemas: list[dict[str, Any]] = [schema_for(search_events)]  # Any: see schema_for
+    registry: dict[str, Callable[..., dict[str, object]]] = {"search_events": search_events}
 
     user_id: int | None = run_context.get("user_id")
     if user_id is not None:

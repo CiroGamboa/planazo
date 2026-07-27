@@ -5,9 +5,9 @@ from datetime import UTC, datetime
 import pytest
 
 from planazo.approval import ApprovalDecision, list_approvals, record_approval
+from planazo.catalog import Event, insert_event
 from planazo.identity import get_or_create_user
-from planazo.schemas.domain import Event
-from planazo.storage import dao, db
+from planazo.storage import db
 
 
 def make_event(**overrides: object) -> Event:
@@ -36,7 +36,7 @@ def conn(monkeypatch: pytest.MonkeyPatch) -> Iterator[sqlite3.Connection]:
 def test_record_approval_round_trips_through_list_approvals(conn: sqlite3.Connection) -> None:
     user = get_or_create_user(conn, "tg-1", "Dani")
     assert user.id is not None
-    event_db_id = dao.insert_event(conn, make_event())
+    event_db_id = insert_event(conn, make_event())
 
     approval_id = record_approval(
         conn,
