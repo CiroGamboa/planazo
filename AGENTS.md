@@ -99,7 +99,7 @@ The authoritative Pydantic models live in `agent/src/planazo/schemas/`. `events.
 
 ## Out of Scope (first version)
 
-- Agent-orchestration frameworks (LangChain, LangGraph, CrewAI, PydanticAI). Reserved for a later course phase; superseding requires an ADR.
+- Agent-orchestration frameworks (LangChain, LangGraph, CrewAI, PydanticAI). Not adopted in v1; superseding requires an ADR.
 - Building a generic web scraper. We extract from a small, named set of sources.
 - Cross-city event discovery. Barcelona only.
 - Autonomous calendar creation or invitation without an explicit per-artifact user approval.
