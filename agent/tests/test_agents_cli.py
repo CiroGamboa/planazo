@@ -454,3 +454,37 @@ def test_cli_declines_on_keyboard_interrupt_at_approval_prompt(
     assert not calendar_path.exists()
     assert "'declined': True" in out
     assert "Traceback" not in out
+
+
+def test_user_id_flag_is_forwarded_to_run_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_run_once = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))
+    monkeypatch.setattr(cli, "run_once", mock_run_once)
+
+    code = cli.main(["--user-id", "1", "hi"])
+
+    assert code == 0
+    assert mock_run_once.call_args.kwargs["user_id"] == 1
+
+
+def test_no_user_id_flag_forwards_no_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_run_once = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))
+    monkeypatch.setattr(cli, "run_once", mock_run_once)
+
+    code = cli.main(["hi"])
+
+    assert code == 0
+    assert "user_id" not in mock_run_once.call_args.kwargs
+
+
+def test_user_id_below_one_is_a_usage_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    # argparse rejects it before composition. With a plain `type=int`, `0` would
+    # reach build_memory_tools and surface as an uncaught ValidationError
+    # traceback instead of a one-line usage message.
+    mock_call = MagicMock()
+    monkeypatch.setattr(loop, "call", mock_call)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["--user-id", "0", "hi"])
+
+    assert excinfo.value.code == 2
+    mock_call.assert_not_called()

@@ -272,9 +272,9 @@ Two backends, one API. This is the non-relational and rules stores from HW2.
   - `save_note(user_id, event_id, content, scope)` — event-scoped notes.
   - `retrieve_notes(user_id, event_id, scope) -> list[Note]`.
 - **`memory/rules.py`** — `load_rules() -> str` reads every `.md` file under `agent/data/rules/` (committed, human-editable) and returns concatenated content. **Pushed** into the system prompt on every agent run (both agents).
-- **`memory/api.py`** — the surface both agents call. Tool-visible names are `retrieve_memory` and `save_memory`.
+- **`memory/api.py`** — the LLM-facing surface. `build_memory_tools(user_id)` returns one run's schemas plus registry for four tool-visible names: `retrieve_memory`, `save_memory`, `retrieve_notes`, `save_note`. `user_id` is closure-bound, not a tool parameter — it appears in no schema, so no tool-call argument can point a tool at another user's private facts.
 
-Governed by planned **ADR 0004 — Three-store memory model**.
+Governed by [**ADR 0004 — Three-store memory model**](adr/0004-three-store-memory-model.md).
 
 ### 9. Monitor — `agent/src/planazo/monitor/`
 
@@ -499,8 +499,8 @@ Each demo below produces a trace under `docs/evidence/hw2-*.md` (gitignored — 
 
 | Direction | What | Where in code |
 | --- | --- | --- |
-| **Push** — attached before every run | Markdown rules (`load_rules()`), user's `preferences` row, current `SearchIntent` | Assembled in `run_once` before entering `run_loop` |
-| **Pull** — fetched mid-run by the model via a tool | Facts by cue (`retrieve_memory`), event notes (`retrieve_notes`), event candidates (`search_events`) | All exposed as tools in `TOOL_REGISTRY` |
+| **Push** — attached before every run | Markdown rules (`load_rules()`), plus the bound user's `preferences` rows when `run_once` is given a `user_id`. The Interpreter ticket adds its `SearchIntent` here. | Assembled in `run_once`, passed as `run_loop`'s `system` argument |
+| **Pull** — fetched mid-run by the model via a tool | Facts by cue (`retrieve_memory`), event notes (`retrieve_notes`), stored events (`search_events`) | All exposed as tools in the registry `run_once` composes |
 
 ## ADRs the MVP will spawn
 
@@ -509,7 +509,7 @@ Each is its own PR, blocked by its own ticket. This doc is what those PRs will p
 | # | Slug | What it decides |
 | --- | --- | --- |
 | 0003 | [`sqlite-domain-store`](adr/0003-sqlite-domain-store.md) | SQLite + JSON columns for `events`/`users`/`preferences`/`approvals`. Supersedes 0002's JSON persistence for the domain surface only. |
-| 0004 | `three-store-memory-model` | Relational (SQLite), non-relational (JSON docstore), rules (markdown). Facts vs rules; private vs shared. |
+| 0004 | [`three-store-memory-model`](adr/0004-three-store-memory-model.md) | Relational (SQLite), non-relational (JSON docstore), rules (markdown). Facts vs rules; private vs shared. |
 | 0005 | `multi-agent-shape` | Recommender + Extractor split. Delegation brief. `{status, result, needs_approval}` contract. Shared-memory traceability plan. |
 | 0006 | `instagram-extraction-approach` | Scraper choice, multimodal LLM tier, rate-limit handling, the "raw text never crosses into Recommender" invariant. |
 | 0007 | `monitor-scheduling-and-grades` | Categorical axes, rationale requirement, cron/GHA plan. |

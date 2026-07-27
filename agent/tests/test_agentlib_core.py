@@ -191,6 +191,20 @@ def test_call_rejects_both_prompt_and_messages() -> None:
         core.call("hi", messages=[{"role": "user", "content": "hi"}], model=core.CHEAP)
 
 
+def test_build_input_rejects_a_system_prompt_alongside_messages() -> None:
+    # A `messages` history carries its own roles, so a `system` passed beside it
+    # has nowhere to go. Raising says so, instead of discarding the caller's
+    # prompt and returning a result that looks like it was honoured.
+    with pytest.raises(ValueError, match="system"):
+        core._build_input(None, [{"role": "user", "content": "hi"}], "MY-SYSTEM-PROMPT")
+
+
+def test_build_input_passes_messages_through_untouched_without_a_system_prompt() -> None:
+    messages = [{"role": "user", "content": "hi"}]
+
+    assert core._build_input(None, messages, None) == messages
+
+
 def test_show_prints_one_line_summary(capsys: pytest.CaptureFixture[str]) -> None:
     result = core.Result(
         text="ok",

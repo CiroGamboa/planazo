@@ -1,6 +1,6 @@
 # 0004 — Three-store memory model: facts vs. rules, private vs. shared
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-27
 - **Deciders:** dvetencourt
 

@@ -20,7 +20,8 @@ Options:
 
 - `--strong` and `--model {cheap,strong}` select the model role and are mutually exclusive; passing both is a usage error. The default is the cheap role.
 - `--max-steps N` caps the loop's steps (`N` must be >= 1).
-- `--calendar` adds the two calendar reference tools to the run's tool set. Without it the model is offered only `search_events`.
+- `--calendar` adds the two calendar reference tools to the run's tool set.
+- `--user-id N` binds the run to one user (`N` must be >= 1): it adds the four memory tools bound to that id and pushes that user's stored preferences into the system message. It is unauthenticated — whatever id the shell supplies is used — so this CLI is an operator's surface, not a user-facing one ([ADR 0004](../docs/adr/0004-three-store-memory-model.md)).
 
 Output shape: a per-step tool trace (`step N: tool(args) -> result`), then a separated final block with the answer (or a `(no final answer — hit max steps)` notice), the step count, and the stop reason.
 
@@ -35,9 +36,22 @@ uv run mypy src            # types
 
 ## Tools
 
-`search_events` is the default — and, without `--calendar`, the only — tool. It queries the SQLite domain store at `var/planazo.db` for stored events, filtered by `category`, `city`, and `start_after` (an empty string means "no filter on that field"), and returns `{"events": [...], "total": N}` or a typed `invalid_search_filter` error. Its writing counterpart, `save_event`, lives beside it in `planazo.storage.dao` for the extraction path; the domain store's shape and its two dao tiers are [ADR 0003](../docs/adr/0003-sqlite-domain-store.md).
+`search_events` is the one tool on every run, whatever the flags. It queries the SQLite domain store at `var/planazo.db` for stored events, filtered by `category`, `city`, and `start_after` (an empty string means "no filter on that field"), and returns `{"events": [...], "total": N}` or a typed `invalid_search_filter` error. Its writing counterpart, `save_event`, lives beside it in `planazo.storage.dao` for the extraction path; the domain store's shape and its two dao tiers are [ADR 0003](../docs/adr/0003-sqlite-domain-store.md).
+
+The other two groups are opt-in: the memory tools with `--user-id N`, the calendar reference tools with `--calendar`.
 
 Every tool returns a typed `error_type` on bad input rather than persisting something partial. A tool that raises anyway (bug, disk error) is caught one layer up, inside `planazo.agents.loop.run_loop`'s dispatch, and fed back to the model as a `tool_failed` marker rather than crashing the run or looking like valid data.
+
+### The memory tools
+
+`--user-id N` (or `run_once(user_id=N)`) adds four tools over the JSON docstore at `var/memory/`, built by `planazo.memory.api.build_memory_tools`:
+
+- **`retrieve_memory(query, scope)`** — facts about the user whose cue overlaps `query`, as `{"facts": [...], "total": N}`.
+- **`save_memory(cue, content, scope)`** — one durable fact, filed under `cue` for later recall.
+- **`retrieve_notes(event_id, scope)`** — the notes filed against one event, as `{"notes": [...], "total": N}`.
+- **`save_note(event_id, content, scope)`** — one free-form note about one event.
+
+`scope` is `private`/`shared` on a write and `private`/`shared`/`both` on a read. **`user_id` is not a parameter of any of them**: each is a closure over the id the caller bound, so it appears in no tool schema and a tool call that supplies one fails outright instead of reading another user's private facts ([ADR 0004](../docs/adr/0004-three-store-memory-model.md)). Bad input comes back as a typed `invalid_memory_data` (writes) or `invalid_memory_query` (reads).
 
 ### The calendar reference tools
 
@@ -55,6 +69,8 @@ These two are the calendar reference implementation, reachable only via `--calen
 
 It is completely generic over `tools`/`registry`, so it has no Planazo-specific code in it; `planazo.agents.event_agent.run_once` is the one place the event-discovery tool set is bound to it.
 
+`run_loop`'s optional `system` argument is prepended once as the run's system message, ahead of the user's. `run_once` is what assembles it — the markdown rules from `data/rules/`, re-read on every call, plus the bound user's preference rows — so that is the run's whole push context. Everything else the model sees, tool results included, arrives as a `function_call_output`, never in the system role.
+
 ### Live tests
 
 ```bash
@@ -70,7 +86,7 @@ agent/
 ├── src/planazo/
 │   ├── schemas/           Pydantic v2 boundary models (events.py, domain.py, memory.py)
 │   ├── storage/           db.py (connection + schema_v1.sql), dao.py (the SQLite DAO)
-│   ├── memory/            facts.py (private/shared JSON docstore), rules.py (markdown rules)
+│   ├── memory/            facts.py (private/shared JSON docstore), rules.py (markdown rules), api.py (the user-bound memory tools)
 │   └── agents/            loop.py (generic), event_agent.py (tool binding), cli.py
 ├── src/tools/
 │   ├── schema.py           schema_for() — derives a tool's JSON schema from its signature/docstring

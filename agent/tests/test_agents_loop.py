@@ -679,3 +679,28 @@ def test_run_loop_is_generic_over_tools(monkeypatch: pytest.MonkeyPatch) -> None
     result = loop.run_loop("shout hi", [shout_schema], {"shout": _shout}, model=CHEAP)
 
     assert result == loop.LoopResult(answer="done", steps=2, stopped="answered")
+
+
+def test_run_loop_opens_with_a_system_message_when_one_is_supplied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_call = MagicMock(return_value=make_result(text="42", tool_calls=[], output_items=[]))
+    monkeypatch.setattr(loop, "call", mock_call)
+
+    loop.run_loop("what is 6*7?", [], {}, model=CHEAP, system="RULES")
+
+    assert mock_call.call_args.kwargs["messages"] == [
+        {"role": "system", "content": "RULES"},
+        {"role": "user", "content": "what is 6*7?"},
+    ]
+
+
+def test_run_loop_without_a_system_prompt_opens_with_the_user_message_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_call = MagicMock(return_value=make_result(text="42", tool_calls=[], output_items=[]))
+    monkeypatch.setattr(loop, "call", mock_call)
+
+    loop.run_loop("what is 6*7?", [], {}, model=CHEAP)
+
+    assert mock_call.call_args.kwargs["messages"] == [{"role": "user", "content": "what is 6*7?"}]
