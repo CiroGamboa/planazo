@@ -95,7 +95,7 @@ These are the shapes that flow between the agent loop, its tools, persisted stat
 | `CalendarDraft` | Proposed Google Calendar event (title, start, end, description, invitees) — pending user confirmation |
 | `ApprovalDecision` | Which artifact, user id, decision (approve/reject), timestamp |
 
-The authoritative Pydantic models live in `agent/src/planazo/schemas/`. `events.py` currently covers the tool-boundary input for `save_event_candidate`/`confirm_and_create_calendar_event` (see [`docs/adr/0002-event-tool-contracts-and-approval-gate.md`](docs/adr/0002-event-tool-contracts-and-approval-gate.md)); the entities above land as later tickets add them.
+The authoritative Pydantic models live in `agent/src/planazo/schemas/`. `events.py` covers the tool-boundary input for `save_event_candidate`/`confirm_and_create_calendar_event` (see [`docs/adr/0002-event-tool-contracts-and-approval-gate.md`](docs/adr/0002-event-tool-contracts-and-approval-gate.md)). `domain.py` holds `Event` and `ApprovalDecision` as the SQLite domain store's row models, alongside `UserRecord`, `PreferenceRecord`, and `ExtractionRunIndexEntry` (see [`docs/adr/0003-sqlite-domain-store.md`](docs/adr/0003-sqlite-domain-store.md)). `UserRequest`, `UserPreferences`, `RawEventCandidate`, `ExtractionError`, `RankedEventList`, and `CalendarDraft` land as later tickets add them.
 
 ## Out of Scope (first version)
 

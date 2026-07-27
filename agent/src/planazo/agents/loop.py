@@ -11,8 +11,9 @@ output cap (`"truncated"`) — or once a caller-supplied step cap is hit
 Callers can supply an `ApprovalGate` to require explicit approval before any
 tool call whose name is in the gate's `tool_names` is dispatched; a declined
 call is not run and a declined marker is fed back to the model as that
-call's tool output. An optional `max_output_tokens` caps per-turn output
-length by forwarding to `agentlib.tools.call`.
+call's tool output. An optional `system` string opens the run as a system
+message ahead of the user's; an optional `max_output_tokens` caps per-turn
+output length by forwarding to `agentlib.tools.call`.
 
 A tool call that fails — an unregistered name, a tool that raises, or a
 result the loop cannot serialize to feed back — is turned into a labeled
@@ -100,6 +101,7 @@ def run_loop(
     max_output_tokens: int | None = None,
     on_step: Callable[[StepRecord], None] | None = None,
     gate: ApprovalGate | None = None,
+    system: str | None = None,
 ) -> LoopResult:
     """Drive `call()` across turns until the model answers or `max_steps` is hit.
 
@@ -135,6 +137,11 @@ def run_loop(
     named in the gate — and every tool call when `gate` is `None` — dispatch
     exactly as they do without a gate.
 
+    If `system` is supplied, it is prepended once as a `{"role": "system"}`
+    message ahead of the user's message, so it is the run's push context: it
+    is sent on every turn and no tool result is ever appended to it. The
+    default (`None`) opens the run with the user's message alone.
+
     If `max_output_tokens` is supplied, it is forwarded to every
     `agentlib.tools.call` invocation on this run, capping per-turn output.
     The default (`None`) leaves `agentlib`'s own cap in effect.
@@ -146,7 +153,10 @@ def run_loop(
 
     # Any: Responses-API message dicts — shape varies by role/type (user turn,
     # function_call, function_call_output, ...), no single fixed schema.
-    messages: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
+    messages: list[dict[str, Any]] = []
+    if system is not None:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": user_message})
 
     call_kwargs: dict[str, Any] = {}  # Any: passthrough kwargs for agentlib.tools.call
     if max_output_tokens is not None:

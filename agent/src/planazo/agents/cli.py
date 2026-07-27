@@ -8,11 +8,20 @@ it fires, then the final answer, step count, and stop reason follow. Model
 role is selectable through `agentlib` (default the cheap role;
 `--strong`/`--model` override) with no raw model id in this module.
 
-Every invocation gates the irreversible tool
-(`confirm_and_create_calendar_event`) behind a one-line terminal `y/N`
-prompt; the reversible tool (`save_event_candidate`) runs without a prompt.
-Declining a gated call skips the tool and tells the model the request was
-declined so it can adjust its answer.
+Without extra flags the model is offered one tool, `search_events`. The two
+calendar reference tools are enabled by `--calendar`; when they are, the
+irreversible one (`confirm_and_create_calendar_event`) is gated behind a
+one-line terminal `y/N` prompt and the reversible one
+(`save_event_candidate`) runs without a prompt. Declining a gated call skips
+the tool and tells the model the request was declined so it can adjust its
+answer.
+
+`--user-id N` binds the run to one identity: the four memory tools join the
+tool set bound to that id, and that user's stored preferences are pushed into
+the run's system message. The committed markdown rules are pushed on every
+invocation, identity or not. The flag is unauthenticated dev impersonation —
+whatever id the shell supplies is used, so this CLI is an operator's surface,
+not a user-facing one (`docs/adr/0004-three-store-memory-model.md`).
 
 `import openai` here names `openai.OpenAIError` for the narrow `except`
 around the LLM call — it makes no provider call itself (those go through
@@ -38,7 +47,13 @@ _MISSING_KEY_MESSAGE = (
 
 
 def _positive_int(value: str) -> int:
-    """Argparse type for `--max-steps`: reject values below 1 cleanly."""
+    """Argparse type for `--max-steps` and `--user-id`: reject below 1 cleanly.
+
+    `--user-id 0` would otherwise reach `build_memory_tools`, whose
+    `MemoryScopeRequest` raises a `ValidationError` that `_run`'s
+    `openai.OpenAIError`-only guard does not catch — a raw traceback where
+    argparse gives a one-line usage error and exit code 2.
+    """
     parsed = int(value)
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be >= 1")
@@ -72,6 +87,17 @@ def _build_parser() -> argparse.ArgumentParser:
         type=_positive_int,
         default=None,
         help="cap the number of loop steps (default: run_once's own default)",
+    )
+    parser.add_argument(
+        "--calendar",
+        action="store_true",
+        help="add the calendar reference tools (save + gated confirm) to the tool set",
+    )
+    parser.add_argument(
+        "--user-id",
+        type=_positive_int,
+        default=None,
+        help="bind the run to this user id: adds the memory tools, pushes their preferences",
     )
     return parser
 
@@ -117,20 +143,34 @@ def _terminal_approve(tool_name: str, arguments: dict[str, Any]) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
-def _run(prompt: str, *, model: str, max_steps: int | None) -> int:
+def _run(
+    prompt: str,
+    *,
+    model: str,
+    max_steps: int | None,
+    calendar_enabled: bool,
+    user_id: int | None,
+) -> int:
     """Run one prompt, printing the live trace then the result block.
 
     Returns 0 on success, 1 if the provider raised. Only `openai.OpenAIError`
     is caught here — an unexpected error propagates as a real traceback.
     """
     gate = ApprovalGate(tool_names=frozenset(IRREVERSIBLE_TOOLS), approve=_terminal_approve)
+    # Any: run_once's **run_context accepts a heterogeneous option set (model
+    # id, step cap, bool flag, callables) — no single value type covers it.
+    run_context: dict[str, Any] = {
+        "model": model,
+        "on_step": _print_step,
+        "gate": gate,
+        "calendar_enabled": calendar_enabled,
+    }
+    if max_steps is not None:
+        run_context["max_steps"] = max_steps
+    if user_id is not None:
+        run_context["user_id"] = user_id
     try:
-        if max_steps is None:
-            result = run_once(prompt, model=model, on_step=_print_step, gate=gate)
-        else:
-            result = run_once(
-                prompt, model=model, on_step=_print_step, max_steps=max_steps, gate=gate
-            )
+        result = run_once(prompt, **run_context)
     except openai.OpenAIError as exc:
         print(str(exc))
         return 1
@@ -138,7 +178,7 @@ def _run(prompt: str, *, model: str, max_steps: int | None) -> int:
     return 0
 
 
-def _repl(*, model: str, max_steps: int | None) -> int:
+def _repl(*, model: str, max_steps: int | None, calendar_enabled: bool, user_id: int | None) -> int:
     """Read prompts until exit/quit, EOF, or Ctrl-C; one run_once per line."""
     while True:
         try:
@@ -152,7 +192,13 @@ def _repl(*, model: str, max_steps: int | None) -> int:
         if stripped.lower() in ("exit", "quit"):
             print("bye")
             return 0
-        _run(stripped, model=model, max_steps=max_steps)
+        _run(
+            stripped,
+            model=model,
+            max_steps=max_steps,
+            calendar_enabled=calendar_enabled,
+            user_id=user_id,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -166,8 +212,19 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.prompt is None:
-        return _repl(model=model, max_steps=args.max_steps)
-    return _run(args.prompt, model=model, max_steps=args.max_steps)
+        return _repl(
+            model=model,
+            max_steps=args.max_steps,
+            calendar_enabled=args.calendar,
+            user_id=args.user_id,
+        )
+    return _run(
+        args.prompt,
+        model=model,
+        max_steps=args.max_steps,
+        calendar_enabled=args.calendar,
+        user_id=args.user_id,
+    )
 
 
 if __name__ == "__main__":
