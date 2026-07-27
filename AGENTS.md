@@ -50,6 +50,7 @@ uv run ruff format                               # format
 uv run mypy src                                  # types
 uv run planazo-agent "<prompt>"                  # run the agent loop once
 uv run planazo-agent                             # interactive REPL
+docker compose up sources-instagram              # run the Instagram source adapter one-shot
 ```
 
 <!--

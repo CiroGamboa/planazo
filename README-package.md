@@ -83,8 +83,24 @@ It is completely generic over `tools`/`registry`, so it has no Planazo-specific 
 ### Live tests
 
 ```bash
-uv run pytest -m live tests/test_agents_gate_live.py -v -s   # hits the real LLM; needs a real OPENCODE_API_KEY
+uv run pytest -m live tests/test_agents_gate_live.py -v -s              # hits the real LLM; needs a real OPENCODE_API_KEY
+uv run pytest -m live tests/test_sources_instagram_live.py -v -s        # fetches one public Barcelona-venue Instagram post
 ```
+
+## Source adapters
+
+Each source runs in its own Docker container so a Meta break (Instagram) does not affect a TikTok / news / Meetup adapter. `data/sources.yaml` names every source's cadence, per-media-type strategy, and account list; `docker/sources-<name>.Dockerfile` builds the image; `compose.yaml` wires the bind-mount and env vars.
+
+Instagram is the first landed adapter:
+
+```bash
+docker compose up sources-instagram                          # build + run one-shot
+INSTAGRAM_SESSION_ID=<value> docker compose up sources-instagram
+uv run planazo-sources-instagram --dry-run                   # print the fetch plan without any network calls
+uv run planazo-sources-instagram                             # fetch each configured account URL, print RawPost JSON per line
+```
+
+`INSTAGRAM_SESSION_ID` is optional — copy the `sessionid` cookie from a logged-in Instagram browser session into `.env` when a public-account fetch returns `auth_failed`, otherwise leave it unset. The CLI never writes anywhere; every fetch prints `RawPost.model_dump_json()` (happy path) or the typed error dict — `{"error_type": "…", "message": "…", "url": "…"}` — to stdout, one line per fetch. See [ADR 0006 — Instagram extraction approach](docs/adr/0006-instagram-extraction-approach.md).
 
 ## Memory model demos
 
