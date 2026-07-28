@@ -369,7 +369,7 @@ Copied verbatim into the Extractor's system prompt (also lives as `DELEGATION_BR
 
 #### Terminal calls
 
-- **Success ends with `save_event`.** When a valid `Event` has been parsed, call `save_event` with its fields; the catalog persists the row and returns `{"saved": ..., "event_db_id": ...}`. Do not answer in free-form text after a successful `save_event` — the tool call is the terminal signal.
+- **Success ends with one or more `save_event` calls.** When a valid `Event` has been parsed, call `save_event` with its fields; the catalog persists the row and returns `{"saved": ..., "event_db_id": ...}`. When a single post announces multiple distinct events (curator carousels), call `save_event` once per event with `event_index_in_post` = `0`, `1`, `2`, ... — one call per slot, in order. Do not answer in free-form text after the final `save_event` — the tool call is the terminal signal.
 - **Unhappy ends with `report_extraction_status(status, error_type, notes)`.** Every non-success branch terminates with exactly one `report_extraction_status` call. Map from this brief's branches to `error_type` literals as follows.
   - "Asks (returns `status: "needs_clarification"`)": `status="needs_clarification"`, `error_type` ∈ `{"ambiguous_content", "missing_date", "location_out_of_metro", "multiple_events_in_post"}`.
   - "Escalates (returns `status: "error"`)": `status="error"`, `error_type` ∈ `{"rate_limited", "auth_failed", "not_found", "unsupported_source", "unsupported_media", "no_visual_asset", "low_confidence_extraction", "save_event_failed"}`.

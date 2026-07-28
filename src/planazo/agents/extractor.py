@@ -70,8 +70,8 @@ def _read_delegation_brief() -> str:
 
 DELEGATION_BRIEF: Final[str] = _read_delegation_brief()
 
-USER_MESSAGE: Final[str] = "Extract the primary event announced by the Instagram post above."
-MAX_STEPS: Final[int] = 4
+USER_MESSAGE: Final[str] = "Extract every distinct event announced by the Instagram post above."
+MAX_STEPS: Final[int] = 8
 MAX_OUTPUT_TOKENS: Final[int] = 2000
 
 
@@ -282,37 +282,85 @@ def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> Extractio
     report_records = [rec for rec in trace if rec.tool == "report_extraction_status"]
     fetch_records = [rec for rec in trace if rec.tool == "fetch_instagram_post"]
 
-    # Happy path — the LLM called `save_event` and the tool persisted the row.
-    # Two-pass: any successful save wins over any failed save, so a retry
-    # after a `duplicate_event`/`invalid_event_data` failure still yields an
-    # `ok` hand-off. Single-pass (first-record-wins) would report failure
-    # even though the DB persisted the event on a subsequent attempt.
+    # Partition `save_event` returns into (successes → Event) and (failures →
+    # error-dict). Preserve trace order for both — carousel slot indices ride
+    # in the `Event` payload, so the returned `events` list mirrors the LLM's
+    # call sequence.
+    events: list[Event] = []
+    failures: list[dict[str, object]] = []
     for record in save_event_records:
         result = record.result
         if not isinstance(result, dict):
             continue
         saved = result.get("saved")
         if isinstance(saved, dict):
-            event = Event.model_validate(saved)
-            answer = loop_result.answer or ""
-            return ExtractionResult(
-                status="ok",
-                event=event,
-                error_type=None,
-                notes=_truncate_notes(answer),
+            events.append(Event.model_validate(saved))
+        elif "error_type" in result:
+            failures.append(result)
+
+    # Happy path — at least one `save_event` persisted an `Event`. Any success
+    # wins over any failure (the M3 "get any event you can" bias, now
+    # generalised to N events). `notes` uses a redacted `[error_type: <token>]`
+    # construction on the mixed-success-plus-failure branch to close the Rule 2
+    # leak channel (a Pydantic `ValidationError.__str__` echoes submitted field
+    # values, and `title` may carry caption bytes).
+    if events:
+        first_reported: dict[str, object] | None = None
+        for record in reversed(report_records):
+            result = record.result
+            if not isinstance(result, dict):
+                continue
+            if "error_type" in result and not result.get("reported"):
+                # `_ReportedStatus` rejected the args — the LLM saw an
+                # `invalid_reported_status` typed error and the run continued.
+                continue
+            reported_status = result.get("status")
+            reported_error_type = result.get("error_type")
+            if isinstance(reported_status, str) and isinstance(reported_error_type, str):
+                if reported_status == "ok":
+                    # `report_extraction_status(status="ok")` is a caller bug;
+                    # ignore it and keep looking for a real unhappy report.
+                    continue
+                first_reported = result
+                break
+
+        if failures:
+            first_failure_type = str(failures[0].get("error_type", ""))
+            notes = _truncate_notes(
+                f"{len(events)} saved; {len(failures)} save_event failure(s)"
+                f" [error_type: {first_failure_type}]"
             )
-    for record in save_event_records:
-        result = record.result
-        if not isinstance(result, dict):
-            continue
-        if "error_type" in result:
-            message = str(result.get("message", ""))
-            return ExtractionResult(
-                status="error",
-                event=None,
-                error_type="save_event_failed",
-                notes=_truncate_notes(message),
+        elif first_reported is not None:
+            reported_error_type = str(first_reported.get("error_type", ""))
+            reported_notes = str(first_reported.get("notes", ""))
+            notes = _truncate_notes(
+                f"{len(events)} saved; LLM also reported {reported_error_type}: {reported_notes}"
             )
+        else:
+            notes = _truncate_notes(loop_result.answer or "")
+
+        return ExtractionResult(
+            status="ok",
+            events=events,
+            error_type=None,
+            notes=notes,
+        )
+
+    # All-failed with no successes — the same redacted `[error_type: <token>]`
+    # construction as the mixed branch above. M3 shipped raw ValidationError
+    # strings here; this stage closes that pre-existing Rule 2 leak channel in
+    # the same commit that would otherwise widen it to the partial-success
+    # path.
+    if failures:
+        first_failure_type = str(failures[0].get("error_type", ""))
+        notes = _truncate_notes(
+            f"{len(failures)} save_event failure(s) [error_type: {first_failure_type}]"
+        )
+        return ExtractionResult(
+            status="error",
+            error_type="save_event_failed",
+            notes=notes,
+        )
 
     # Unhappy terminal call — `report_extraction_status`.
     for record in reversed(report_records):
@@ -337,7 +385,6 @@ def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> Extractio
                 continue
             return ExtractionResult(
                 status=status_cast,
-                event=None,
                 error_type=error_type_cast,
                 notes=notes_cast,
             )
@@ -359,14 +406,12 @@ def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> Extractio
                 error_type_cast = cast(ExtractionErrorType, error_type_str)
                 return ExtractionResult(
                     status="error",
-                    event=None,
                     error_type=error_type_cast,
                     notes=_truncate_notes(message),
                 )
             degraded_notes = _truncate_notes(f"unknown source error {error_type_str!r}: {message}")
             return ExtractionResult(
                 status="error",
-                event=None,
                 error_type="low_confidence_extraction",
                 notes=degraded_notes,
             )
@@ -374,7 +419,6 @@ def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> Extractio
     # Budget cap or unexplained stop — the loop ended without a terminal call.
     return ExtractionResult(
         status="error",
-        event=None,
         error_type="low_confidence_extraction",
         notes="ran out of steps without a terminal call",
     )

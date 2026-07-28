@@ -44,6 +44,8 @@ from planazo.sources.instagram.model_view import InstaloaderPostView
 from planazo.sources.models import MediaAsset, RawPost
 from planazo.storage import db
 
+assert MAX_STEPS == 8, "multi-event budget cap moved — update ADR 0012 rationale"
+
 _MVP_ARCH_PATH = Path(__file__).resolve().parent.parent / "docs" / "MVP-ARCHITECTURE.md"
 _TEST_URL = "https://www.instagram.com/p/ABC123/"
 
@@ -428,9 +430,12 @@ def test_extract_once_happy_path_parses_event_from_save_event_saved(
     result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
     assert result.status == "ok"
-    assert result.event is not None
-    assert result.event.source_url == _TEST_URL
-    assert result.event.title == "Barcelona Techno Night"
+    assert len(result.events) == 1
+    assert result.events[0].source_url == _TEST_URL
+    assert result.events[0].title == "Barcelona Techno Night"
+    # The single-event happy path does not supply `event_index_in_post`; the
+    # tool defaults to 0 and the persisted row carries slot 0.
+    assert result.events[0].event_index_in_post == 0
     assert result.error_type is None
     assert search_events_spy.call_count == 0
 
@@ -534,7 +539,7 @@ def test_extract_once_maps_report_extraction_status_error_type(
 
     assert result.error_type == error_type
     assert result.status == status
-    assert result.event is None
+    assert result.events == []
 
 
 def test_extract_once_surfaces_source_adapter_typed_error(
@@ -565,7 +570,7 @@ def test_extract_once_surfaces_source_adapter_typed_error(
 
     assert result.status == "error"
     assert result.error_type == "rate_limited"
-    assert result.event is None
+    assert result.events == []
 
 
 def test_extract_once_returns_source_error_when_llm_never_terminates_after_error(
@@ -623,7 +628,7 @@ def test_extract_once_marks_save_event_typed_error_as_save_event_failed(
 
     assert result.status == "error"
     assert result.error_type == "save_event_failed"
-    assert result.event is None
+    assert result.events == []
 
 
 # ------------------------------
@@ -869,7 +874,7 @@ def test_extract_once_returns_ok_when_retry_after_failed_save_succeeds(
     assert result.status == "ok", (
         f"expected ok after retry-success, got {result.status!r} error_type={result.error_type!r}"
     )
-    assert result.event is not None
+    assert len(result.events) == 1
     assert result.error_type is None
     assert call_count["n"] == 2
 
@@ -950,3 +955,231 @@ def test_extract_once_degrades_unknown_source_error_to_low_confidence(
     assert result.status == "error"
     assert result.error_type == "low_confidence_extraction"
     assert "network_timeout" in result.notes
+
+
+# ------------------------------
+# Multi-event carousels — the M3.5 surface
+# ------------------------------
+
+
+def _save_event_call_multi(
+    *,
+    event_index_in_post: int,
+    title: str = "Barcelona Techno Night",
+    start_utc: str = "2026-08-15T22:00:00+00:00",
+    end_utc: str = "2026-08-16T04:00:00+00:00",
+    call_id: str = "call_save",
+) -> dict[str, Any]:
+    """`save_event` tool call with an explicit slot index and per-test overrides."""
+    return {
+        "name": "save_event",
+        "arguments": {
+            "title": title,
+            "category": "music",
+            "source": "instagram",
+            "source_url": _TEST_URL,
+            "start_utc": start_utc,
+            "end_utc": end_utc,
+            "city": "Barcelona",
+            "confidence": 0.85,
+            "event_index_in_post": event_index_in_post,
+        },
+        "call_id": call_id,
+    }
+
+
+def test_extract_once_multi_event_happy_path_persists_all_slots(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A curator carousel becomes N events — two `save_event` calls with
+    slots 0 and 1 land as two rows, in trace order, and the hand-off carries
+    both."""
+    _seed_user()
+    source = _build_source(caption="Two events happening this weekend!")
+
+    fake_call = MagicMock(
+        side_effect=[
+            _turn("", [_fetch_call()]),
+            _turn(
+                "",
+                [
+                    _save_event_call_multi(
+                        event_index_in_post=0,
+                        title="Barcelona Techno Night",
+                        call_id="call_save_0",
+                    )
+                ],
+            ),
+            _turn(
+                "",
+                [
+                    _save_event_call_multi(
+                        event_index_in_post=1,
+                        title="Sunday Afterparty",
+                        start_utc="2026-08-16T14:00:00+00:00",
+                        end_utc="2026-08-16T20:00:00+00:00",
+                        call_id="call_save_1",
+                    )
+                ],
+            ),
+            _turn(""),  # brief forbids free-form text after the final save
+        ]
+    )
+    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
+
+    result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    assert result.status == "ok"
+    assert len(result.events) == 2
+    assert result.events[0].event_index_in_post == 0
+    assert result.events[1].event_index_in_post == 1
+    assert result.events[0].title == "Barcelona Techno Night"
+    assert result.events[1].title == "Sunday Afterparty"
+    assert result.error_type is None
+
+    # DB read-back: both rows persisted under the composite natural key.
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            "SELECT event_index_in_post, title FROM events WHERE source_url = ?"
+            " ORDER BY event_index_in_post ASC",
+            (_TEST_URL,),
+        ).fetchall()
+    finally:
+        conn.close()
+    assert [(int(r["event_index_in_post"]), r["title"]) for r in rows] == [
+        (0, "Barcelona Techno Night"),
+        (1, "Sunday Afterparty"),
+    ]
+
+
+def test_extract_once_multi_event_duplicate_slot_keeps_first_and_notes_error_type(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two `save_event` calls with the same slot on the same URL: the first
+    persists, the second returns `duplicate_event`; the hand-off is
+    `status="ok"` with one event and the redacted `[error_type: duplicate_event]`
+    token in `notes`."""
+    _seed_user()
+    source = _build_source(caption="A single event, LLM mistakenly retries")
+
+    fake_call = MagicMock(
+        side_effect=[
+            _turn("", [_fetch_call()]),
+            _turn("", [_save_event_call_multi(event_index_in_post=0, call_id="call_save_0")]),
+            _turn("", [_save_event_call_multi(event_index_in_post=0, call_id="call_save_0_dup")]),
+            _turn(""),
+        ]
+    )
+    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
+
+    result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    assert result.status == "ok"
+    assert len(result.events) == 1
+    assert result.events[0].event_index_in_post == 0
+    assert "duplicate_event" in result.notes
+    assert "1 saved; 1 save_event failure(s)" in result.notes
+
+
+def test_extract_once_multi_event_mixed_success_and_failure_uses_redacted_notes(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One slot saves cleanly; a sibling slot fails validation. The hand-off is
+    `status="ok"` with the successful subset, `notes` names the failure's
+    `error_type` token and never leaks caption bytes into notes even when the
+    failing call carried a caption-derived `title`."""
+    _seed_user()
+    caption = (
+        "MEGA CAROUSEL: three back-to-back nights at Nitsa, Nina Kraviz headlines"
+        " Friday, Amelie Lens headlines Saturday, and a Sunday afterparty seals it"
+        " — this description is deliberately at least five hundred characters long"
+        " so that we can slice a forty-character window out of it and drop that"
+        " slice into the failing save_event's `title` field, ready to be echoed by"
+        " a Pydantic ValidationError. If any 40-char window of this caption ends"
+        " up in ExtractionResult.notes, the Rule 2 leak channel is open. The"
+        " redacted `[error_type: <token>]` construction keeps notes clean."
+    )
+    assert len(caption) >= 500, "test setup requires a caption of at least 500 chars"
+    source = _build_source(caption=caption)
+
+    # A 40-char slice of the caption, used as the failing save_event's `title`.
+    caption_title_slice = caption[80:120]
+    assert len(caption_title_slice) == 40
+
+    fake_call = MagicMock(
+        side_effect=[
+            _turn("", [_fetch_call()]),
+            _turn(
+                "",
+                [
+                    _save_event_call_multi(
+                        event_index_in_post=0,
+                        title="Nitsa Friday",
+                        call_id="call_save_0",
+                    )
+                ],
+            ),
+            _turn(
+                "",
+                [
+                    _save_event_call_multi(
+                        event_index_in_post=1,
+                        title=caption_title_slice,
+                        start_utc="not-iso",  # triggers `invalid_event_data`
+                        call_id="call_save_1_bad",
+                    )
+                ],
+            ),
+            _turn(""),
+        ]
+    )
+    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
+
+    result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    assert result.status == "ok"
+    assert len(result.events) == 1
+    assert result.events[0].event_index_in_post == 0
+    assert "invalid_event_data" in result.notes
+    assert "1 saved; 1 save_event failure(s)" in result.notes
+    # Rule 2 regression — no 40-char substring of the caption reaches `notes`.
+    _assert_no_40_char_substring(result.notes, caption)
+
+
+def test_extract_once_multi_event_success_then_report_extraction_status(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One `save_event` succeeds, then the LLM fires
+    `report_extraction_status(status="error", ...)`. The successful save wins;
+    the hand-off is `status="ok"` with one event and `notes` records that the
+    LLM also flagged the unhappy branch."""
+    _seed_user()
+    source = _build_source(caption="One event, LLM flags second as ambiguous")
+
+    fake_call = MagicMock(
+        side_effect=[
+            _turn("", [_fetch_call()]),
+            _turn("", [_save_event_call_multi(event_index_in_post=0, call_id="call_save_0")]),
+            _turn(
+                "",
+                [
+                    _report_call(
+                        "ambiguous_content",
+                        status="error",
+                        notes="couldn't identify a second event",
+                    )
+                ],
+            ),
+            _turn(""),
+        ]
+    )
+    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
+
+    result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    assert result.status == "ok"
+    assert len(result.events) == 1
+    assert result.events[0].event_index_in_post == 0
+    assert result.error_type is None
+    assert "ambiguous_content" in result.notes

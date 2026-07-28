@@ -1,6 +1,6 @@
 # 0012 — Multi-event extraction: 0..N events per post
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-28
 - **Deciders:** cirogam22
 - **Relates to:** [`0005-multi-agent-shape.md`](0005-multi-agent-shape.md) (supersedes §Decision 10; partially supersedes §Decision 11's invariant clause), [`0003-sqlite-domain-store.md`](0003-sqlite-domain-store.md) (`save_event` tool contract).
