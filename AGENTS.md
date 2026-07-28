@@ -92,6 +92,7 @@ These are the shapes that flow between the agent loop, its tools, persisted stat
 | `UserPreferences` | Category interests, disliked sources, preferred hours, contacts to invite |
 | `RawPost` + `MediaAsset` | Media-type-agnostic source-adapter payload: source, permalink, caption, `posted_at`, `author_handle`, plus a `media` list of `MediaAsset` (image / video / thumbnail) — the shape the Extractor consumes. |
 | `Event` | Title, start, end, location, price, category, source, source URL, confidence score |
+| `ExtractionResult` | Delegation hand-off from Extractor to Recommender: `status`, `event`, `needs_approval=False`, `notes`, `error_type` (see [`src/planazo/extraction/models.py`](src/planazo/extraction/models.py)) |
 | `ExtractionError` | Typed error state (`missing_date`, `low_confidence_extraction`, `unsupported_source`, `api_error`, ...) with the source URL and the reason |
 | `RankedEventList` | Ordered `Event[]`, per-item reason, applied filters |
 | `CalendarDraft` | Proposed Google Calendar event (title, start, end, description, invitees) — pending user confirmation |

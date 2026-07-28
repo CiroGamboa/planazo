@@ -1,8 +1,9 @@
 # 0005 — Multi-agent shape
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-28
 - **Deciders:** cirogam22
+- **Landed by:** #17 — Instagram Extraction Agent + audit log (`feat(agents)`)
 - **Relates to:** [`0002-event-tool-contracts-and-approval-gate.md`](0002-event-tool-contracts-and-approval-gate.md) (`IRREVERSIBLE_TOOLS` scope — `save_event` explicitly outside), [`0003-sqlite-domain-store.md`](0003-sqlite-domain-store.md) (`save_event` public name pinned), [`0006-instagram-extraction-approach.md`](0006-instagram-extraction-approach.md) (source-adapter error taxonomy the Extractor surfaces), [`0007-monitor-scheduling-and-grades.md`](0007-monitor-scheduling-and-grades.md) (monitor's join-by-`run_id`), [`0008-domain-driven-module-layout.md`](0008-domain-driven-module-layout.md) (`extraction/` bounded-context placement — see "Relates to ADR 0008" below), [`0010-extensibility-interfaces.md`](0010-extensibility-interfaces.md) (`EventSource` seam the Extractor consumes).
 
 ## Context

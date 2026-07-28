@@ -190,7 +190,7 @@ Push-context (attached before the loop starts): `load_rules()` output, the user'
   ```
 - `dispatch_extraction` on the Recommender side calls `extract_once` and returns the structured object only. The caption text never enters the Recommender's messages — see §Trust boundaries below.
 
-Governed by [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-extraction-approach.md) and planned **ADR 0005 — Multi-agent shape**.
+Governed by [**ADR 0005 — Multi-agent shape**](adr/0005-multi-agent-shape.md) (Recommender/Extractor split, delegation brief, `ExtractionResult` hand-off, audit-log schema) and [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-extraction-approach.md) (source-adapter error taxonomy the Extractor surfaces).
 
 ### 5. Sources / connectors — `src/planazo/sources/`
 
@@ -544,7 +544,7 @@ Each is its own PR, blocked by its own ticket. This doc is what those PRs will p
 | --- | --- | --- |
 | 0003 | [`sqlite-domain-store`](adr/0003-sqlite-domain-store.md) | SQLite + JSON columns for `events`/`users`/`preferences`/`approvals`. Supersedes 0002's JSON persistence for the domain surface only. |
 | 0004 | [`three-store-memory-model`](adr/0004-three-store-memory-model.md) | Relational (SQLite), non-relational (JSON docstore), rules (markdown). Facts vs rules; private vs shared. |
-| 0005 | `multi-agent-shape` | Recommender + Extractor split. Delegation brief. `{status, result, needs_approval}` contract. Shared-memory traceability plan. |
+| 0005 | [`multi-agent-shape`](adr/0005-multi-agent-shape.md) | Recommender + Extractor split; `DELEGATION_BRIEF` byte-verbatim with this doc; `ExtractionResult` hand-off (`status`, `event`, `needs_approval=False`, `notes`, `error_type`); Extractor audit log = `RunStep(agent="extractor", ...)` lines joined by `run_id`. |
 | 0006 | [`instagram-extraction-approach`](adr/0006-instagram-extraction-approach.md) | Scraper: `instaloader` on `python:3.12-slim`; session via `INSTAGRAM_SESSION_ID` env var (anonymous fallback); per-media-type strategy (static, reel, carousel, video) with `unsupported_media` typed branch; rate-limit envelope surfaced to the caller, never retried inside the adapter; URL-only `MediaAsset` — the adapter never downloads binaries. |
 | 0007 | [`monitor-scheduling-and-grades`](adr/0007-monitor-scheduling-and-grades.md) | Categorical axes, rationale requirement, cron/GHA plan. |
 | 0008 | [`domain-driven-module-layout`](adr/0008-domain-driven-module-layout.md) | Bounded-context folder layout under `planazo/`; per-aggregate `models.py` + `repository.py` (+ `tools.py`); preserves ADR 0003/0004 API contracts. |
@@ -565,7 +565,7 @@ Every capability the MVP claims maps to a module, an evidence trace, and an ADR.
 | Facts (cued) vs rules (always-attached) | `memory/facts.py` vs `memory/rules.py` | `private-memory.md` — a fact resurfaces on cue | 0004 |
 | Private vs shared memory | `var/memory/private/` vs `shared/` | `private-memory.md`, `shared-memory.md` | 0004 |
 | Shared content is untrusted | Extractor trust boundary + `save_note` quoting | `untrusted-content.md` | 0005 (invariant), 0006 (source) |
-| Executor + specialist agent with delegation brief + shared memory | `event_agent.py` + `extractor.py` + `events` table + `extraction_runs.jsonl` | (integrated across bot flows) | 0005 |
+| Executor + specialist agent with delegation brief + shared memory | `event_agent.py` + `extractor.py` + `events` table + `extraction_runs.jsonl` | (integrated across bot flows) | [0005](adr/0005-multi-agent-shape.md) |
 | Monitor on its own clock, categorical grades + rationale | `monitor/` | `data/monitor/YYYY-MM-DD.md` | 0007 |
 
 ## Verification

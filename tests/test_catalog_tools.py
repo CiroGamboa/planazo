@@ -168,3 +168,12 @@ def test_schema_for_covers_both_catalog_tools() -> None:
         assert schema["name"] == tool.__name__
         assert "description" in schema
         assert "parameters" in schema
+
+
+def test_save_event_docstring_does_not_point_at_search_events() -> None:
+    """Regression guard for issue #9: `save_event`'s docstring must not
+    dangle a `search_events` pointer — the Extractor's registry does not
+    include `search_events`, and the pointer would trigger
+    `tool_failed: unknown tool: search_events`."""
+    assert save_event.__doc__ is not None
+    assert "use search_events" not in save_event.__doc__
