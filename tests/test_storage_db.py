@@ -5,13 +5,14 @@ import pytest
 
 from planazo.storage import db
 
-_V1_TABLES = {
+_EXPECTED_TABLES = {
     "events",
     "users",
     "preferences",
     "approvals",
     "extraction_runs_index",
     "scan_state",
+    "agent_runs",
 }
 
 
@@ -20,13 +21,13 @@ def _table_names(conn: sqlite3.Connection) -> set[str]:
     return {row["name"] for row in rows}
 
 
-def test_connect_applies_every_v1_table(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_connect_applies_every_expected_table(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(db, "DB_PATH", ":memory:")
 
     for _ in range(2):
         conn = db.connect()
         try:
-            assert _table_names(conn) == _V1_TABLES
+            assert _table_names(conn) == _EXPECTED_TABLES
         finally:
             conn.close()
 
@@ -40,13 +41,13 @@ def test_reconnecting_to_the_same_file_reapplies_the_schema_without_error(
 
     first = db.connect()
     try:
-        assert _table_names(first) == _V1_TABLES
+        assert _table_names(first) == _EXPECTED_TABLES
     finally:
         first.close()
 
     second = db.connect()
     try:
-        assert _table_names(second) == _V1_TABLES
+        assert _table_names(second) == _EXPECTED_TABLES
     finally:
         second.close()
 

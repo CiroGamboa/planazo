@@ -40,6 +40,7 @@ from __future__ import annotations
 import base64
 import logging
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, cast, get_args
 from uuid import uuid4
@@ -58,6 +59,13 @@ from planazo.extraction.models import (
     ExtractionStatus,
 )
 from planazo.memory.rules import load_rules
+from planazo.observability import (
+    FINAL_ANSWER_CAP,
+    USER_QUERY_CAP,
+    AgentRunLogger,
+    AgentRunRecord,
+    format_stored_text,
+)
 from planazo.sources.config import load_config
 from planazo.sources.instagram.adapter import InstagramSource
 from planazo.sources.instagram.client import InstagramClient
@@ -377,6 +385,10 @@ def extract_once(
         trace.append(record)
         logger(record)
 
+    # Capture wall-clock boundaries around `run_loop` so the `agent_runs`
+    # row's `started_at` / `ended_at` cover the full loop, including every
+    # tool dispatch (source fetch, save_event writes) — not just LLM turns.
+    started_at = datetime.now(UTC)
     loop_result = run_loop(
         user_message=USER_MESSAGE,
         tools=tool_schemas,
@@ -388,9 +400,64 @@ def extract_once(
         on_tool_output=_build_multimodal_hook(url),
         system=system_text,
     )
+    ended_at = datetime.now(UTC)
     logger.complete(loop_result)
 
+    # Best-effort SQLite audit-row write. `AgentRunLogger` catches every
+    # exception and logs a WARNING; the Extractor's `ExtractionResult` is
+    # the primary flow and observability failures must not affect it
+    # (Rule 4). No `record_runs` seam on `extract_once` — the JSONL writer
+    # above is always on, and the SQLite row-writer matches.
+    _record_agent_run_best_effort(
+        run_id=run_id,
+        user_id=delegator_user_id,
+        result=loop_result,
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+
     return _build_result(trace, loop_result)
+
+
+def _record_agent_run_best_effort(
+    *,
+    run_id: str,
+    user_id: int,
+    result: LoopResult,
+    started_at: datetime,
+    ended_at: datetime,
+) -> None:
+    """Build the sanitized `AgentRunRecord` and hand it to `AgentRunLogger`.
+
+    `USER_MESSAGE` is the fixed Extractor prompt — the caption itself
+    rides the system prompt (ADR 0005 §Trust boundary), never `user_query`,
+    so the sanitizer's leak channel is not exercised on the Extractor
+    side. `preference_read_error` cannot reach here — that branch is
+    Recommender-side only. The assert narrows the Literal-widening hole
+    mypy would otherwise flag on `result.stopped`.
+    """
+    assert result.stopped != "preference_read_error", (
+        "agent_runs records actual loop terminals; pre-run failures must not be logged"
+    )
+    agent_logger = AgentRunLogger(conn_factory=db.connect)
+    record = AgentRunRecord(
+        run_id=run_id,
+        agent_kind="extractor",
+        user_id=user_id,
+        user_query=format_stored_text(USER_MESSAGE, USER_QUERY_CAP),
+        final_answer=(
+            format_stored_text(result.answer, FINAL_ANSWER_CAP)
+            if result.answer is not None
+            else None
+        ),
+        # `LoopResult.stopped` widens by `preference_read_error`; the assert
+        # above narrows it out for the aggregate's Literal.
+        stopped=result.stopped,
+        steps_count=result.steps,
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+    agent_logger.record(record)
 
 
 def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> ExtractionResult:
