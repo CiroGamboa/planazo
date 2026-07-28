@@ -2,9 +2,11 @@
 
 Session mapping is create-on-first-contact and keyed by `telegram_user_id`
 (ADR 0011): the first message from an unseen sender inserts exactly one row,
-and every later message from that sender resolves to it. There is no
-registration step and no session table — the transport's stable user id is the
-session.
+and every later message from that sender resolves to it. There is still no
+session table — the transport's stable user id is the session — but a
+registration step now exists, tracked on that same `users` row via
+`UserRecord.pending_registration_field` (`bot/registration.py`,
+`docs/adr/0013-registration-conversation-state.md`).
 
 This module imports no transport, so a second surface resolves its senders
 through the same function by projecting them into an `IncomingMessage` first.

@@ -147,15 +147,16 @@ The layers below each map to one bounded context (annotated per layer). Numberin
 
 ### 1. Telegram bot — `src/planazo/bot/`
 
-- **`bot/app.py`** — entrypoint; builds the `python-telegram-bot` `Application`, registers one `CommandHandler` per command, converts each `Update` into an `IncomingMessage`, and runs long polling.
+- **`bot/app.py`** — entrypoint; builds the `python-telegram-bot` `Application`, registers one `CommandHandler` per command plus one `MessageHandler` for a plain-text registration answer, converts each `Update` into an `IncomingMessage`, and runs long polling.
 - **`bot/surface.py`** — `TelegramSurface`, the reply channel bound to a `Bot` and a `chat_id`; the implementation of `planazo.interfaces.surface.UserSurface`. Plain text, no `parse_mode`.
 - **`bot/models.py`** — `IncomingMessage`, the Pydantic v2 projection of one update that the command layer consumes.
 - **`bot/session.py`** — resolves the Telegram `user_id` to the internal `users.id` (create-on-first-contact). This is the multi-user seam.
-- **`bot/commands.py`** — `/start`, `/help`, `/me`, `/prefs` (view / set / remove). Pure CRUD on SQLite. `/find <query>` lands with #23 and is the one command that calls the LLM, via the Interpreter.
-- **`bot/config.py`** — Pydantic-validated config loader, mirroring `sources/config.py`. Reads `data/bot.yaml` at startup: the locale-keyed message catalog every reply resolves against, and the ordered registration-step declarations #56 will execute. Loaded once at startup; a malformed file stops the process before Telegram polling starts.
+- **`bot/commands.py`** — `/start`, `/help`, `/me`, `/prefs` (view / set / remove), and `/register` in the advertised command list (`COMMANDS`) — though `/register`'s own handler lives in `registration.py`, not here. Pure CRUD on SQLite. `/me` renders the sender's stored profile (name, age, location, language, nationality) once registration is complete, or points them at `/register` otherwise. Every command's reply resolves through the sender's stored language, falling back to `config.default_locale` when unset. `/find <query>` lands with #23 and is the one command that calls the LLM, via the Interpreter.
+- **`bot/registration.py`** — `/register` plus the plain-text `MessageHandler` that continues an in-flight answer, driving the five configured steps to completion or a re-prompt. PTB-free like `commands.py`; `app.py` wires it in as a `CommandHandler` and the tree's first `MessageHandler`.
+- **`bot/config.py`** — Pydantic-validated config loader, mirroring `sources/config.py`. Reads `data/bot.yaml` at startup: the locale-keyed message catalog every reply resolves against, and the ordered registration-step declarations `bot/registration.py` executes. Loaded once at startup; a malformed file stops the process before Telegram polling starts.
 - **`bot/approve.py`** — supplies `ApprovalGate.approve` via an inline keyboard `[Approve] [Decline]`, mirrors `_terminal_approve` in `src/planazo/agents/cli.py`. Lands with #22.
 
-Only `app.py` and `surface.py` import `telegram`; `models.py`, `session.py`, and `commands.py` are transport-neutral, which is what lets every command be exercised offline against real SQLite and a recording surface.
+Only `app.py` and `surface.py` import `telegram`; `models.py`, `session.py`, `commands.py`, and `registration.py` are transport-neutral, which is what lets every command be exercised offline against real SQLite and a recording surface.
 
 The bot layer is deliberately dumb — no LLM call originates inside it, guarded by the source-text scan in `tests/test_bot_no_llm.py` — so swapping to an LLM-driven natural-language dispatcher later is a change to one file (`commands.py`), not a rewrite.
 
@@ -224,18 +225,19 @@ Governed by [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-
 
 SQLite + JSON columns (via SQLite's JSON1). Domain-only — free-form agent memory lives elsewhere (§8).
 
-- **`storage/db.py`** — `connect()`: connection + migrations (`schema_v1.sql` applied idempotently on every connection open).
+- **`storage/db.py`** — `connect()`: connection + migrations. `schema_v1.sql` applies idempotently via `CREATE TABLE IF NOT EXISTS` on every open; `schema_v2.sql`'s `ALTER TABLE` statements apply exactly once per database, guarded by a `schema_migrations` table and run inside one transaction (`executescript()` does not roll back earlier DDL in the same script when a later statement fails, so the migration runs each statement through its own `execute()` call and rolls back the whole batch on failure).
 - **`storage/dao.py`** — narrow DAO surface, no ORM. Two tiers: connection-parameterized primitives for internal composition, and the self-contained `save_event`/`search_events` wrappers that open their own connection and return a typed-error-or-success dict, so they are usable directly as LLM tools.
 
-Schema (v1):
+Schema (v1 + v2):
 
 | Table | Purpose |
 | --- | --- |
 | `events(id, source, source_url UNIQUE, title, start_utc, end_utc, category, city, price_cents, geo_lat, geo_lng, confidence, extra JSON, ingested_at)` | The shared domain surface. `extra JSON` absorbs source-specific fields without altering the table. |
-| `users(id, telegram_user_id UNIQUE, display_name, created_at)` | Multi-user seam. |
+| `users(id, telegram_user_id UNIQUE, display_name, created_at, age, location, language, nationality, pending_registration_field)` | Multi-user seam. The last five columns (v2) back the guided registration flow: four nullable profile fields plus a pointer to whichever field the user's next message should answer (see [ADR 0013](adr/0013-registration-conversation-state.md)). |
 | `preferences(user_id FK, key, value, updated_at)` | Structured filter prefs used by the ranker and pushed into the agent context. |
 | `approvals(id, user_id FK, artifact_kind, artifact_id, decision, decided_at)` | Audit trail for future calendar wiring. |
 | `extraction_runs_index(id, run_id, user_id, url, started_at)` | Thin index; the full run payload lives in the JSONL log (§9). |
+| `schema_migrations(version PK, applied_at)` | Tracks which schema migrations beyond the v1 baseline have been applied, so `schema_v2.sql`'s `ALTER TABLE` statements run exactly once per database. |
 
 ```mermaid
 erDiagram
@@ -249,6 +251,11 @@ erDiagram
         string telegram_user_id UK
         string display_name
         datetime created_at
+        int age
+        string location
+        string language
+        string nationality
+        string pending_registration_field
     }
     events {
         int id PK
@@ -286,6 +293,10 @@ erDiagram
         int user_id FK
         string url
         datetime started_at
+    }
+    schema_migrations {
+        int version PK
+        datetime applied_at
     }
 ```
 
