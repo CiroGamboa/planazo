@@ -147,12 +147,16 @@ The layers below each map to one bounded context (annotated per layer). Numberin
 
 ### 1. Telegram bot — `src/planazo/bot/`
 
-- **`bot/app.py`** — entrypoint; `python-telegram-bot` handlers, dispatch to command handlers.
+- **`bot/app.py`** — entrypoint; builds the `python-telegram-bot` `Application`, registers one `CommandHandler` per command, converts each `Update` into an `IncomingMessage`, and runs long polling.
+- **`bot/surface.py`** — `TelegramSurface`, the reply channel bound to a `Bot` and a `chat_id`; the implementation of `planazo.interfaces.surface.UserSurface`. Plain text, no `parse_mode`.
+- **`bot/models.py`** — `IncomingMessage`, the Pydantic v2 projection of one update that the command layer consumes.
 - **`bot/session.py`** — resolves the Telegram `user_id` to the internal `users.id` (create-on-first-contact). This is the multi-user seam.
-- **`bot/approve.py`** — supplies `ApprovalGate.approve` via an inline keyboard `[Approve] [Decline]`, mirrors `_terminal_approve` in `src/planazo/agents/cli.py`.
-- **`bot/commands.py`** — `/start`, `/find <query>`, `/prefs`, `/me`, `/help`. `/find` is the only command that calls the LLM (via the Interpreter); the rest are pure CRUD on SQLite.
+- **`bot/commands.py`** — `/start`, `/help`, `/me`, `/prefs` (view / set / remove), plus every user-facing literal. Pure CRUD on SQLite. `/find <query>` lands with #23 and is the one command that calls the LLM, via the Interpreter.
+- **`bot/approve.py`** — supplies `ApprovalGate.approve` via an inline keyboard `[Approve] [Decline]`, mirrors `_terminal_approve` in `src/planazo/agents/cli.py`. Lands with #22.
 
-The bot layer is deliberately dumb — no LLM inside — so swapping to an LLM-driven natural-language dispatcher later is a change to one file (`commands.py`), not a rewrite.
+Only `app.py` and `surface.py` import `telegram`; `models.py`, `session.py`, and `commands.py` are transport-neutral, which is what lets every command be exercised offline against real SQLite and a recording surface.
+
+The bot layer is deliberately dumb — no LLM call originates inside it, guarded by the source-text scan in `tests/test_bot_no_llm.py` — so swapping to an LLM-driven natural-language dispatcher later is a change to one file (`commands.py`), not a rewrite.
 
 Governed by [**ADR 0011 — Telegram bot interface abstraction**](adr/0011-telegram-bot-interface.md) (no-LLM-in-bot invariant and how it is enforced, the PTB-free command signature, create-on-first-contact session mapping, the `UserSurface` shape, plain-text replies, long polling, and the threading contract for the approval seam).
 
@@ -349,7 +353,7 @@ Governed by **[ADR 0007 — Monitor scheduling and categorical grades](adr/0007-
 
 | Rule | Enforcement site |
 | --- | --- |
-| Rule 1 — validate at boundary | Every Telegram update parsed into a `TelegramUpdate` Pydantic model in `bot/`. Every LLM tool return is a Pydantic model in its owning bounded context's `models.py`. Every extractor result is `ExtractionResult`. No `dict[str, Any]` on any public surface. |
+| Rule 1 — validate at boundary | Every Telegram update projected into an `IncomingMessage` Pydantic model (`src/planazo/bot/models.py`) before any command reads it. Every LLM tool return is a Pydantic model in its owning bounded context's `models.py`. Every extractor result is `ExtractionResult`. No `dict[str, Any]` on any public surface. |
 | Rule 2 — untrusted text ≠ instructions | The Extraction Agent is the **only** module that ever holds raw scraped text in a prompt. It returns the parsed `Event` object to the Recommender — never the caption string. `sources/instagram/` returns `RawPost` only to the Extractor's `fetch_instagram_post` tool. Enforced by code shape, not by prompt discipline. |
 | Rule 3 — approval gate | Existing `ApprovalGate` (`src/planazo/approval/gate.py`) stays; `agents/loop.py` names the structural `ApprovalGate` Protocol it accepts so the runtime kernel holds no domain imports. Telegram callback in `bot/approve.py`. Calendar wiring stays as reference; v0.2 turns it on. |
 | Rule 4 — typed error branches | Every tool returns `error_type: str \| None` following the pattern already at `src/tools/tools.py:79` and `:174`. |
