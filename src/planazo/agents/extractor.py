@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Any, Final, cast, get_args
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -283,6 +283,24 @@ def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> Extractio
     fetch_records = [rec for rec in trace if rec.tool == "fetch_instagram_post"]
 
     # Happy path — the LLM called `save_event` and the tool persisted the row.
+    # Two-pass: any successful save wins over any failed save, so a retry
+    # after a `duplicate_event`/`invalid_event_data` failure still yields an
+    # `ok` hand-off. Single-pass (first-record-wins) would report failure
+    # even though the DB persisted the event on a subsequent attempt.
+    for record in save_event_records:
+        result = record.result
+        if not isinstance(result, dict):
+            continue
+        saved = result.get("saved")
+        if isinstance(saved, dict):
+            event = Event.model_validate(saved)
+            answer = loop_result.answer or ""
+            return ExtractionResult(
+                status="ok",
+                event=event,
+                error_type=None,
+                notes=_truncate_notes(answer),
+            )
     for record in save_event_records:
         result = record.result
         if not isinstance(result, dict):
@@ -294,16 +312,6 @@ def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> Extractio
                 event=None,
                 error_type="save_event_failed",
                 notes=_truncate_notes(message),
-            )
-        saved = result.get("saved")
-        if isinstance(saved, dict):
-            event = Event.model_validate(saved)
-            answer = loop_result.answer or ""
-            return ExtractionResult(
-                status="ok",
-                event=event,
-                error_type=None,
-                notes=_truncate_notes(answer),
             )
 
     # Unhappy terminal call — `report_extraction_status`.
@@ -336,17 +344,31 @@ def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> Extractio
 
     # Source-adapter typed error and no terminal tool call — surface the
     # first fetch's error branch (usually the only one before the LLM gives up).
+    # If the source-adapter taxonomy ever grows a branch outside
+    # `ExtractionErrorType` (ADR 0006 → ADR 0005), degrade to
+    # `low_confidence_extraction` rather than raising `ValidationError` at
+    # ExtractionResult construction — the unknown branch's name still lands
+    # in `notes` for the operator + monitor.
+    _known_error_types = set(get_args(ExtractionErrorType))
     for record in fetch_records:
         result = record.result
         if isinstance(result, dict) and "error_type" in result:
             error_type_str = cast(str, result["error_type"])
-            error_type_cast = cast(ExtractionErrorType, error_type_str)
             message = str(result.get("message", ""))
+            if error_type_str in _known_error_types:
+                error_type_cast = cast(ExtractionErrorType, error_type_str)
+                return ExtractionResult(
+                    status="error",
+                    event=None,
+                    error_type=error_type_cast,
+                    notes=_truncate_notes(message),
+                )
+            degraded_notes = _truncate_notes(f"unknown source error {error_type_str!r}: {message}")
             return ExtractionResult(
                 status="error",
                 event=None,
-                error_type=error_type_cast,
-                notes=_truncate_notes(message),
+                error_type="low_confidence_extraction",
+                notes=degraded_notes,
             )
 
     # Budget cap or unexplained stop — the loop ended without a terminal call.
