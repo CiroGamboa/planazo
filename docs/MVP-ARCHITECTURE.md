@@ -232,7 +232,7 @@ Governed by [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-
 
 SQLite + JSON columns (via SQLite's JSON1). Domain-only — free-form agent memory lives elsewhere (§8).
 
-- **`storage/db.py`** — `connect()`: connection + migrations (`schema_v1.sql` applied idempotently on every connection open).
+- **`storage/db.py`** — `connect()`: connection + migration runner. Reads `PRAGMA user_version`, applies every pending `NNN_*.sql` file in `storage/migrations/` in lexicographic order inside a transaction that bumps `user_version` in the same commit, so a mid-migration failure leaves the database at the last successful version.
 - **`storage/dao.py`** — narrow DAO surface, no ORM. Two tiers: connection-parameterized primitives for internal composition, and the self-contained `save_event`/`search_events` wrappers that open their own connection and return a typed-error-or-success dict, so they are usable directly as LLM tools.
 
 Schema (v1):

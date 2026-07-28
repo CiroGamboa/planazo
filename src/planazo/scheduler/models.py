@@ -3,7 +3,7 @@
 Three shapes land here:
 
 - `ScanState` — one `scan_state` row per source URL the scheduler has seen.
-  Field-for-field mirror of the SQL columns in `planazo/storage/schema_v1.sql`.
+  Field-for-field mirror of the SQL columns in `planazo/storage/migrations/`.
 - `SchedulerRunRecord` — the audit-log line the scheduler appends to
   `var/scheduler_runs.jsonl` on every tick, one line per source URL
   processed. Per [ADR 0011 §D8](../../../../../docs/adr/0011-scheduled-ingestion.md)

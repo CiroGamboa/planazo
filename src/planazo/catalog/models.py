@@ -1,6 +1,6 @@
 """Pydantic v2 row models for the catalog aggregate — `events` + `extraction_runs_index`.
 
-Every field matches its column in `planazo/storage/schema_v1.sql` 1:1, so a
+Every field matches its column in `planazo/storage/migrations/` 1:1, so a
 row is validated on the way in (AGENTS.md rule 1 — a `ValidationError` at
 the repository boundary becomes an `invalid_event_data` typed error, never
 a partial row) and reconstructed on the way out.
