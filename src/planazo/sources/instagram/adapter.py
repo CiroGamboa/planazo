@@ -40,15 +40,22 @@ from typing import Any
 
 from planazo.sources.base import error_state
 from planazo.sources.config import AccountConfig, SourceConfig
-from planazo.sources.instagram.client import InstagramClient, InstagramClientError
+from planazo.sources.instagram.client import (
+    InstagramClientError,
+    InstagramClientProtocol,
+)
 from planazo.sources.instagram.model_view import (
     InstaloaderPostView,
     InstaloaderSidecarNodeView,
 )
 from planazo.sources.models import MediaAsset, RawPost
 
+# Instagram shortcodes are `[A-Za-z0-9_-]+` followed by `/`, `?`, `#`, or the
+# end of the URL. The trailing character class rejects `AB.C` (dot in
+# shortcode) at regex time — without it `re.match` would happily consume the
+# `AB` prefix and treat the rest as trailing junk.
 _INSTAGRAM_URL = re.compile(
-    r"^https?://(?:www\.)?instagram\.com/(?:p|reel|tv)/(?P<shortcode>[^/?#]+)/?"
+    r"^https?://(?:www\.)?instagram\.com/(?:p|reel|tv)/(?P<shortcode>[A-Za-z0-9_-]+)(?:[/?#]|$)"
 )
 
 
@@ -57,7 +64,7 @@ class InstagramSource:
 
     name: str = "instagram"
 
-    def __init__(self, config: SourceConfig, client: InstagramClient) -> None:
+    def __init__(self, config: SourceConfig, client: InstagramClientProtocol) -> None:
         self._config = config
         self._client = client
         self.cadence: timedelta = config.default_cadence
@@ -118,6 +125,12 @@ class InstagramSource:
         )
 
     def _as_carousel(self, view: InstaloaderPostView, url: str) -> RawPost | dict[str, Any]:
+        if not view.sidecar_nodes:
+            return error_state(
+                "unsupported_media",
+                "carousel has no sidecar nodes",
+                url,
+            )
         media: list[MediaAsset] = []
         for node in view.sidecar_nodes:
             assets = _sidecar_node_assets(node)

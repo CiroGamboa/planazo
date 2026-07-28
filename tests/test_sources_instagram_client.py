@@ -24,6 +24,7 @@ from planazo.sources.base import ErrorType
 from planazo.sources.instagram.client import (
     InstagramClient,
     InstagramClientError,
+    _project_post,
 )
 from planazo.sources.instagram.model_view import (
     InstaloaderPostView,
@@ -156,3 +157,75 @@ def test_client_maps_instaloader_exception_to_wrapper_error(
         client.fetch_metadata("ABC123")
 
     assert excinfo.value.error_type == expected_error_type
+
+
+class _FakeSidecarNode:
+    """Attr-only duck-typed sidecar node — the shape `_project_post` reads."""
+
+    def __init__(self) -> None:
+        self.is_video = False
+        self.display_url = "https://scontent.cdninstagram.com/side.jpg"
+        self.video_url: str | None = None
+
+
+class _FakePost:
+    """Attr-only duck-typed `instaloader.Post` — the swap-point tripwire.
+
+    Every attribute `_project_post` reads is set here. If instaloader renames
+    or restructures one of these attributes on a minor version bump, this
+    test breaks first — before the CLI crashes silently in production.
+    """
+
+    def __init__(self, typename: str = "GraphImage") -> None:
+        self.shortcode = "ABC123"
+        self.typename = typename
+        self.caption = "hello"
+        self.date_utc = datetime(2026, 7, 20, 14, 30, tzinfo=UTC)
+        self.owner_username = "test_venue"
+        self.url = "https://scontent.cdninstagram.com/i.jpg"
+        self.video_url: str | None = None
+        self.video_duration: float | None = None
+        self.mediacount = 1
+        self._sidecar_nodes: list[_FakeSidecarNode] = []
+
+    def get_sidecar_nodes(self) -> list[_FakeSidecarNode]:
+        return self._sidecar_nodes
+
+
+def test_project_post_reads_expected_instaloader_post_attrs() -> None:
+    """`_project_post` reads every attribute the pinned instaloader surface exposes.
+
+    The dict this returns is what `InstaloaderPostView.model_validate` consumes
+    — a rename on `post.owner_username` (etc.) at instaloader's side breaks
+    this test first, before it reaches production.
+    """
+    fake_post = _FakePost()
+
+    payload = _project_post(fake_post)  # type: ignore[arg-type]
+
+    assert payload["shortcode"] == "ABC123"
+    assert payload["typename"] == "GraphImage"
+    assert payload["caption"] == "hello"
+    assert payload["owner_username"] == "test_venue"
+    assert payload["url"] == "https://scontent.cdninstagram.com/i.jpg"
+    assert payload["mediacount"] == 1
+    assert payload["sidecar_nodes"] == []
+
+
+def test_project_post_reads_sidecar_nodes_only_for_graphsidecar_typename() -> None:
+    """`_project_post` iterates `get_sidecar_nodes()` only when the post is a sidecar.
+
+    Locks the branch: a `GraphImage` post's sidecar iterator isn't called
+    (some instaloader versions raise on the call for non-sidecar posts);
+    a `GraphSidecar` post yields one dict per node.
+    """
+    sidecar_post = _FakePost(typename="GraphSidecar")
+    sidecar_post._sidecar_nodes = [_FakeSidecarNode(), _FakeSidecarNode()]
+
+    payload = _project_post(sidecar_post)  # type: ignore[arg-type]
+
+    assert len(payload["sidecar_nodes"]) == 2
+    assert payload["sidecar_nodes"][0]["is_video"] is False
+    assert (
+        payload["sidecar_nodes"][0]["display_url"] == "https://scontent.cdninstagram.com/side.jpg"
+    )

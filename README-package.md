@@ -94,13 +94,14 @@ Each source runs in its own Docker container so a Meta break (Instagram) does no
 Instagram is the first landed adapter:
 
 ```bash
-docker compose up sources-instagram                                  # build + run one-shot
-INSTAGRAM_SESSION_ID=<value> docker compose up sources-instagram
-uv run planazo-sources-instagram --dry-run                           # print the fetch plan without any network calls
-uv run planazo-sources-instagram --url https://instagram.com/p/ABC/  # fetch one post and print RawPost JSON
+docker compose up sources-instagram                                                 # print resolved fetch plan (no network)
+docker compose run --rm sources-instagram --url https://instagram.com/p/ABC/        # fetch one post; RawPost JSON on stdout
+INSTAGRAM_SESSION_ID=<value> docker compose run --rm sources-instagram --url <URL>  # same, with a logged-in session cookie
+uv run planazo-sources-instagram --dry-run                                          # host-side dry-run (no container)
+uv run planazo-sources-instagram --url https://instagram.com/p/ABC/                 # host-side fetch (no container)
 ```
 
-Exactly one of `--dry-run` or `--url` is required; running the CLI with neither exits with a usage error. `INSTAGRAM_SESSION_ID` is optional — copy the `sessionid` cookie from a logged-in Instagram browser session into `.env` when a public-account fetch returns `auth_failed`, otherwise leave it unset. The CLI never writes anywhere; `--url` prints one line of `RawPost.model_dump_json()` (happy path) or the typed error dict — `{"error_type": "…", "message": "…", "url": "…"}` — to stdout. See [ADR 0006 — Instagram extraction approach](docs/adr/0006-instagram-extraction-approach.md).
+`docker compose up sources-instagram` defaults to `--dry-run` — it resolves the plan from `data/sources.yaml` and exits 0 without any network calls. Use `docker compose run --rm sources-instagram --url <URL>` to fetch one specific post; `--dry-run` and `--url` are mutually exclusive and exactly one is required per invocation. `INSTAGRAM_SESSION_ID` is optional — copy the `sessionid` cookie from a logged-in Instagram browser session into `.env` when a public-account fetch returns `auth_failed`, otherwise leave it unset. The CLI never writes anywhere; `--url` prints one line of `RawPost.model_dump_json()` (happy path) or the typed error dict — `{"error_type": "…", "message": "…", "url": "…"}` — to stdout. See [ADR 0006 — Instagram extraction approach](docs/adr/0006-instagram-extraction-approach.md).
 
 ## Memory model demos
 

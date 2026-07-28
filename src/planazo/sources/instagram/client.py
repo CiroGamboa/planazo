@@ -39,7 +39,7 @@ unhandled exception rather than being silently mislabelled `rate_limited`.
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Protocol
 
 import instaloader
 from instaloader.exceptions import (
@@ -65,6 +65,18 @@ class InstagramClientError(Exception):
         self.error_type: ErrorType = error_type
 
 
+class InstagramClientProtocol(Protocol):
+    """Structural contract for the client the adapter consumes.
+
+    The concrete `InstagramClient` below conforms; test fakes conform by
+    exposing `fetch_metadata` with the same shape. Callers depend on this
+    Protocol, not the concrete class — that keeps the swap point one type
+    substitution away.
+    """
+
+    def fetch_metadata(self, shortcode: str) -> InstaloaderPostView: ...
+
+
 class InstagramClient:
     """Isolated `instaloader` call surface — the one place scraper choice lives.
 
@@ -87,6 +99,12 @@ class InstagramClient:
         session_id = os.environ.get("INSTAGRAM_SESSION_ID")
         if not session_id:
             return
+        # `context._session` is instaloader's underlying `requests.Session`. It
+        # is a leading-underscore attribute — instaloader offers no public
+        # accessor. If a future instaloader release renames or restructures it,
+        # this planter fails and `session_loaded` stays False; the scraper falls
+        # back to anonymous mode. Add a fallback here (or supersede ADR 0006)
+        # when it happens.
         session = self._loader.context._session
         session.cookies.set("sessionid", session_id, domain=".instagram.com")
         self._session_loaded = True

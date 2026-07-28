@@ -12,6 +12,11 @@ services:
       context: .
       dockerfile: docker/sources-instagram.Dockerfile
     restart: "no"
+    # `docker compose up sources-instagram` prints the resolved fetch plan for
+    # every configured account and exits 0 (no network calls). To fetch one
+    # specific post, use `docker compose run --rm sources-instagram --url <URL>`
+    # — the entrypoint accepts either mode; up ⇒ plan, run --url ⇒ fetch.
+    command: ["--dry-run"]
     environment:
       # Session cookie for logged-in fetch; unset → anonymous mode (ADR 0006,
       # decision 5). Copy the value from a logged-in browser session's
