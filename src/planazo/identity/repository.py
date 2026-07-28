@@ -13,7 +13,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime
 
-from planazo.identity.models import PreferenceRecord, UserRecord
+from planazo.identity.models import PreferenceReadResult, PreferenceRecord, UserRecord
 
 
 def _last_row_id(cursor: sqlite3.Cursor) -> int:
@@ -59,24 +59,32 @@ def get_or_create_user(
     return record.model_copy(update={"id": _last_row_id(cursor)})
 
 
-def get_preferences(conn: sqlite3.Connection, user_id: int) -> list[PreferenceRecord]:
-    """Return every preference row for `user_id`, by key.
+def get_preferences(conn: sqlite3.Connection, user_id: int) -> PreferenceReadResult:
+    """Return validated preference rows for `user_id`, ordered by ascending key.
 
-    An unknown `user_id` yields `[]` — this is a read, not a constraint
-    violation.
+    An unknown `user_id` is a successful empty read. A malformed persisted row
+    yields one safe typed outcome and no partial rows, so composition can fail
+    closed before model context is assembled.
     """
     rows = conn.execute(
         "SELECT * FROM preferences WHERE user_id = ? ORDER BY key", (user_id,)
     ).fetchall()
-    return [
-        PreferenceRecord(
-            user_id=row["user_id"],
-            key=row["key"],
-            value=row["value"],
-            updated_at=datetime.fromisoformat(row["updated_at"]),
+    try:
+        preferences = tuple(
+            PreferenceRecord(
+                user_id=row["user_id"],
+                key=row["key"],
+                value=row["value"],
+                updated_at=datetime.fromisoformat(row["updated_at"]),
+            )
+            for row in rows
         )
-        for row in rows
-    ]
+    except (IndexError, KeyError, TypeError, ValueError):
+        return PreferenceReadResult(
+            error_type="invalid_preference_data",
+            message="Stored preference data could not be validated safely.",
+        )
+    return PreferenceReadResult(rows=preferences, message="")
 
 
 def set_preference(

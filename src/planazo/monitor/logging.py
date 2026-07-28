@@ -74,6 +74,9 @@ class RunStepLogger:
 
     def complete(self, result: LoopResult) -> None:
         """Persist the terminal agent outcome so no-tool runs remain monitorable."""
+        assert result.stopped != "preference_read_error", (
+            "RunStep records actual loop terminals; pre-run failures must not be logged"
+        )
         completion = RunStep(
             run_id=self.run_id,
             agent="recommender",

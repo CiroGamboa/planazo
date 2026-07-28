@@ -8,8 +8,9 @@ way out. `id`/`created_at`/`updated_at` are `None` until the row exists.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class UserRecord(BaseModel):
@@ -48,3 +49,25 @@ class PreferenceRecord(BaseModel):
         if value and value.splitlines() != [value]:
             raise ValueError(f"preference value must be a single line: {value!r}")
         return value
+
+
+class PreferenceReadResult(BaseModel):
+    """Validated preference rows, or a safe failure to reconstruct them.
+
+    Repository reads fail closed: one malformed persisted row suppresses every
+    row rather than letting a partial set enter model-visible push context.
+    """
+
+    rows: tuple[PreferenceRecord, ...] = ()
+    error_type: Literal["invalid_preference_data"] | None = None
+    message: str = ""
+
+    @model_validator(mode="after")
+    def _has_one_outcome(self) -> PreferenceReadResult:
+        if self.error_type is None:
+            return self
+        if self.rows:
+            raise ValueError("invalid preference data cannot include rows")
+        if not self.message:
+            raise ValueError("invalid preference data needs a safe message")
+        return self

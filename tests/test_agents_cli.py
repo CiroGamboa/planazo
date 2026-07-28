@@ -9,6 +9,7 @@ import pytest
 from agentlib.core import CHEAP, MODELS, STRONG, Result
 from planazo.agents import cli, event_agent, loop
 from planazo.agents.loop import LoopResult
+from planazo.interfaces.runtime import LoopResult as RuntimeLoopResult
 
 
 def make_result(**overrides: object) -> Result:
@@ -488,3 +489,34 @@ def test_user_id_below_one_is_a_usage_error(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert excinfo.value.code == 2
     mock_call.assert_not_called()
+
+
+def test_cli_renders_preference_read_error_and_returns_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "run_once",
+        MagicMock(
+            return_value=LoopResult(
+                answer="Preferences could not be loaded safely; no model request was made.",
+                steps=0,
+                stopped="preference_read_error",
+            )
+        ),
+    )
+
+    code = cli.main(["hi"])
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "configuration/data-safe failure" in out
+    assert "answer: Preferences could not" not in out
+    assert "stop reason: preference_read_error" in out
+
+
+def test_both_runtime_result_mirrors_accept_preference_read_error() -> None:
+    concrete = LoopResult(answer="safe", steps=0, stopped="preference_read_error")
+    interface = RuntimeLoopResult(answer="safe", steps=0, stopped="preference_read_error")
+
+    assert concrete.stopped == interface.stopped == "preference_read_error"
