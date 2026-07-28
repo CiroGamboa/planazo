@@ -235,6 +235,7 @@ Thumbs.db
 # Plans and personal notes never live in the tree
 plans/
 _private/
+scratch/
 
 # Runtime audit traces and generated monitor reports
 data/runs/

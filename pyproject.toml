@@ -11,6 +11,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "pyyaml>=6",
     "instaloader>=4.14,<5",
+    "ffmpeg-python>=0.2,<0.3",
 ]
 
 [dependency-groups]

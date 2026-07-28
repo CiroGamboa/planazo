@@ -40,7 +40,7 @@ The system is agentic in the strict sense: **observe → reason → act → veri
 
 ## Setup & Commands
 
-The agent runtime lives under `src/planazo/` — see [`README-package.md`](README-package.md) for the full picture. From the repo root:
+The agent runtime lives under `src/planazo/` — see [`README-package.md`](README-package.md) for the full picture. Extraction requires an `ffmpeg` binary on `PATH` (macOS: `brew install ffmpeg`; Linux: `apt-get install ffmpeg`) — the Extractor materializes reel frames on the host that runs `planazo-agent`. From the repo root:
 
 ```
 uv sync                                          # install
