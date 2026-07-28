@@ -1,6 +1,6 @@
 """Pydantic v2 row models for the identity aggregate — `users` + `preferences`.
 
-Both fields match their columns in `planazo/storage/schema_v1.sql` 1:1, so a
+Both fields match their columns in `planazo/storage/migrations/` 1:1, so a
 row is validated on the way in (AGENTS.md rule 1) and reconstructed on the
 way out. `id`/`created_at`/`updated_at` are `None` until the row exists.
 """
