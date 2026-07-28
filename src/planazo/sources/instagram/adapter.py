@@ -39,7 +39,7 @@ from datetime import timedelta
 from typing import Any
 
 from planazo.sources.base import error_state
-from planazo.sources.config import AccountConfig, MediaTypeFlags, SourceConfig
+from planazo.sources.config import AccountConfig, SourceConfig
 from planazo.sources.instagram.client import InstagramClient, InstagramClientError
 from planazo.sources.instagram.model_view import (
     InstaloaderPostView,
@@ -50,8 +50,6 @@ from planazo.sources.models import MediaAsset, RawPost
 _INSTAGRAM_URL = re.compile(
     r"^https?://(?:www\.)?instagram\.com/(?:p|reel|tv)/(?P<shortcode>[^/?#]+)/?"
 )
-
-_MEDIA_TYPE_FIELDS: tuple[str, ...] = ("static_posts", "reels", "carousels", "video_posts")
 
 
 class InstagramSource:
@@ -92,7 +90,7 @@ class InstagramSource:
         for the account on each cadence tick.
         """
         flags = account.resolved_media_types(self._config)
-        return [(account.url, kind) for kind in _enabled_media_types(flags)]
+        return [(account.url, kind) for kind in flags.enabled_kinds()]
 
     def _route(self, view: InstaloaderPostView, url: str) -> RawPost | dict[str, Any]:
         """Branch on `typename` — one arm per supported post shape."""
@@ -193,8 +191,3 @@ def _sidecar_node_assets(node: InstaloaderSidecarNodeView) -> list[MediaAsset] |
         ),
         MediaAsset(kind="thumbnail", url=node.display_url),
     ]
-
-
-def _enabled_media_types(flags: MediaTypeFlags) -> list[str]:
-    """Return the enabled media-type field names in declaration order."""
-    return [name for name in _MEDIA_TYPE_FIELDS if getattr(flags, name)]

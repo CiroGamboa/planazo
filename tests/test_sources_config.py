@@ -136,3 +136,18 @@ sources:
 
 def test_sources_config_defaults_to_empty_map() -> None:
     assert SourcesConfig().sources == {}
+
+
+def test_media_type_flags_enabled_kinds_returns_all_in_declaration_order() -> None:
+    flags = MediaTypeFlags()
+    assert flags.enabled_kinds() == ["static_posts", "reels", "carousels", "video_posts"]
+
+
+def test_media_type_flags_enabled_kinds_skips_disabled() -> None:
+    flags = MediaTypeFlags(static_posts=True, reels=False, carousels=True, video_posts=False)
+    assert flags.enabled_kinds() == ["static_posts", "carousels"]
+
+
+def test_media_type_flags_enabled_kinds_all_disabled_returns_empty() -> None:
+    flags = MediaTypeFlags(static_posts=False, reels=False, carousels=False, video_posts=False)
+    assert flags.enabled_kinds() == []

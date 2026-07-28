@@ -25,16 +25,10 @@ import json
 import sys
 from pathlib import Path
 
-from planazo.sources.config import (
-    MediaTypeFlags,
-    SourceConfig,
-    load_config,
-)
+from planazo.sources.config import SourceConfig, load_config
 from planazo.sources.instagram.adapter import InstagramSource
 from planazo.sources.instagram.client import InstagramClient
 from planazo.sources.models import RawPost
-
-_MEDIA_TYPE_FIELDS: tuple[str, ...] = ("static_posts", "reels", "carousels", "video_posts")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -58,18 +52,13 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _enabled_media_types(flags: MediaTypeFlags) -> list[str]:
-    """Return the enabled media-type field names in declaration order."""
-    return [name for name in _MEDIA_TYPE_FIELDS if getattr(flags, name)]
-
-
 def _plan_lines(source: SourceConfig) -> list[str]:
     """Build the (account, media-type) plan the CLI prints in `--dry-run`."""
     lines: list[str] = []
     for account in source.accounts:
         media_types = account.resolved_media_types(source)
         cadence = account.resolved_cadence(source)
-        for media_type in _enabled_media_types(media_types):
+        for media_type in media_types.enabled_kinds():
             lines.append(f"{account.url} {media_type} cadence={cadence}")
     return lines
 
