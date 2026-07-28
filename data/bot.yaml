@@ -27,6 +27,10 @@ messages:
   register_location: {en: "Which city or neighbourhood are you in?", es: "¿En qué ciudad o barrio estás?"}
   register_language: {en: "Which language do you want me to reply in? (en/es)", es: "¿En qué idioma quieres que te responda? (en/es)"}
   register_nationality: {en: "What is your nationality?", es: "¿Cuál es tu nacionalidad?"}
+  register_invalid_text: {en: "That doesn't work — send between {min_length} and {max_length} characters.", es: "Eso no vale — envía entre {min_length} y {max_length} caracteres."}
+  register_invalid_int_range: {en: "That doesn't work — send a whole number between {minimum} and {maximum}.", es: "Eso no vale — envía un número entero entre {minimum} y {maximum}."}
+  register_invalid_locale: {en: "That doesn't work — reply with one of: {locales}.", es: "Eso no vale — responde con una de estas opciones: {locales}."}
+  register_complete: {en: "All set! Your profile is saved. Use /me to see it.", es: "¡Todo listo! Tu perfil está guardado. Usa /me para verlo."}
 registration:
   steps:
     - profile_field: display_name
