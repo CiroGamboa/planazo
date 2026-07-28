@@ -227,7 +227,7 @@ Schema (v1):
 
 | Table | Purpose |
 | --- | --- |
-| `events(id, source, source_url UNIQUE, title, start_utc, end_utc, category, city, price_cents, geo_lat, geo_lng, confidence, extra JSON, ingested_at)` | The shared domain surface. `extra JSON` absorbs source-specific fields without altering the table. |
+| `events(id, source, source_url, title, start_utc, end_utc, category, city, price_cents, geo_lat, geo_lng, confidence, extra JSON, ingested_at, event_index_in_post, UNIQUE(source_url, event_index_in_post))` | The shared domain surface. `extra JSON` absorbs source-specific fields without altering the table. Composite `(source_url, event_index_in_post)` UNIQUE lets one Instagram post persist N distinct events (multi-event carousels) — see ADR 0012. |
 | `users(id, telegram_user_id UNIQUE, display_name, created_at)` | Multi-user seam. |
 | `preferences(user_id FK, key, value, updated_at)` | Structured filter prefs used by the ranker and pushed into the agent context. |
 | `approvals(id, user_id FK, artifact_kind, artifact_id, decision, decided_at)` | Audit trail for future calendar wiring. |
@@ -249,7 +249,7 @@ erDiagram
     events {
         int id PK
         string source
-        string source_url UK
+        string source_url
         string title
         datetime start_utc
         datetime end_utc
@@ -261,6 +261,8 @@ erDiagram
         float confidence
         json extra
         datetime ingested_at
+        int event_index_in_post
+        composite UK "UNIQUE(source_url, event_index_in_post)"
     }
     preferences {
         int user_id FK
@@ -545,7 +547,7 @@ Each is its own PR, blocked by its own ticket. This doc is what those PRs will p
 | --- | --- | --- |
 | 0003 | [`sqlite-domain-store`](adr/0003-sqlite-domain-store.md) | SQLite + JSON columns for `events`/`users`/`preferences`/`approvals`. Supersedes 0002's JSON persistence for the domain surface only. |
 | 0004 | [`three-store-memory-model`](adr/0004-three-store-memory-model.md) | Relational (SQLite), non-relational (JSON docstore), rules (markdown). Facts vs rules; private vs shared. |
-| 0005 | [`multi-agent-shape`](adr/0005-multi-agent-shape.md) | Recommender + Extractor split; `DELEGATION_BRIEF` byte-verbatim with this doc; `ExtractionResult` hand-off (`status`, `event`, `needs_approval=False`, `notes`, `error_type`); Extractor audit log = `RunStep(agent="extractor", ...)` lines joined by `run_id`. — §Decision 10 superseded and §Decision 11's invariant clause partially superseded by ADR 0012 (#64) |
+| 0005 | [`multi-agent-shape`](adr/0005-multi-agent-shape.md) | Recommender + Extractor split; `DELEGATION_BRIEF` byte-verbatim with this doc; `ExtractionResult` hand-off (`status`, `events` (list), `needs_approval=False`, `notes`, `error_type`); Extractor audit log = `RunStep(agent="extractor", ...)` lines joined by `run_id`. — §Decision 10 superseded and §Decision 11's invariant clause partially superseded by ADR 0012 (#64) |
 | 0006 | [`instagram-extraction-approach`](adr/0006-instagram-extraction-approach.md) | Scraper: `instaloader` on `python:3.12-slim`; session via `INSTAGRAM_SESSION_ID` env var (anonymous fallback); per-media-type strategy (static, reel, carousel, video) with `unsupported_media` typed branch; rate-limit envelope surfaced to the caller, never retried inside the adapter; URL-only `MediaAsset` — the adapter never downloads binaries. |
 | 0007 | [`monitor-scheduling-and-grades`](adr/0007-monitor-scheduling-and-grades.md) | Categorical axes, rationale requirement, cron/GHA plan. |
 | 0008 | [`domain-driven-module-layout`](adr/0008-domain-driven-module-layout.md) | Bounded-context folder layout under `planazo/`; per-aggregate `models.py` + `repository.py` (+ `tools.py`); preserves ADR 0003/0004 API contracts. |
