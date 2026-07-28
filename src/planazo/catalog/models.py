@@ -36,6 +36,10 @@ class Event(BaseModel):
     # stored as a JSON-encoded object in the `extra` TEXT column.
     extra: dict[str, object] = Field(default_factory=dict)
     ingested_at: datetime | None = None
+    # A post announcing multiple distinct events becomes N rows, one per event,
+    # indexed by `event_index_in_post` starting at 0. The natural key is the
+    # composite `(source_url, event_index_in_post)`.
+    event_index_in_post: int = Field(default=0, ge=0)
 
 
 class ExtractionRunIndexEntry(BaseModel):

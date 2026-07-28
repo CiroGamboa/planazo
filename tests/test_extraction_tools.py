@@ -84,7 +84,7 @@ def test_inner_callable_returns_extract_once_result_byte_for_byte(
     event = _make_event()
     fixed_result = ExtractionResult(
         status="ok",
-        event=event,
+        events=[event],
         error_type=None,
         notes="short paraphrase",
     )
@@ -132,7 +132,7 @@ def test_inner_callable_passes_error_branches_through_unchanged(
     )
     error_result = ExtractionResult(
         status=status,  # type: ignore[arg-type]
-        event=None,
+        events=[],
         error_type=error_type,  # type: ignore[arg-type]
         notes="the model said so",
     )
@@ -173,7 +173,7 @@ def test_inner_callable_rejects_a_crafted_delegator_user_id_kwarg(
     # Positive control — the identical call without the crafted kwarg reaches
     # the stub, which means the TypeError above was about the kwarg and not
     # about the call shape.
-    fixed = ExtractionResult(status="ok", event=_make_event(), error_type=None)
+    fixed = ExtractionResult(status="ok", events=[_make_event()], error_type=None)
     monkeypatch.setattr("planazo.extraction.tools.extract_once", lambda url, **_kw: fixed)
     _, registry = tools.build_dispatch_extraction(1)
     assert registry["dispatch_extraction"](url="https://x/y") == fixed.model_dump(mode="json")

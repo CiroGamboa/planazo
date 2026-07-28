@@ -54,13 +54,14 @@ def build_dispatch_extraction(
 
         Call this when the user asks about a specific Instagram post — the
         `url` is the post link. The Extractor fetches the post, decides
-        whether one event can be extracted, and returns a structured
-        hand-off: `status` is `"ok"` with a populated `event` on success,
-        `"error"` with a typed `error_type` on failure, and
-        `"needs_clarification"` with a typed `error_type` when the post is
-        ambiguous (missing date, out-of-metro venue, multi-event carousel).
-        The post's caption text never crosses back — only the structured
-        fields listed above.
+        which events (0..N) it announces, and returns a structured
+        hand-off: `status` is `"ok"` with a populated `events` list on
+        success (one entry per distinct event the post announces — a single
+        post can carry multiple events, e.g. a curator carousel), `"error"`
+        with a typed `error_type` on failure, and `"needs_clarification"`
+        with a typed `error_type` when the post is ambiguous (missing date,
+        out-of-metro venue, unseparable carousel). The post's caption text
+        never crosses back — only the structured fields listed above.
         """
         result = extract_once(url, delegator_user_id=owner)
         return result.model_dump(mode="json")
