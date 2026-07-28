@@ -13,7 +13,8 @@ from collections.abc import Iterator
 import pytest
 
 from planazo.bot.models import IncomingMessage
-from planazo.bot.session import resolve_user
+from planazo.bot.session import resolve_user, stored_id
+from planazo.identity import UserRecord
 from planazo.storage import db
 
 
@@ -67,3 +68,16 @@ def test_two_senders_get_two_rows(conn: sqlite3.Connection) -> None:
 
     assert first.id != second.id
     assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 2
+
+
+def test_stored_id_raises_for_an_unsaved_record() -> None:
+    unsaved = UserRecord(id=None, telegram_user_id="tg-1", display_name="Dani V")
+
+    with pytest.raises(RuntimeError):
+        stored_id(unsaved)
+
+
+def test_stored_id_returns_the_id_of_a_persisted_record(conn: sqlite3.Connection) -> None:
+    user = resolve_user(conn, make_message())
+
+    assert stored_id(user) == user.id

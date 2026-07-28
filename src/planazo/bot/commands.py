@@ -30,8 +30,8 @@ from pydantic import ValidationError
 
 from planazo.bot.config import BotConfig, resolve
 from planazo.bot.models import IncomingMessage
-from planazo.bot.session import resolve_user
-from planazo.identity import UserRecord, delete_preference, get_preferences, set_preference
+from planazo.bot.session import resolve_user, stored_id
+from planazo.identity import delete_preference, get_preferences, set_preference
 from planazo.interfaces.surface import UserSurface
 
 COMMANDS: Final[Mapping[str, str]] = {
@@ -41,19 +41,6 @@ COMMANDS: Final[Mapping[str, str]] = {
     "/prefs": "cmd_prefs",
     "/register": "cmd_register",
 }
-
-
-def _stored_id(user: UserRecord) -> int:
-    """The `users.id` of a row that has been through the repository.
-
-    `UserRecord.id` is `None` only for a record that has not been written yet,
-    which `resolve_user` never returns. Raising rather than replying keeps the
-    impossible case loud: it would mean the repository stopped returning the
-    row it stored, not that the user typed something wrong.
-    """
-    if user.id is None:
-        raise RuntimeError(f"resolved an unsaved users row for {user.telegram_user_id!r}")
-    return user.id
 
 
 def _command_list(config: BotConfig, locale: str) -> str:
@@ -183,7 +170,7 @@ async def handle_me(
         await surface.reply(resolve(config, "me_not_registered", locale))
         return
 
-    user_id = _stored_id(user)
+    user_id = stored_id(user)
     result = get_preferences(conn, user_id)
     if result.error_type is not None:
         await surface.reply(resolve(config, "prefs_read_error", locale))
@@ -231,7 +218,7 @@ async def handle_prefs(
     subcommand = parts[1] if len(parts) > 1 else None
     user = resolve_user(conn, message)
     locale = user.language or config.default_locale
-    user_id = _stored_id(user)
+    user_id = stored_id(user)
 
     if subcommand is None:
         await surface.reply(_list_preferences(conn, user_id, config, locale))
