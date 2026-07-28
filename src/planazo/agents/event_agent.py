@@ -30,7 +30,7 @@ from typing import Any
 from agentlib.core import CHEAP
 from planazo.agents.loop import LoopResult, StepRecord, run_loop
 from planazo.catalog import search_events
-from planazo.identity import get_preferences
+from planazo.identity import PreferenceReadResult, get_preferences
 from planazo.memory.api import build_memory_tools
 from planazo.memory.rules import load_rules
 from planazo.monitor.logging import RunStepLogger
@@ -38,29 +38,43 @@ from planazo.storage import db
 from tools import tools as calendar_tools
 from tools.schema import schema_for
 
+PREFERENCE_PUSH_CAP = 1_200
+PREFERENCE_OMISSION_MARKER = "- [additional preferences omitted]"
+PREFERENCE_READ_ERROR_ANSWER = "Preferences could not be loaded safely; no model request was made."
 
-def _preferences_text(user_id: int) -> str:
-    """Render `user_id`'s stored preference rows as push context.
 
-    An identity with no rows yet says so explicitly rather than rendering an
-    empty heading the model has to interpret.
+def _preferences_text(preferences: PreferenceReadResult) -> str | PreferenceReadResult:
+    """Render a validated preference read as bounded, deterministic push context.
 
-    Every key and value goes in as a quoted literal (`!r`), which is what keeps
-    this text structural: `repr` escapes every non-printable character, line
-    separators included, so one row is always exactly one line, and a stored
-    value carrying a marker like `SYSTEM:` stays visibly inside quotes instead
-    of reading as a heading the system message declared. `PreferenceRecord`
-    rejects a multi-line value at the write boundary; this rendering holds the
-    same line whatever a row on disk contains.
+    The full section is capped at `PREFERENCE_PUSH_CAP` Unicode code points.
+    Rows are whole quoted lines in repository key order; reserving the exact
+    omission marker before considering a row makes every omission visible.
+    Invalid persisted data is returned untouched so `run_once` can stop before
+    it creates a trace or makes a model request.
     """
+    if preferences.error_type is not None:
+        return preferences
+    if not preferences.rows:
+        return "User preferences: none saved yet"
+
+    heading = "User preferences:"
+    suffix = f"\n{PREFERENCE_OMISSION_MARKER}"
+    included_lines = ""
+    for row in preferences.rows:
+        next_line = f"\n- {row.key!r}: {row.value!r}"
+        if len(heading + included_lines + next_line + suffix) > PREFERENCE_PUSH_CAP:
+            return heading + included_lines + suffix
+        included_lines += next_line
+    return heading + included_lines
+
+
+def _read_preferences(user_id: int) -> PreferenceReadResult:
+    """Read one identity's preference rows through the typed repository boundary."""
     conn = db.connect()
     try:
-        rows = get_preferences(conn, user_id)
+        return get_preferences(conn, user_id)
     finally:
         conn.close()
-    if not rows:
-        return "User preferences: none saved yet"
-    return "User preferences:\n" + "\n".join(f"- {row.key!r}: {row.value!r}" for row in rows)
 
 
 def run_once(user_message: str, **run_context: Any) -> LoopResult:
@@ -112,10 +126,23 @@ def run_once(user_message: str, **run_context: Any) -> LoopResult:
       name is in its set is dispatched; omit to dispatch every tool call
       without an approval prompt.
     """
+    user_id: int | None = run_context.get("user_id")
+    system_text = load_rules()
+    if user_id is not None:
+        preferences = _preferences_text(_read_preferences(user_id))
+        if isinstance(preferences, PreferenceReadResult):
+            # This is a composition failure, not a loop terminal state: do not
+            # create a monitor trace that would violate RunStep's invariants.
+            return LoopResult(
+                answer=PREFERENCE_READ_ERROR_ANSWER,
+                steps=0,
+                stopped="preference_read_error",
+            )
+        system_text = f"{system_text}\n\n{preferences}" if system_text else preferences
+
     tool_schemas: list[dict[str, Any]] = [schema_for(search_events)]  # Any: see schema_for
     registry: dict[str, Callable[..., dict[str, object]]] = {"search_events": search_events}
 
-    user_id: int | None = run_context.get("user_id")
     if user_id is not None:
         memory_schemas, memory_registry = build_memory_tools(user_id)
         tool_schemas = tool_schemas + memory_schemas
@@ -133,11 +160,6 @@ def run_once(user_message: str, **run_context: Any) -> LoopResult:
     if run_context.get("calendar_enabled", False):
         tool_schemas = tool_schemas + calendar_tools.TOOL_SCHEMAS
         registry = {**registry, **calendar_tools.TOOL_REGISTRY}
-
-    system_text = load_rules()
-    if user_id is not None:
-        preferences = _preferences_text(user_id)
-        system_text = f"{system_text}\n\n{preferences}" if system_text else preferences
 
     model = run_context.get("model", CHEAP)
     supplied_observer = run_context.get("on_step")

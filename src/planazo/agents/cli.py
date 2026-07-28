@@ -110,7 +110,9 @@ def _render_result(result: LoopResult) -> str:
     before the plain-answer branch — otherwise a cut-off answer would render as
     a trustworthy complete one.
     """
-    if result.stopped == "truncated":
+    if result.stopped == "preference_read_error":
+        body = "configuration/data-safe failure: preferences could not be loaded safely"
+    elif result.stopped == "truncated":
         body = f"partial answer (truncated by output cap): {result.answer}"
     elif result.answer is not None:
         body = f"answer: {result.answer}"
@@ -171,7 +173,7 @@ def _run(
         print(str(exc))
         return 1
     print(_render_result(result))
-    return 0
+    return 1 if result.stopped == "preference_read_error" else 0
 
 
 def _repl(*, model: str, max_steps: int | None, calendar_enabled: bool, user_id: int | None) -> int:

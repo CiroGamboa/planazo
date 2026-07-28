@@ -24,8 +24,8 @@ recorded in the trace and fed back to the model as that call's tool output.
 Completely opaque to what any given tool does: `tools`/`registry` are both
 supplied by the caller, so swapping in a different tool set requires zero
 changes here. This module deliberately holds no `planazo.` imports so a
-future runtime-kernel consolidation can move it under a shared kernel
-without dragging domain code along.
+future runtime-kernel consolidation can move it under a shared kernel without
+dragging domain code along.
 """
 
 import json
@@ -37,44 +37,38 @@ from agentlib.tools import call
 
 
 class ApprovalGate(Protocol):
-    """The structural contract `run_loop` needs from an approval callback.
+    """The structural approval callback contract used by `run_loop`.
 
-    Any object with the two attributes below satisfies this Protocol; the
-    concrete `@dataclass(frozen=True)` implementation lives in
-    `planazo.approval.gate` (the approval bounded context). Declared here
-    structurally so this module holds no `planazo.` imports — a future
-    kernel-consolidation move can relocate `loop.py` without dragging any
-    domain package along, and a future non-domain caller (a WhatsApp
-    surface's own approve callback, a CI-injected fake) can conform to the
-    same shape without importing the domain class.
+    Concrete implementation: `planazo.approval.gate.ApprovalGate`. This local
+    Protocol keeps the generic runtime independent of Planazo package imports.
     """
 
     tool_names: frozenset[str]
-    approve: Callable[[str, dict[str, Any]], bool]  # Any: tool args, arbitrary per tool schema
+    approve: Callable[[str, dict[str, Any]], bool]
 
 
 @dataclass(frozen=True)
 class LoopResult:
-    """The outcome of one `run_loop()` run."""
+    """The outcome of a loop run or composition-root pre-run failure.
 
-    answer: str | None  # the final turn's text; None iff stopped == "max_steps"
-    steps: int  # number of agentlib.tools.call invocations made (>= 1)
-    stopped: Literal["answered", "truncated", "max_steps"]
+    `run_loop` itself creates only `answered`, `truncated`, and `max_steps`.
+    A composition root may return `preference_read_error` before a model call;
+    `answer` is `None` only for `max_steps`.
+    """
+
+    answer: str | None
+    steps: int
+    stopped: Literal["answered", "truncated", "max_steps", "preference_read_error"]
 
 
 @dataclass(frozen=True)
 class StepRecord:
-    """One tool call dispatched during a `run_loop()` run.
+    """One tool dispatch observed during an agent-loop run."""
 
-    Emitted to the caller's `on_step` observer the instant a tool's result is
-    computed, so a caller can print, log, or record the trace live without the
-    loop owning any presentation.
-    """
-
-    step: int  # 1-based; matches run_loop's `steps` counter (first turn == 1)
-    tool: str  # tool name dispatched
-    arguments: dict[str, Any]  # Any: tool args, arbitrary per each tool's schema
-    result: Any  # Any: tool return value, no fixed shape
+    step: int
+    tool: str
+    arguments: dict[str, Any]
+    result: Any
 
 
 DECLINED_RESULT: Final[dict[str, object]] = {

@@ -58,3 +58,20 @@ def test_completion_trace_requires_a_stop_reason() -> None:
             wall_clock_ms=10,
             phase="completion",
         )
+
+
+def test_run_step_rejects_the_pre_run_preference_read_error() -> None:
+    with pytest.raises(ValidationError):
+        RunStep(
+            run_id="run-1",
+            agent="recommender",
+            started_at="2026-07-27T12:00:00Z",
+            recorded_at="2026-07-27T12:00:01Z",
+            model="gpt-5.4-nano",
+            model_tier="cheap",
+            user_message="Find events",
+            step=1,
+            wall_clock_ms=10,
+            phase="completion",
+            stopped="preference_read_error",
+        )

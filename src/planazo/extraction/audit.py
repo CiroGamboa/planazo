@@ -84,6 +84,9 @@ class ExtractionRunLogger:
 
     def complete(self, result: LoopResult) -> None:
         """Append one ``completion`` trace line closing this Extractor run."""
+        assert result.stopped != "preference_read_error", (
+            "RunStep records actual loop terminals; pre-run failures must not be logged"
+        )
         completion = RunStep(
             run_id=self.run_id,
             agent="extractor",

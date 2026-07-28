@@ -12,7 +12,7 @@ does not expose LLM tools directly — its data reaches the loop via
 `event_agent`'s push context, not the tool registry.
 """
 
-from planazo.identity.models import PreferenceRecord, UserRecord
+from planazo.identity.models import PreferenceReadResult, PreferenceRecord, UserRecord
 from planazo.identity.repository import (
     delete_preference,
     get_or_create_user,
@@ -21,6 +21,7 @@ from planazo.identity.repository import (
 )
 
 __all__ = [
+    "PreferenceReadResult",
     "PreferenceRecord",
     "UserRecord",
     "delete_preference",

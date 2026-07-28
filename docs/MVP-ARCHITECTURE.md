@@ -537,12 +537,12 @@ Three canonical scenarios covered by the model. Each produces a trace under `doc
 
 | Direction | What | Where in code |
 | --- | --- | --- |
-| **Push** — attached before every run | Markdown rules (`load_rules()`), plus the bound user's `preferences` rows when `run_once` is given a `user_id`. The Interpreter's parsed `SearchIntent` is pushed here. | Assembled in `run_once`, passed as `run_loop`'s `system` argument |
+| **Push** — attached before every run | Markdown rules (`load_rules()`), plus a bound user's validated preference rows when `run_once` is given a `user_id`. Preference rendering is ascending-key, whole-row prefix selection capped at 1,200 Unicode code points; omitted valid rows end with `- [additional preferences omitted]`. Invalid persisted rows fail closed before a model call or trace. The Interpreter's parsed `SearchIntent` is pushed here. | Assembled in `run_once`, passed as `run_loop`'s `system` argument |
 | **Pull** — fetched mid-run by the model via a tool | Facts by cue (`retrieve_memory`), event notes (`retrieve_notes`), stored events (`search_events`) | All exposed as tools in the registry `run_once` composes |
 
-## ADRs the MVP will spawn
+## ADRs for the MVP
 
-Each is its own PR, blocked by its own ticket. This doc is what those PRs will point back at.
+Accepted ADRs describe current state; planned ADRs are reserved for their own ticket and PR. This doc is what those PRs will point back at.
 
 | # | Slug | What it decides |
 | --- | --- | --- |
@@ -553,6 +553,10 @@ Each is its own PR, blocked by its own ticket. This doc is what those PRs will p
 | 0007 | [`monitor-scheduling-and-grades`](adr/0007-monitor-scheduling-and-grades.md) | Categorical axes, rationale requirement, cron/GHA plan. |
 | 0008 | [`domain-driven-module-layout`](adr/0008-domain-driven-module-layout.md) | Bounded-context folder layout under `planazo/`; per-aggregate `models.py` + `repository.py` (+ `tools.py`); preserves ADR 0003/0004 API contracts. |
 | 0009 | [`repo-root-layout`](adr/0009-repo-root-layout.md) | Flatten the outer `agent/` directory. `src/planazo/`, `tests/`, `pyproject.toml` at repo root. Supersedes ADR 0001's layout paragraph only. |
+| 0010 | [`extensibility-interfaces`](adr/0010-extensibility-interfaces.md) | Structural interfaces for the runtime, user surface, source adapters, and repositories. |
+| 0011 | [`preference-push-context-safety`](adr/0011-preference-push-context-safety.md) | Bounded, deterministic preference push context and fail-closed corrupt-row handling before any model call or trace. |
+| 0012 | `telegram-bot-interface` | Bot layer, no-LLM-in-bot invariant, approval callback, interpreter step wiring. |
+| 0013 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
 | 0010 | [`extensibility-interfaces`](adr/0010-extensibility-interfaces.md) | `Protocol` classes at the four swap seams — `UserSurface`, `EventSource`, `Repository[T]`, `AgentLoop` — in `src/planazo/interfaces/`. |
 | 0011 | [`telegram-bot-interface`](adr/0011-telegram-bot-interface.md) | Bot layer, no-LLM-in-bot invariant, PTB-free command signature, session mapping, the `UserSurface` shape, and the approval seam's threading contract. Supersedes ADR 0010's `UserSurface` declaration only. |
 | 0012 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
