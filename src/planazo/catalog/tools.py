@@ -128,13 +128,16 @@ def search_events(
 
     conn = db.connect()
     try:
-        found = query_events(
-            conn,
-            category=category or None,
-            city=city or None,
-            start_after=parsed_start_after,
-            max_results=max_results,
-        )
+        try:
+            found = query_events(
+                conn,
+                category=category or None,
+                city=city or None,
+                start_after=parsed_start_after,
+                max_results=max_results,
+            )
+        except ValidationError as exc:
+            return {"error_type": "invalid_event_data", "message": str(exc)}
     finally:
         conn.close()
 
