@@ -28,8 +28,8 @@ import logging
 import sqlite3
 from collections.abc import Callable
 
-from planazo.observability.models import AgentRunRecord
-from planazo.observability.repository import record_agent_run
+from planazo.observability.models import AgentRunRecord, LLMDecision
+from planazo.observability.repository import record_agent_run, record_llm_decision
 
 logger = logging.getLogger(__name__)
 
@@ -70,3 +70,56 @@ class AgentRunLogger:
                 conn.close()
         except Exception as exc:
             logger.warning("agent_run_logger write failed: %s", exc)
+
+
+class LLMDecisionLogger:
+    """Best-effort observer that persists 0..N `llm_decisions` rows per loop.
+
+    Constructed once per composition root with a `conn_factory` that
+    yields a fresh `sqlite3.Connection`. Callers build a list of
+    validated `LLMDecision` rows at loop completion and hand them to
+    `record_many()`; the writer opens one connection, inserts every
+    row, closes the connection, and returns.
+
+    Rule 4 hook: writer failures never propagate. Every exception from
+    the `conn_factory` call, from any single `record_llm_decision`
+    INSERT, or from the `conn.close()` in the `finally` is logged at
+    WARNING and swallowed. Best-effort at the batch grain: if one row
+    raises (an FK violation from a since-deleted run_id, a CHECK bypass
+    from a hand-composed record) the surrounding INSERTs still commit
+    up to the failing row, because `record_llm_decision` commits per
+    call. A partial batch is more useful than a lost batch — an
+    `agent_runs` row without every one of its decisions is still a
+    queryable primary flow.
+
+    The row-level try/except lives inside the loop so a mid-batch
+    IntegrityError does not swallow the rest of the batch; the outer
+    try/except catches setup / teardown failures instead.
+    """
+
+    def __init__(self, conn_factory: Callable[[], sqlite3.Connection]) -> None:
+        self._conn_factory = conn_factory
+
+    def record_many(self, decisions: list[LLMDecision]) -> None:
+        """Persist every `LLMDecision` in `decisions` best-effort.
+
+        The outer try/except covers connection setup/teardown; the
+        inner try/except per row means one bad row does not lose the
+        rest of the batch. An empty list is a no-op — no connection is
+        opened, matching the shape of the JSONL sidecar writer which
+        also skips its I/O when the extractor produced no decisions.
+        """
+        if not decisions:
+            return
+        try:
+            conn = self._conn_factory()
+            try:
+                for decision in decisions:
+                    try:
+                        record_llm_decision(conn, decision)
+                    except Exception as exc:
+                        logger.warning("llm_decision_logger write failed: %s", exc)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning("llm_decision_logger write failed: %s", exc)
