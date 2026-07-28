@@ -1,6 +1,6 @@
 # 0011 — Telegram bot interface abstraction
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-28
 - **Deciders:** cirogam22
 - **Supersedes:** [`0010-extensibility-interfaces.md`](0010-extensibility-interfaces.md)'s **`UserSurface` declaration only**. That ADR's four-seam strategy, its structural-typing discipline, and its `EventSource` / `Repository[T]` / `AgentLoop` declarations all remain in force; only the three-member `UserSurface` shape it shipped as a stub is retired.

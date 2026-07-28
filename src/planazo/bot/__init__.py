@@ -17,6 +17,8 @@ The last three import no transport, which is what makes every command
 exercisable offline against real SQLite and a recording surface. Each command
 has the same signature — `(surface: UserSurface, conn: sqlite3.Connection,
 message: IncomingMessage) -> None` — so the surface behind it is swappable.
+`__main__.py` is the entry shim behind `python -m planazo.bot`, and holds
+nothing but `sys.exit(main())`.
 
 **No LLM call originates here** (ADR 0011). The commands are CRUD against
 SQLite; no module under `bot/` names the LLM wrapper package, and

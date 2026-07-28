@@ -10,8 +10,10 @@ The agent runtime lives under [`src/planazo/`](src/planazo/):
 uv sync
 uv run pytest
 uv run planazo-agent --calendar "save a tech event evt-1 called AI Meetup at 2026-08-01T19:00:00 in Barcelona, confidence 0.9"
-# uv run python -m planazo.bot   # Telegram bot entry command goes here once it exists
+uv run python -m planazo.bot
 ```
+
+The bot needs `TELEGRAM_BOT_TOKEN` in a `.env` at the repo root — copy [`.env.example`](.env.example) and paste the token BotFather gives you.
 
 See [`README-package.md`](README-package.md) for the full CLI, the tools, and the approval-gate behavior.
 

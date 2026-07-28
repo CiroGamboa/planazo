@@ -8,8 +8,10 @@ into an `IncomingMessage`, binds a reply channel, and calls one of these.
 
 `COMMANDS` and `MESSAGES` are the complete user-facing copy. No reply text is
 spelled anywhere else in the package, so the whole set moves in one piece when
-it is externalized. `COMMANDS` is also the single command list that `/start`
-and `/help` both render, so the two cannot drift.
+it is externalized — including the one line the transport shell says on its
+own behalf, when it refuses to re-run an edited command. `COMMANDS` is also
+the single command list that `/start` and `/help` both render, so the two
+cannot drift.
 
 Replies are plain text — see `planazo.bot.surface` — which is why a preference
 value is echoed back verbatim rather than escaped.
@@ -56,6 +58,11 @@ MESSAGES: Final[Mapping[str, str]] = {
     "prefs_absent": "You have no preference named {key}.",
     "prefs_rejected": "I did not save that:\n{reasons}",
     "prefs_violation": "{field}: {problem}",
+    "edited_command": (
+        "I do not re-run an edited command: it would replay the old command "
+        "against what is stored now, which can undo a later change. Send it "
+        "again as a new message."
+    ),
 }
 
 
