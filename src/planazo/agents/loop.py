@@ -106,6 +106,9 @@ def run_loop(
     on_step: Callable[[StepRecord], None] | None = None,
     gate: ApprovalGate | None = None,
     system: str | None = None,
+    # Any: injected messages are Responses-API message dicts — shape varies by
+    # role/type (input_text, input_image, ...), no single fixed schema.
+    on_tool_output: Callable[[StepRecord], list[dict[str, Any]] | None] | None = None,
 ) -> LoopResult:
     """Drive `call()` across turns until the model answers or `max_steps` is hit.
 
@@ -149,6 +152,22 @@ def run_loop(
     If `max_output_tokens` is supplied, it is forwarded to every
     `agentlib.tools.call` invocation on this run, capping per-turn output.
     The default (`None`) leaves `agentlib`'s own cap in effect.
+
+    If `on_tool_output` is supplied, it is called after each successfully-
+    dispatched tool call — once the call's `function_call_output` message has
+    been appended and `on_step` (if any) has observed the step — with that
+    same `StepRecord`. When the callable returns a non-empty list, each dict
+    in the list is appended to `messages` in order, immediately after the
+    `function_call_output` for that call and before the loop advances to the
+    next tool call or the next `call()` turn. A `None` or empty-list return
+    is a no-op; the default (`None`) is behaviourally identical to omitting
+    the hook. Failed tool calls (unregistered name, tool that raised,
+    unserializable result) do NOT trigger the hook — the injected-message
+    shape is a caller-facing seam that only makes sense on happy dispatches.
+    If the hook itself raises, the exception propagates out of `run_loop`
+    unchanged: no `tool_failure_result` wrap, no swallow — the hook is a
+    caller-side seam, not a third-party surface, and a raising hook is a bug
+    in the caller's own code (matching `on_step`'s own uncaught behaviour).
     """
     if max_steps < 1:
         raise ValueError("max_steps must be >= 1")
@@ -186,6 +205,7 @@ def run_loop(
             # `DECLINED_RESULT` marker when a gated call is refused, or a
             # `tool_failure_result` marker when the call fails.
             output: Any
+            dispatched = False
             if gate is not None and name in gate.tool_names and not gate.approve(name, arguments):
                 output = DECLINED_RESULT
                 serialized = json.dumps({"result": output})
@@ -200,18 +220,18 @@ def run_loop(
                 try:
                     output = registry[name](**arguments)
                     serialized = json.dumps({"result": output})
+                    dispatched = True
                 except Exception as exc:
                     output = tool_failure_result(f"{type(exc).__name__}: {exc}")
                     serialized = json.dumps({"result": output})
+            record = StepRecord(
+                step=steps,
+                tool=name,
+                arguments=arguments,
+                result=output,
+            )
             if on_step is not None:
-                on_step(
-                    StepRecord(
-                        step=steps,
-                        tool=name,
-                        arguments=arguments,
-                        result=output,
-                    )
-                )
+                on_step(record)
             messages.append(
                 {
                     "type": "function_call_output",
@@ -219,6 +239,15 @@ def run_loop(
                     "output": serialized,
                 }
             )
+            # `on_tool_output` fires only on a happy dispatch (in the registry,
+            # ran, serialized) — declined and failed calls skip the hook so a
+            # caller-side injection is never confused with a `function_call_output`
+            # carrying a `tool_failure_result` marker. A raising hook is a
+            # caller-side bug: let it propagate unchanged.
+            if dispatched and on_tool_output is not None:
+                injected = on_tool_output(record)
+                if injected:
+                    messages.extend(injected)
 
         if steps >= max_steps:
             return LoopResult(answer=None, steps=steps, stopped="max_steps")
