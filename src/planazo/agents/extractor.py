@@ -5,8 +5,20 @@ Peer of `event_agent.py` (the Recommender). Composition root of the
 (`fetch_instagram_post`, `save_event`, `report_extraction_status`), a
 byte-verbatim delegation brief read at import time from
 `docs/MVP-ARCHITECTURE.md`, and a multimodal `on_tool_output` hook that
-feeds one visual asset per single-image fetch (or up to `MAX_CAROUSEL_IMAGES`
-image parts for carousels) to the LLM as `input_image` messages.
+feeds visual context to the LLM as `input_image` messages. Selection per
+media shape:
+
+- ``GraphImage`` — one ``input_image`` for the sole image asset.
+- ``GraphSidecar`` (carousel) — up to ``MAX_CAROUSEL_IMAGES`` slides, each
+  prefixed by a ``"Slide i/K"`` text part.
+- ``GraphVideo`` (reel) — the hook downloads the reel ``video_url``,
+  extracts ``MAX_REEL_FRAMES`` evenly-spaced JPEG frames via ``ffmpeg``,
+  and sends them as base64 ``input_image`` data-URLs alongside the
+  thumbnail cover frame. Silently degrades to the thumbnail-only cover
+  frame on :class:`FrameExtractionError`; one ``logger.warning`` line is
+  the operator-facing signal for the degrade branch. Multi-video sidecars
+  (``n_videos >= 2``) route to the thumbnail-only arm without invoking
+  the frame helper — they are slideshows, not single reels.
 
 The single fixed user prompt is `USER_MESSAGE`: extractors take no user-
 composed message. The URL rides the system prompt (delegation brief + rules
@@ -25,6 +37,8 @@ is not in `IRREVERSIBLE_TOOLS` (ADR 0002 + ADR 0005 decision 4).
 
 from __future__ import annotations
 
+import base64
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final, cast, get_args
@@ -37,6 +51,7 @@ from planazo.agents.loop import LoopResult, StepRecord, run_loop
 from planazo.catalog import ExtractionRunIndexEntry, record_extraction_run, save_event
 from planazo.catalog.models import Event
 from planazo.extraction.audit import ExtractionRunLogger
+from planazo.extraction.frames import MAX_REEL_FRAMES, FrameExtractionError, extract_reel_frames
 from planazo.extraction.models import (
     ExtractionErrorType,
     ExtractionResult,
@@ -49,6 +64,8 @@ from planazo.sources.instagram.client import InstagramClient
 from planazo.sources.instagram.tools import build_fetch_instagram_post
 from planazo.storage import db
 from tools.schema import schema_for
+
+logger = logging.getLogger(__name__)
 
 
 def _read_delegation_brief() -> str:
@@ -124,24 +141,38 @@ def _build_multimodal_hook(
 ) -> Callable[[StepRecord], list[dict[str, Any]] | None]:
     """Return the `on_tool_output` hook closured over the extraction target `url`.
 
-    Selection is driven by the count of `kind == "image"` assets in
-    `record.result["media"]`, keeping the hook domain-model-free:
+    Selection is driven by the counts of ``kind == "image"`` and
+    ``kind == "video"`` assets in ``record.result["media"]``, keeping the
+    hook domain-model-free:
 
-    - ``n >= 2`` — carousel branch. Emits one user message with interleaved
-      ``input_text`` + ``input_image`` parts for the first
-      ``MAX_CAROUSEL_IMAGES`` image assets (in media-list order), each slide
-      prefixed by ``"Slide {i}/{k} from the fetched post — {url}:"``.
-    - ``n == 1`` — single-image branch. One ``input_text`` + one
+    - ``n_images >= 2`` — carousel branch. Emits one user message with
+      interleaved ``input_text`` + ``input_image`` parts for the first
+      ``MAX_CAROUSEL_IMAGES`` image assets (in media-list order), each
+      slide prefixed by ``"Slide {i}/{k} from the fetched post — {url}:"``.
+    - ``n_images == 1`` — single-image branch. One ``input_text`` + one
       ``input_image`` for the sole image asset.
-    - ``n == 0`` and a ``kind == "thumbnail"`` asset exists — thumbnail
-      fallback. Same message shape as the single-image branch with the
-      thumbnail's URL.
+    - ``n_images == 0`` and ``n_videos == 1`` — reel branch. Downloads the
+      video URL, extracts ``MAX_REEL_FRAMES`` evenly-spaced JPEG frames
+      via :func:`planazo.extraction.frames.extract_reel_frames`, and emits
+      one user message with an envelope ``input_text`` prefix, one
+      ``(text, input_image)`` pair per frame (frames sent as base64
+      ``data:image/jpeg;base64,...`` data-URLs), and a trailing
+      ``(text, input_image)`` pair for the thumbnail cover frame when
+      present. On :class:`FrameExtractionError` the hook logs one
+      ``WARNING`` record and falls through to the thumbnail-only arm
+      below.
+    - ``n_images == 0`` and any other video count (0 or ``>= 2``) — a
+      ``kind == "thumbnail"`` asset present drives the thumbnail-only
+      fallback (byte-identical to the M3 shape). Multi-video sidecars
+      (``n_videos >= 2``) route through this arm — they are slideshows,
+      not single reels; the frame helper is not invoked.
     - Otherwise — an ``input_text``-only "no visual asset available for
       this post" fallback.
 
-    Video assets are never sent as ``input_image`` parts and are skipped
-    when interleaved with image assets in a carousel. See ADR 0005 §D7
-    (superseded in part by M3.5 for `GraphSidecar` — up to K=3 slides).
+    Video assets are never sent as ``input_image`` parts inside the
+    carousel branch — the image-count branches fire first. See ADR 0005
+    §D7 (partially superseded by M3.5 #65 for carousels) and ADR 0013 for
+    the reel-frame boundary shift.
     """
 
     def _multimodal_hook(record: StepRecord) -> list[dict[str, Any]] | None:
@@ -203,6 +234,52 @@ def _build_multimodal_hook(
             if isinstance(asset, dict) and asset.get("kind") == "thumbnail":
                 thumbnail = asset
                 break
+        video_assets: list[dict[str, Any]] = [
+            asset for asset in media if isinstance(asset, dict) and asset.get("kind") == "video"
+        ]
+        # Reel branch — exactly one video asset (n_images == 0 already
+        # implied by falling through the image-count branches above). Multi-
+        # video sidecars fall through unchanged to the thumbnail arm below,
+        # preserving the M3 fallback shape.
+        if len(video_assets) == 1:
+            video_asset = video_assets[0]
+            video_url = str(video_asset.get("url", ""))
+            try:
+                frames = extract_reel_frames(video_url, frame_count=MAX_REEL_FRAMES)
+            except FrameExtractionError as exc:
+                logger.warning("reel frame extraction failed for url=%s: %s", video_url, exc)
+            else:
+                n = len(frames)
+                thumb_clause = (
+                    ", followed by the thumbnail cover frame" if thumbnail is not None else ""
+                )
+                envelope = (
+                    f"Reel content from the fetched post — {url}. "
+                    f"{n} evenly-spaced frames extracted from the video{thumb_clause}:"
+                )
+                content = [{"type": "input_text", "text": envelope}]
+                for i, (timestamp, jpeg_bytes) in enumerate(frames, start=1):
+                    b64 = base64.b64encode(jpeg_bytes).decode("ascii")
+                    content.append(
+                        {
+                            "type": "input_text",
+                            "text": f"Frame {i}/{n} at t≈{timestamp:.1f}s:",
+                        }
+                    )
+                    content.append(
+                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"}
+                    )
+                if thumbnail is not None:
+                    content.append(
+                        {
+                            "type": "input_text",
+                            "text": f"Thumbnail cover frame from the fetched post — {url}:",
+                        }
+                    )
+                    content.append(
+                        {"type": "input_image", "image_url": str(thumbnail.get("url", ""))}
+                    )
+                return [{"role": "user", "content": content}]
         if thumbnail is not None:
             return [
                 {

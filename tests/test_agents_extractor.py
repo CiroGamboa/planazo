@@ -11,7 +11,9 @@ Rule 2 enforcement site).
 
 from __future__ import annotations
 
+import base64
 import json
+import logging
 import random
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -34,6 +36,7 @@ from planazo.agents.extractor import (
 from planazo.agents.loop import StepRecord
 from planazo.catalog import events_exist_for_source_url, list_extraction_runs, save_event
 from planazo.extraction.audit import default_extraction_log_path
+from planazo.extraction.frames import FrameExtractionError
 from planazo.extraction.models import ExtractionResult
 from planazo.identity import get_or_create_user
 from planazo.memory import facts, rules
@@ -272,44 +275,6 @@ def test_multimodal_hook_selects_image_before_thumbnail() -> None:
     assert image_parts == [{"type": "input_image", "image_url": "https://cdn/image.jpg"}]
 
 
-def test_multimodal_hook_falls_back_to_thumbnail_when_no_image() -> None:
-    hook = extractor._build_multimodal_hook(_TEST_URL)
-    record = StepRecord(
-        step=1,
-        tool="fetch_instagram_post",
-        arguments={"url": _TEST_URL},
-        result={
-            "media": [
-                {"kind": "video", "url": "https://cdn/video.mp4"},
-                {"kind": "thumbnail", "url": "https://cdn/thumb.jpg"},
-            ]
-        },
-    )
-
-    injected = hook(record)
-
-    assert injected is not None
-    content = injected[0]["content"]
-    image_parts = [part for part in content if part["type"] == "input_image"]
-    assert image_parts == [{"type": "input_image", "image_url": "https://cdn/thumb.jpg"}]
-
-
-def test_multimodal_hook_returns_no_visual_asset_when_only_video_present() -> None:
-    hook = extractor._build_multimodal_hook(_TEST_URL)
-    record = StepRecord(
-        step=1,
-        tool="fetch_instagram_post",
-        arguments={"url": _TEST_URL},
-        result={"media": [{"kind": "video", "url": "https://cdn/video.mp4"}]},
-    )
-
-    injected = hook(record)
-
-    assert injected is not None
-    content = injected[0]["content"]
-    assert all(part["type"] == "input_text" for part in content)
-
-
 def test_max_carousel_images_is_three() -> None:
     """K value drift guard. If K moves, this test breaks — matching tests
     that hard-code `Slide i/3` prefixes also need to be revisited."""
@@ -339,39 +304,6 @@ def test_multimodal_hook_single_image_path_is_byte_identical() -> None:
                     "text": (f"Image content from the fetched post — {_TEST_URL} (kind=image):"),
                 },
                 {"type": "input_image", "image_url": "https://cdn/image.jpg"},
-            ],
-        }
-    ]
-
-
-def test_multimodal_hook_video_thumbnail_path_is_byte_identical() -> None:
-    """`n == 0`, thumbnail present — pre-#65 `GraphVideo` fallback shape."""
-    hook = extractor._build_multimodal_hook(_TEST_URL)
-    record = StepRecord(
-        step=1,
-        tool="fetch_instagram_post",
-        arguments={"url": _TEST_URL},
-        result={
-            "media": [
-                {"kind": "video", "url": "https://cdn/video.mp4"},
-                {"kind": "thumbnail", "url": "https://cdn/thumb.jpg"},
-            ]
-        },
-    )
-
-    injected = hook(record)
-
-    assert injected == [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "input_text",
-                    "text": (
-                        f"Image content from the fetched post — {_TEST_URL} (kind=thumbnail):"
-                    ),
-                },
-                {"type": "input_image", "image_url": "https://cdn/thumb.jpg"},
             ],
         }
     ]
@@ -585,6 +517,250 @@ def test_multimodal_hook_all_video_sidecar_falls_back_to_thumbnail() -> None:
 
     injected = hook(record)
 
+    assert injected == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (
+                        f"Image content from the fetched post — {_TEST_URL} (kind=thumbnail):"
+                    ),
+                },
+                {"type": "input_image", "image_url": "https://cdn/t1.jpg"},
+            ],
+        }
+    ]
+
+
+# --- reel branch (ADR 0013) ---
+
+
+_REEL_FRAMES_CANNED: list[tuple[float, bytes]] = [
+    (1.25, b"\xff\xd8FRAME1"),
+    (2.50, b"\xff\xd8FRAME2"),
+    (3.75, b"\xff\xd8FRAME3"),
+]
+
+
+def test_multimodal_hook_reel_frames_success_sends_three_frames_and_thumbnail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path: single-video reel + thumbnail → envelope prefix, three
+    (text, base64-image) pairs, then a trailing (text, thumbnail-URL) pair."""
+
+    def _stub(video_url: str, *, frame_count: int = 3) -> list[tuple[float, bytes]]:
+        return list(_REEL_FRAMES_CANNED)
+
+    monkeypatch.setattr(extractor, "extract_reel_frames", _stub)
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "video", "url": "https://cdn/video.mp4", "duration_seconds": 5.0},
+                {"kind": "thumbnail", "url": "https://cdn/thumb.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected is not None
+    content = injected[0]["content"]
+    # 1 envelope + (1 text + 1 image) * 3 + 1 thumbnail-text + 1 thumbnail-image = 9 parts.
+    assert len(content) == 9
+    assert content[0] == {
+        "type": "input_text",
+        "text": (
+            f"Reel content from the fetched post — {_TEST_URL}. "
+            "3 evenly-spaced frames extracted from the video, "
+            "followed by the thumbnail cover frame:"
+        ),
+    }
+    for i, (timestamp, jpeg_bytes) in enumerate(_REEL_FRAMES_CANNED, start=1):
+        text_part = content[1 + (i - 1) * 2]
+        image_part = content[2 + (i - 1) * 2]
+        assert text_part == {
+            "type": "input_text",
+            "text": f"Frame {i}/3 at t≈{timestamp:.1f}s:",
+        }
+        assert image_part["type"] == "input_image"
+        assert image_part["image_url"].startswith("data:image/jpeg;base64,")
+        b64_payload = image_part["image_url"].split(",", 1)[1]
+        assert base64.b64decode(b64_payload) == jpeg_bytes
+    assert content[7] == {
+        "type": "input_text",
+        "text": f"Thumbnail cover frame from the fetched post — {_TEST_URL}:",
+    }
+    assert content[8] == {"type": "input_image", "image_url": "https://cdn/thumb.jpg"}
+
+
+def test_multimodal_hook_reel_frames_success_video_only_no_thumbnail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Single-video reel without a thumbnail — envelope drops the trailing
+    ", followed by the thumbnail cover frame" clause, and no trailing
+    (text, thumbnail-image) pair is emitted."""
+
+    def _stub(video_url: str, *, frame_count: int = 3) -> list[tuple[float, bytes]]:
+        return list(_REEL_FRAMES_CANNED)
+
+    monkeypatch.setattr(extractor, "extract_reel_frames", _stub)
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={"media": [{"kind": "video", "url": "https://cdn/video.mp4"}]},
+    )
+
+    injected = hook(record)
+
+    assert injected is not None
+    content = injected[0]["content"]
+    # 1 envelope + (1 text + 1 image) * 3 = 7 parts, no thumbnail block.
+    assert len(content) == 7
+    assert content[0] == {
+        "type": "input_text",
+        "text": (
+            f"Reel content from the fetched post — {_TEST_URL}. "
+            "3 evenly-spaced frames extracted from the video:"
+        ),
+    }
+    text_parts = [p for p in content if p["type"] == "input_text"]
+    for part in text_parts:
+        assert "Thumbnail cover frame" not in part["text"]
+    image_parts = [p for p in content if p["type"] == "input_image"]
+    assert len(image_parts) == 3
+    for part in image_parts:
+        assert part["image_url"].startswith("data:image/jpeg;base64,")
+
+
+def test_multimodal_hook_reel_frame_extraction_error_falls_back_to_thumbnail(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`FrameExtractionError` with a thumbnail present → byte-identical to
+    the pre-#66 `GraphVideo` thumbnail-only shape, and a WARNING record is
+    logged on `planazo.agents.extractor` naming the URL + the cause."""
+
+    def _boom(video_url: str, *, frame_count: int = 3) -> list[tuple[float, bytes]]:
+        raise FrameExtractionError("network fail: HTTPStatusError 403")
+
+    monkeypatch.setattr(extractor, "extract_reel_frames", _boom)
+    caplog.set_level(logging.WARNING, logger="planazo.agents.extractor")
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "video", "url": "https://cdn/video.mp4"},
+                {"kind": "thumbnail", "url": "https://cdn/thumb.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (
+                        f"Image content from the fetched post — {_TEST_URL} (kind=thumbnail):"
+                    ),
+                },
+                {"type": "input_image", "image_url": "https://cdn/thumb.jpg"},
+            ],
+        }
+    ]
+    warnings = [
+        rec
+        for rec in caplog.records
+        if rec.name == "planazo.agents.extractor" and rec.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "https://cdn/video.mp4" in message
+    assert "network fail" in message
+
+
+def test_multimodal_hook_reel_frame_extraction_error_no_thumbnail_falls_back_to_no_visual_asset(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`FrameExtractionError` with no thumbnail → the "no visual asset"
+    text-only fallback (M3 text-only path), plus a WARNING record naming
+    the URL + cause on `planazo.agents.extractor`."""
+
+    def _boom(video_url: str, *, frame_count: int = 3) -> list[tuple[float, bytes]]:
+        raise FrameExtractionError("ffmpeg binary not found")
+
+    monkeypatch.setattr(extractor, "extract_reel_frames", _boom)
+    caplog.set_level(logging.WARNING, logger="planazo.agents.extractor")
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={"media": [{"kind": "video", "url": "https://cdn/video.mp4"}]},
+    )
+
+    injected = hook(record)
+
+    assert injected == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "no visual asset available for this post",
+                }
+            ],
+        }
+    ]
+    warnings = [
+        rec
+        for rec in caplog.records
+        if rec.name == "planazo.agents.extractor" and rec.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "https://cdn/video.mp4" in message
+    assert "ffmpeg binary not found" in message
+
+
+def test_multimodal_hook_multi_video_sidecar_does_not_call_extract_reel_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`n_videos >= 2` — the multi-video sidecar gate keeps the reel-frame
+    helper unreachable; the fallback is byte-identical to the M3
+    thumbnail-only shape."""
+    mock_extract = MagicMock()
+    monkeypatch.setattr(extractor, "extract_reel_frames", mock_extract)
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "video", "url": "https://cdn/v1.mp4"},
+                {"kind": "thumbnail", "url": "https://cdn/t1.jpg"},
+                {"kind": "video", "url": "https://cdn/v2.mp4"},
+                {"kind": "thumbnail", "url": "https://cdn/t2.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    mock_extract.assert_not_called()
     assert injected == [
         {
             "role": "user",
