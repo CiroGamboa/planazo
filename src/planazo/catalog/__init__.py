@@ -17,7 +17,12 @@ byte-for-byte identical (M3's Extractor imports them by name).
 """
 
 from planazo.catalog.models import Event, ExtractionRunIndexEntry
-from planazo.catalog.radius import RadiusFilterResult, filter_events_for_intent
+from planazo.catalog.radius import (
+    EARTH_RADIUS_KM,
+    RadiusFilterResult,
+    filter_events_for_intent,
+    haversine_km,
+)
 from planazo.catalog.repository import (
     events_exist_for_source_url,
     insert_event,
@@ -28,11 +33,13 @@ from planazo.catalog.repository import (
 from planazo.catalog.tools import save_event, search_events
 
 __all__ = [
+    "EARTH_RADIUS_KM",
     "Event",
     "ExtractionRunIndexEntry",
     "events_exist_for_source_url",
     "RadiusFilterResult",
     "filter_events_for_intent",
+    "haversine_km",
     "insert_event",
     "list_extraction_runs",
     "query_events",

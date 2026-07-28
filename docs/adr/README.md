@@ -27,5 +27,8 @@ Do **not** write an ADR for:
 
 ## Current accepted decisions
 
+- [0014 — Deterministic ranking boundary](0014-deterministic-ranking-boundary.md)
+  defines the pure post-Recommender public ranking contract.
+
 - [0013 — Recommender mutation and clarification boundaries](0013-recommender-mutation-and-clarification-boundaries.md)
   defines the identity-bound preference writer and non-blocking clarification tool.

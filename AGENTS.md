@@ -94,7 +94,7 @@ These are the shapes that flow between the agent loop, its tools, persisted stat
 | `Event` | Title, start, end, location, price, category, source, source URL, confidence score |
 | `ExtractionResult` | Delegation hand-off from Extractor to Recommender: `status`, `events` (list), `needs_approval=False`, `notes`, `error_type` (see [`src/planazo/extraction/models.py`](src/planazo/extraction/models.py)) |
 | `ExtractionError` | Typed error state (`missing_date`, `low_confidence_extraction`, `unsupported_source`, `api_error`, ...) with the source URL and the reason |
-| `RankedEventList` | Ordered `Event[]`, per-item reason, applied filters |
+| `RankedEvent` | One validated catalog event, deterministic score, and bounded user-facing reason |
 | `CalendarDraft` | Proposed Google Calendar event (title, start, end, description, invitees) — pending user confirmation |
 | `ApprovalDecision` | Which artifact, user id, decision (approve/reject), timestamp |
 | `ScanState` | Per-source-URL scheduler bookkeeping: `source_url` (primary key — post entries and account entries share the table), `last_scanned_at`, `last_success_at`, `consecutive_failures` — read + upserted every `planazo-scheduler --tick` (see [`docs/adr/0011-scheduled-ingestion.md`](docs/adr/0011-scheduled-ingestion.md), [`docs/adr/0014-instagram-discovery-backends.md`](docs/adr/0014-instagram-discovery-backends.md)) |

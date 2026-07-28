@@ -73,6 +73,16 @@ clarification question is returned to the calling surface.
 
 Every tool returns a typed `error_type` on bad input rather than persisting something partial. A tool that raises anyway (bug, disk error) is caught one layer up, inside `planazo.agents.loop.run_loop`'s dispatch, and fed back to the model as a `tool_failed` marker rather than crashing the run or looking like valid data.
 
+### Deterministic ranking
+
+`planazo.rank.rank_events(candidates, intent, preferences)` ranks only the
+validated candidates of an `ok` Recommender result. It is a pure deterministic
+projection: it does not call an LLM, tools, SQLite, memory, or Telegram. A
+future `/find` owner must branch on the Recommender status before calling it;
+non-OK results are not rankable. Reasons are bounded and never reveal raw
+coordinates; [ADR 0014](docs/adr/0014-deterministic-ranking-boundary.md)
+records this boundary.
+
 ### The memory tools
 
 `run_once(user_id, intent)` always receives a validated identity and `SearchIntent`; `--user-id N` is the CLI's required developer identity boundary. It adds four tools over the JSON docstore at `var/memory/`, built by `planazo.memory.api.build_memory_tools`:

@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict
 from planazo.catalog.models import Event
 from planazo.query.models import SearchIntent
 
-_EARTH_RADIUS_KM = 6_371.0088
+EARTH_RADIUS_KM = 6_371.0088
 
 
 class RadiusFilterResult(BaseModel):
@@ -23,7 +23,7 @@ class RadiusFilterResult(BaseModel):
     error_type: Literal["missing_search_origin"] | None = None
 
 
-def _haversine_km(
+def haversine_km(
     latitude_a: float, longitude_a: float, latitude_b: float, longitude_b: float
 ) -> float:
     """Return the deterministic great-circle distance between two points in kilometres."""
@@ -35,7 +35,11 @@ def _haversine_km(
         sin(latitude_delta / 2) ** 2
         + cos(latitude_a_radians) * cos(latitude_b_radians) * sin(longitude_delta / 2) ** 2
     )
-    return 2 * _EARTH_RADIUS_KM * asin(sqrt(haversine))
+    return 2 * EARTH_RADIUS_KM * asin(sqrt(haversine))
+
+
+# Kept as a private compatibility alias for existing catalog callers.
+_haversine_km = haversine_km
 
 
 def filter_events_for_intent(events: Sequence[Event], intent: SearchIntent) -> RadiusFilterResult:
@@ -51,7 +55,7 @@ def filter_events_for_intent(events: Sequence[Event], intent: SearchIntent) -> R
         for event in events
         if event.geo_lat is not None
         and event.geo_lng is not None
-        and _haversine_km(origin.latitude, origin.longitude, event.geo_lat, event.geo_lng)
+        and haversine_km(origin.latitude, origin.longitude, event.geo_lat, event.geo_lng)
         <= intent.radius_km
     )
     return RadiusFilterResult(events=matching)

@@ -135,7 +135,7 @@ Under `src/planazo/`, each domain concept lives in a self-contained folder that 
 | `sources/` | Source adapters (Instagram first; TikTok / YouTube / news to follow) | `RawPost`, `MediaAsset`, `SourcesConfig`, `PostConfig`, `AccountConfig` (with `backend` discriminator), `InstagramSource`, `InstagramDiscoveryProtocol`, `AnonInstagramClient`, `HikerClient` |
 | `scheduler/` | Periodic ingestion clock — routes account URLs to a discovery backend, pre-checks idempotency, drives `extract_once` under a seeded system user | `ScanState`, `SchedulerRunRecord`, `TickReport`, `run_tick`, `planazo-scheduler` CLI |
 | `memory/` | Facts + notes + rules (private/shared) | `Fact`, `Note`, `MemoryScopeRequest`, closured memory tools |
-| `recommendation/` | Deterministic ranker (LLM re-ranker deferred) | `RankedEventList` — landed by M4 |
+| `rank/` | Deterministic ranker (LLM re-ranker deferred) | `RankingPreferences`, `RankedEvent`, `rank_events` — landed by M4 |
 | `monitor/` | Out-of-band LLM-as-judge grader | `RunStep`, `RunSession`, `Verdict`, `GradedRun` |
 
 **Shared kernel** — `agentlib/` (LLM wrapper) and `tools/schema.py` (function-signature reflection). Product-agnostic; imported by every context; may not import any context.
