@@ -86,7 +86,7 @@ These are the shapes that flow between the agent loop, its tools, persisted stat
 
 | Entity | Holds |
 | --- | --- |
-| `SearchIntent` | Time window, categories, city, optional radius and budget — the interpreter's parsed `/find` intent handed to the Recommender |
+| `SearchIntent` | Time window, categories, city, optional radius and budget, plus an application-owned optional `SearchOrigin` — the interpreter's parsed `/find` intent handed to the Recommender |
 | `UserPreferences` | Category interests, disliked sources, preferred hours, contacts to invite |
 | `RawPost` + `MediaAsset` | Media-type-agnostic source-adapter payload: source, permalink, caption, `posted_at`, `author_handle`, plus a `media` list of `MediaAsset` (image / video / thumbnail) — the shape the Extractor consumes. |
 | `Event` | Title, start, end, location, price, category, source, source URL, confidence score |

@@ -112,6 +112,11 @@ def _render_result(result: LoopResult) -> str:
     """
     if result.stopped == "preference_read_error":
         body = "configuration/data-safe failure: preferences could not be loaded safely"
+    elif result.stopped == "missing_search_origin":
+        body = (
+            "configuration/data-safe failure: a trusted search origin is required "
+            "for radius filtering"
+        )
     elif result.stopped == "truncated":
         body = f"partial answer (truncated by output cap): {result.answer}"
     elif result.answer is not None:
@@ -173,7 +178,7 @@ def _run(
         print(str(exc))
         return 1
     print(_render_result(result))
-    return 1 if result.stopped == "preference_read_error" else 0
+    return 1 if result.stopped in {"preference_read_error", "missing_search_origin"} else 0
 
 
 def _repl(*, model: str, max_steps: int | None, calendar_enabled: bool, user_id: int | None) -> int:

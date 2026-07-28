@@ -18,6 +18,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
+from typing import Literal, cast
 
 from planazo.agents.loop import LoopResult, StepRecord
 from planazo.monitor.logging import model_tier_for
@@ -99,7 +100,7 @@ class ExtractionRunLogger:
             wall_clock_ms=round((perf_counter() - self._started_clock) * 1000),
             phase="completion",
             final_answer=result.answer,
-            stopped=result.stopped,
+            stopped=cast(Literal["answered", "truncated", "max_steps"], result.stopped),
         )
         self._append(completion)
 

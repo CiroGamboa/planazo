@@ -51,6 +51,7 @@ def save_event(
         return {"error_type": "invalid_event_data", "message": f"invalid timestamp: {exc}"}
 
     try:
+        coordinates_are_default = geo_lat == 0.0 and geo_lng == 0.0
         event = Event(
             source=source,
             source_url=source_url,
@@ -60,8 +61,8 @@ def save_event(
             category=category,
             city=city,
             price_cents=price_cents,
-            geo_lat=geo_lat,
-            geo_lng=geo_lng,
+            geo_lat=None if coordinates_are_default else geo_lat,
+            geo_lng=None if coordinates_are_default else geo_lng,
             confidence=confidence,
         )
     except ValidationError as exc:

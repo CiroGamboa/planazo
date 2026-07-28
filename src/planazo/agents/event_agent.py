@@ -25,15 +25,20 @@ the replacement.
 """
 
 from collections.abc import Callable
+from functools import wraps
 from typing import Any
+
+from pydantic import TypeAdapter, ValidationError
 
 from agentlib.core import CHEAP
 from planazo.agents.loop import LoopResult, StepRecord, run_loop
-from planazo.catalog import search_events
+from planazo.catalog import Event, filter_events_for_intent
+from planazo.catalog import search_events as catalog_search_events
 from planazo.identity import PreferenceReadResult, get_preferences
 from planazo.memory.api import build_memory_tools
 from planazo.memory.rules import load_rules
 from planazo.monitor.logging import RunStepLogger
+from planazo.query.models import SearchIntent
 from planazo.storage import db
 from tools import tools as calendar_tools
 from tools.schema import schema_for
@@ -41,6 +46,9 @@ from tools.schema import schema_for
 PREFERENCE_PUSH_CAP = 1_200
 PREFERENCE_OMISSION_MARKER = "- [additional preferences omitted]"
 PREFERENCE_READ_ERROR_ANSWER = "Preferences could not be loaded safely; no model request was made."
+MISSING_SEARCH_ORIGIN_ANSWER = (
+    "A trusted location is required before applying a radius; no model request was made."
+)
 
 
 def _preferences_text(preferences: PreferenceReadResult) -> str | PreferenceReadResult:
@@ -77,7 +85,9 @@ def _read_preferences(user_id: int) -> PreferenceReadResult:
         conn.close()
 
 
-def run_once(user_message: str, **run_context: Any) -> LoopResult:
+def run_once(
+    user_message: str, *, intent: SearchIntent | None = None, **run_context: Any
+) -> LoopResult:
     """Run one observe -> reason -> act -> verify pass for `user_message`.
 
     The run's system message is push context, assembled here before the loop
@@ -126,6 +136,15 @@ def run_once(user_message: str, **run_context: Any) -> LoopResult:
       name is in its set is dispatched; omit to dispatch every tool call
       without an approval prompt.
     """
+    if intent is not None:
+        preflight = filter_events_for_intent((), intent)
+        if preflight.error_type == "missing_search_origin":
+            return LoopResult(
+                answer=MISSING_SEARCH_ORIGIN_ANSWER,
+                steps=0,
+                stopped="missing_search_origin",
+            )
+
     user_id: int | None = run_context.get("user_id")
     system_text = load_rules()
     if user_id is not None:
@@ -139,6 +158,30 @@ def run_once(user_message: str, **run_context: Any) -> LoopResult:
                 stopped="preference_read_error",
             )
         system_text = f"{system_text}\n\n{preferences}" if system_text else preferences
+
+    @wraps(catalog_search_events)
+    def search_events(
+        category: str = "", city: str = "", start_after: str = "", max_results: int = 20
+    ) -> dict[str, object]:
+        result = catalog_search_events(category, city, start_after, max_results)
+        if "error_type" in result:
+            return result
+        try:
+            events = TypeAdapter(list[Event]).validate_python(result["events"])
+        except ValidationError as exc:
+            return {"error_type": "invalid_event_data", "message": str(exc)}
+        if intent is None:
+            return {
+                "events": [event.model_dump(mode="json") for event in events],
+                "total": len(events),
+            }
+        filtered = filter_events_for_intent(events, intent)
+        if filtered.error_type is not None:
+            return {"error_type": filtered.error_type}
+        return {
+            "events": [event.model_dump(mode="json") for event in filtered.events],
+            "total": len(filtered.events),
+        }
 
     tool_schemas: list[dict[str, Any]] = [schema_for(search_events)]  # Any: see schema_for
     registry: dict[str, Callable[..., dict[str, object]]] = {"search_events": search_events}

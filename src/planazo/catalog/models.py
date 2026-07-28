@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Event(BaseModel):
@@ -29,13 +29,19 @@ class Event(BaseModel):
     category: str = Field(min_length=1)
     city: str = Field(min_length=1)
     price_cents: int = Field(default=0, ge=0)
-    geo_lat: float | None = None
-    geo_lng: float | None = None
+    geo_lat: float | None = Field(default=None, ge=-90, le=90, allow_inf_nan=False)
+    geo_lng: float | None = Field(default=None, ge=-180, le=180, allow_inf_nan=False)
     confidence: float = Field(ge=0.0, le=1.0)
     # `extra` absorbs source-specific fields without a schema change; it is
     # stored as a JSON-encoded object in the `extra` TEXT column.
     extra: dict[str, object] = Field(default_factory=dict)
     ingested_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _coordinates_are_a_complete_pair(self) -> Event:
+        if (self.geo_lat is None) != (self.geo_lng is None):
+            raise ValueError("geo_lat and geo_lng must both be present or both be absent")
+        return self
 
 
 class ExtractionRunIndexEntry(BaseModel):

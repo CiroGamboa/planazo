@@ -6,5 +6,6 @@ callers must branch on.
 """
 
 from planazo.query.interpreter import interpret
+from planazo.query.models import SearchIntent, SearchOrigin, with_search_origin
 
-__all__ = ["interpret"]
+__all__ = ["SearchIntent", "SearchOrigin", "interpret", "with_search_origin"]

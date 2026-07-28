@@ -6,6 +6,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
+from typing import Literal, cast
 from uuid import uuid4
 
 from agentlib.core import CHEAP, STRONG
@@ -74,7 +75,7 @@ class RunStepLogger:
 
     def complete(self, result: LoopResult) -> None:
         """Persist the terminal agent outcome so no-tool runs remain monitorable."""
-        assert result.stopped != "preference_read_error", (
+        assert result.stopped not in {"preference_read_error", "missing_search_origin"}, (
             "RunStep records actual loop terminals; pre-run failures must not be logged"
         )
         completion = RunStep(
@@ -89,7 +90,7 @@ class RunStepLogger:
             wall_clock_ms=round((perf_counter() - self._started_clock) * 1000),
             phase="completion",
             final_answer=result.answer,
-            stopped=result.stopped,
+            stopped=cast(Literal["answered", "truncated", "max_steps"], result.stopped),
         )
         self._output_path.parent.mkdir(parents=True, exist_ok=True)
         with self._output_path.open("a", encoding="utf-8") as trace_file:
