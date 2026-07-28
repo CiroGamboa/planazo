@@ -86,7 +86,7 @@ Selection rule, in order: (a) first `MediaAsset` with `kind == "image"`; (b) els
 
 #### 9. `extraction_runs_index` populated at run start
 
-Every `extract_once` call inserts one `ExtractionRunIndexEntry(run_id, user_id=delegator_user_id, url, started_at)` row via `record_extraction_run` (ADR 0003, `catalog/repository.py`) before the LLM turns begin. This is the SQLite-side pointer into the JSONL log — MVP-ARCH §7's contract. Tests seed a `users` row before invoking `extract_once` (identity/repository already exposes `insert_user`); production callers pass a real `users.id` from the bot session.
+Every `extract_once` call inserts one `ExtractionRunIndexEntry(run_id, user_id=delegator_user_id, url, started_at)` row via `record_extraction_run` (ADR 0003, `catalog/repository.py`) before the LLM turns begin. This is the SQLite-side pointer into the JSONL log — MVP-ARCH §7's contract. Tests seed a `users` row before invoking `extract_once` (via `identity/repository.py::get_or_create_user`); production callers pass a real `users.id` from the bot session.
 
 *Alternative rejected — index only on success.* Loses the trace when the LLM crashes mid-run; the monitor's join-by-`run_id` would silently drop failed runs.
 

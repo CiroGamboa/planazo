@@ -15,7 +15,7 @@ import json
 import random
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -822,3 +822,131 @@ def test_extraction_result_hand_off_shape_from_happy_path(
 
     assert isinstance(result, ExtractionResult)
     assert result.needs_approval is False
+
+
+# ------------------------------
+# Multi-save behaviour — any success wins over any failure
+# ------------------------------
+
+
+def test_extract_once_returns_ok_when_retry_after_failed_save_succeeds(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retry after a failed `save_event` yields `status='ok'`.
+
+    Iteration order in `_build_result` is two-pass: any successful save
+    wins over any failed save. Single-pass first-record-wins would report
+    the FAILURE even though the DB persisted the event on turn 3.
+    """
+    _seed_user()
+    source = _build_source(caption="Come to Techno Night this Saturday!")
+
+    # Turn 1 fetch, turn 2 first save (server responds with an error dict),
+    # turn 3 retry save (server responds ok), turn 4 done.
+    real_save_event = extractor.save_event
+    call_count = {"n": 0}
+
+    def flaky_save_event(**kwargs: Any) -> dict[str, Any]:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return {"error_type": "duplicate_event", "message": "already saved once"}
+        return real_save_event(**kwargs)
+
+    monkeypatch.setattr(extractor, "save_event", flaky_save_event)
+
+    fake_call = MagicMock(
+        side_effect=[
+            _turn("", [_fetch_call()]),
+            _turn("", [_save_event_call("call_save_1")]),
+            _turn("", [_save_event_call("call_save_2")]),
+            _turn(""),
+        ]
+    )
+    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
+
+    result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    assert result.status == "ok", (
+        f"expected ok after retry-success, got {result.status!r} error_type={result.error_type!r}"
+    )
+    assert result.event is not None
+    assert result.error_type is None
+    assert call_count["n"] == 2
+
+
+def test_extract_once_returns_save_event_failed_when_all_saves_fail(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When every `save_event` attempt errors, the hand-off reports the failure.
+
+    Locks the fall-through: two-pass order still surfaces `save_event_failed`
+    when no success is present, so the multi-save fix does not silently
+    convert failures into `low_confidence_extraction`.
+    """
+    _seed_user()
+    source = _build_source(caption="Come to Techno Night this Saturday!")
+
+    monkeypatch.setattr(
+        extractor,
+        "save_event",
+        lambda **_kw: {"error_type": "duplicate_event", "message": "still no"},
+    )
+
+    fake_call = MagicMock(
+        side_effect=[
+            _turn("", [_fetch_call()]),
+            _turn("", [_save_event_call("call_save_1")]),
+            _turn("", [_save_event_call("call_save_2")]),
+            _turn(""),
+        ]
+    )
+    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
+
+    result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    assert result.status == "error"
+    assert result.error_type == "save_event_failed"
+
+
+# ------------------------------
+# Source-adapter taxonomy drift — degrade instead of crash
+# ------------------------------
+
+
+def test_extract_once_degrades_unknown_source_error_to_low_confidence(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source-adapter error branch outside `ExtractionErrorType` degrades cleanly.
+
+    If ADR 0006's taxonomy ever grows (say `network_timeout`), the current
+    literal-cast in `_build_result` would raise `ValidationError` at
+    `ExtractionResult` construction. The guard degrades to
+    `low_confidence_extraction` and preserves the observed branch name in
+    `notes` so operator + monitor still see the unknown value.
+    """
+    _seed_user()
+
+    class _DriftingSource:
+        name = "instagram"
+
+        def fetch_post(self, url: str) -> dict[str, Any]:
+            return {
+                "error_type": "network_timeout",
+                "message": "connection reset",
+                "url": url,
+            }
+
+    fake_call = MagicMock(
+        side_effect=[
+            _turn("", [_fetch_call()]),
+            _turn(""),  # LLM gives up without a terminal call
+        ]
+    )
+    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
+
+    drifting = cast(InstagramSource, _DriftingSource())
+    result = extract_once(_TEST_URL, delegator_user_id=1, source=drifting)
+
+    assert result.status == "error"
+    assert result.error_type == "low_confidence_extraction"
+    assert "network_timeout" in result.notes
