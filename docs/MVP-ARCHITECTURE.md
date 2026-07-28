@@ -360,11 +360,21 @@ Governed by **[ADR 0007 — Monitor scheduling and categorical grades](adr/0007-
 
 Copied verbatim into the Extractor's system prompt (also lives as `DELEGATION_BRIEF` in `agents/extractor.py`).
 
+<!-- extraction-delegation-brief:start -->
 - **Scope:** parse one Instagram post at a time into a structured `Event`.
 - **Acts alone when:** URL matches a known Instagram post pattern and the post has both an image and a caption.
 - **Asks (returns `status: "needs_clarification"`) when:** the post is ambiguous, the date/time cannot be extracted, or the location is not in Barcelona metro.
 - **Escalates (returns `status: "error"` + `error_type` and halts) when:** rate-limited, auth failure, image unavailable, or extraction confidence < 0.3.
 - **Effort budget:** `max_steps=4`, `max_output_tokens=2000`, one image per call. Enforced by `run_loop` parameters, not by prompt text.
+
+#### Terminal calls
+
+- **Success ends with `save_event`.** When a valid `Event` has been parsed, call `save_event` with its fields; the catalog persists the row and returns `{"saved": ..., "event_db_id": ...}`. Do not answer in free-form text after a successful `save_event` — the tool call is the terminal signal.
+- **Unhappy ends with `report_extraction_status(status, error_type, notes)`.** Every non-success branch terminates with exactly one `report_extraction_status` call. Map from this brief's branches to `error_type` literals as follows.
+  - "Asks (returns `status: "needs_clarification"`)": `status="needs_clarification"`, `error_type` ∈ `{"ambiguous_content", "missing_date", "location_out_of_metro", "multiple_events_in_post"}`.
+  - "Escalates (returns `status: "error"`)": `status="error"`, `error_type` ∈ `{"rate_limited", "auth_failed", "not_found", "unsupported_source", "unsupported_media", "no_visual_asset", "low_confidence_extraction", "save_event_failed"}`.
+- **`notes` must never quote or paraphrase the caption's text.** `notes` is capped at 200 characters and is for operator-facing diagnostics only ("no dates in caption", "venue outside metro"). Pasting caption bytes into `notes` violates AGENTS.md Rule 2 and is enforced by an adversarial redaction test on the code side.
+<!-- extraction-delegation-brief:end -->
 
 ### Structured hand-off
 
