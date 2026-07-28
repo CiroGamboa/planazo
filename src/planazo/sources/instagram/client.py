@@ -25,6 +25,7 @@ Reconciled against `instaloader==4.15.3`:
 | `QueryReturnedNotFoundException`      | `not_found`           |
 | `TooManyRequestsException`            | `rate_limited`        |
 | `LoginRequiredException`              | `auth_failed`         |
+| `BadResponseException`                | `not_found`           |
 | `typename` outside the routed set     | `unsupported_media`   |
 
 The two condition branches (URL host, `typename`) are decided in the adapter,
@@ -34,6 +35,12 @@ not here.
 `instaloader.exceptions.ConnectionException`; catching them by their specific
 types is intentional so a generic connection failure surfaces (uncaught) as an
 unhandled exception rather than being silently mislabelled `rate_limited`.
+`BadResponseException` is instaloader's catch-all for "Meta returned but the
+response was empty/malformed" — most commonly seen under anonymous
+rate-limiting or when a post is unavailable to logged-out clients. Mapped to
+`not_found` because the caller's POV is "the post was not delivered"; if a
+session cookie was set and BadResponse still fires, the run's `session_loaded`
+attribute distinguishes "probably really gone" from "probably rate-limited".
 """
 
 from __future__ import annotations
@@ -43,6 +50,7 @@ from typing import Any, Protocol
 
 import instaloader
 from instaloader.exceptions import (
+    BadResponseException,
     LoginRequiredException,
     QueryReturnedNotFoundException,
     TooManyRequestsException,
@@ -137,6 +145,17 @@ class InstagramClient:
         except LoginRequiredException as exc:
             raise InstagramClientError(
                 "auth_failed", f"instagram login required for {shortcode!r}"
+            ) from exc
+        except BadResponseException as exc:
+            # Meta returned an empty / malformed metadata response. Most common
+            # under anonymous rate-limiting or when the post is unavailable to
+            # a logged-out client. `not_found` is the least-alarming mapping —
+            # from the caller's POV "we asked for this post and Meta did not
+            # give it to us"; if a session cookie was set the caller can
+            # distinguish (session_loaded=True + BadResponse → probably really
+            # gone). Surfaced by the M3 live smoke.
+            raise InstagramClientError(
+                "not_found", f"instagram returned empty metadata for {shortcode!r} ({exc})"
             ) from exc
 
 

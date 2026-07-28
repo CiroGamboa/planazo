@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 import instaloader
 import pytest
 from instaloader.exceptions import (
+    BadResponseException,
     LoginRequiredException,
     QueryReturnedNotFoundException,
     TooManyRequestsException,
@@ -133,6 +134,7 @@ def test_instagram_client_error_carries_error_type() -> None:
         (QueryReturnedNotFoundException, "not_found"),
         (TooManyRequestsException, "rate_limited"),
         (LoginRequiredException, "auth_failed"),
+        (BadResponseException, "not_found"),
     ],
 )
 def test_client_maps_instaloader_exception_to_wrapper_error(
