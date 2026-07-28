@@ -26,6 +26,7 @@ dev = [
 [project.scripts]
 planazo-agent = "planazo.agents.cli:main"
 planazo-monitor = "planazo.monitor.cli:main"
+planazo-scheduler = "planazo.scheduler.cli:main"
 planazo-sources-instagram = "planazo.sources.instagram.cli:main"
 
 [build-system]

@@ -1,8 +1,8 @@
 """Anonymous Instagram discovery client via `curl_cffi` + `web_profile_info`.
 
 Purpose (M3.5): given an Instagram account URL, return the last N post URLs
-without an authenticated `instagrapi` session and without a paid HikerAPI
-key. Hits Meta's public `https://www.instagram.com/api/v1/users/web_profile_info/`
+without a paid HikerAPI key. Hits Meta's public
+`https://www.instagram.com/api/v1/users/web_profile_info/`
 endpoint (the same one the mobile-web UI uses) with a `curl_cffi.Session`
 impersonating Chrome — Meta's soft-ban heuristics key on TLS fingerprints
 and header ordering, both of which `curl_cffi`'s Chrome-impersonate profile

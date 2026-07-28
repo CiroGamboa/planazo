@@ -15,6 +15,10 @@ every source adapter shares:
   loader; fails at boot on a malformed config.
 - `enumerate_configured_posts` — flat list of the `posts:` URLs from a
   `SourceConfig`, in config order (consumed by the scheduler; see #67).
+- `is_instagram_post_url` — regex-locked discriminator between post URLs
+  (`/p/<shortcode>/`, `/reel/<shortcode>/`) and everything else (account
+  URLs, garbage). Reuses the same pattern `PostConfig.url` enforces at
+  load time.
 
 Concrete adapters (`sources/instagram/`, future `sources/tiktok/`) live in
 their own subpackages; each conforms structurally to
@@ -22,7 +26,12 @@ their own subpackages; each conforms structurally to
 """
 
 from planazo.sources.base import SOURCES, ErrorType, error_state, next_run_after
-from planazo.sources.config import SourcesConfig, enumerate_configured_posts, load_config
+from planazo.sources.config import (
+    SourcesConfig,
+    enumerate_configured_posts,
+    is_instagram_post_url,
+    load_config,
+)
 from planazo.sources.models import MediaAsset, RawPost
 
 __all__ = [
@@ -33,6 +42,7 @@ __all__ = [
     "SourcesConfig",
     "enumerate_configured_posts",
     "error_state",
+    "is_instagram_post_url",
     "load_config",
     "next_run_after",
 ]

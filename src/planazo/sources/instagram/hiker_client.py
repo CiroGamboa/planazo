@@ -1,10 +1,11 @@
 """HikerAPI-backed Instagram discovery client with a multi-key pool.
 
-Purpose (M3.5): given an Instagram account URL, return the last N post URLs so
-the scheduler (#67) can iterate them without depending on the burner
-(`instagrapi`) or the anonymous path's business-account block. Extraction of
-each returned post URL is still handled by the existing `InstagramClient` +
-`instaloader.Post.from_shortcode` — this client's ONLY job is discovery.
+Purpose (M3.5): given an Instagram account URL, return the last N post URLs
+so the scheduler (#67) can iterate them for business venue accounts the
+anonymous `web_profile_info` backend refuses with a `laser.provider` block.
+Extraction of each returned post URL is still handled by the existing
+`InstagramClient` + `instaloader.Post.from_shortcode` — this client's ONLY
+job is discovery.
 
 Multi-key pool with random selection + retirement window
 --------------------------------------------------------

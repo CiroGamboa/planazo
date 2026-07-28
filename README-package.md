@@ -13,6 +13,7 @@ uv run planazo-agent                                                     # inter
 uv run planazo-monitor --since 24h                                       # grade recent runs
 uv run planazo-monitor --dry-run                                         # grade canned seed runs
 uv run planazo-monitor --dry-run --run-id seed-injection-near-miss       # one-call monitor smoke test
+uv run planazo-scheduler --tick                                          # one scheduled-ingestion tick (host-cron entry point)
 ```
 
 `agentlib` (the LLM wrapper) needs `OPENCODE_API_KEY` set in a `.env` file at the repo root; copy `../.env.example`. If the key is unset, the CLI prints one actionable line and exits without calling the provider; if the key is present but invalid or the provider errors, it prints a single-line message — never a traceback.
@@ -103,6 +104,34 @@ uv run planazo-sources-instagram --url https://instagram.com/p/ABC/             
 
 `docker compose up sources-instagram` defaults to `--dry-run` — it resolves the plan from `data/sources.yaml` and exits 0 without any network calls. Use `docker compose run --rm sources-instagram --url <URL>` to fetch one specific post; `--dry-run` and `--url` are mutually exclusive and exactly one is required per invocation. `INSTAGRAM_SESSION_ID` is optional — copy the `sessionid` cookie from a logged-in Instagram browser session into `.env` when a public-account fetch returns `auth_failed`, otherwise leave it unset. The CLI never writes anywhere; `--url` prints one line of `RawPost.model_dump_json()` (happy path) or the typed error dict — `{"error_type": "…", "message": "…", "url": "…"}` — to stdout. See [ADR 0006 — Instagram extraction approach](docs/adr/0006-instagram-extraction-approach.md).
 
+## Scheduled ingestion
+
+`planazo-scheduler` is the host-cron entry point for periodic ingestion: on every `--tick` it reads `data/sources.yaml`, walks the configured `posts:` + `accounts:` blocks, routes each account through `AccountConfig.backend` to one of two discovery backends (`anonymous` via `curl_cffi` + Meta's `web_profile_info`, or `hikerapi` via the paid multi-key HikerAPI pool), pre-checks discovered URLs against `events_exist_for_source_url` to skip already-persisted URLs, and dispatches survivors into `extract_once` under a seeded system user (`telegram_user_id="system"`). One `SchedulerRunRecord` line per source URL processed lands in `var/scheduler_runs.jsonl` for human tailing. See [ADR 0011 — Scheduled ingestion](docs/adr/0011-scheduled-ingestion.md) and [ADR 0014 — Instagram discovery backends](docs/adr/0014-instagram-discovery-backends.md).
+
+```bash
+uv run planazo-scheduler --tick                                       # one-shot tick over sources.yaml
+uv run planazo-scheduler --once https://www.instagram.com/p/ABC/      # diagnostic single-URL run (bypasses cadence)
+uv run planazo-scheduler --once https://www.instagram.com/reel/ABC/   # same, for a reel URL
+uv run planazo-scheduler --once https://www.instagram.com/acct/       # single-account run (must be in sources.yaml)
+```
+
+Exit codes: `0` when the tick completed (regardless of per-URL outcomes — operators read the JSONL log for per-URL health); `1` on an uncaught runtime exception; `2` on a config-time failure (malformed `sources.yaml`, missing `PLANAZO_IG_HIKER_API_KEY_*` when a `hikerapi`-backed account is configured, or an `--once <url>` call against an account URL that is not in `sources.yaml`).
+
+`hikerapi` accounts need one or more `PLANAZO_IG_HIKER_API_KEY[_N]` env vars set — every distinct value across the singular `PLANAZO_IG_HIKER_API_KEY` and any numbered `PLANAZO_IG_HIKER_API_KEY_1`, `_2`, ... peers becomes a pool member. On each HikerAPI call the client draws uniformly at random from the non-retired keys; a 401/403/429 retires the drawing key for five minutes and the request retries against a fresh draw.
+
+Wire the tick into cron every 15 minutes (adjust the path and cadence to your host):
+
+```
+# macOS: `crontab -e`; Linux: `sudo crontab -e -u planazo`
+*/15 * * * * cd /path/to/planazo && /usr/local/bin/uv run planazo-scheduler --tick >> var/scheduler.log 2>&1
+```
+
+Notes for the cron entry:
+
+- Use the absolute path to `uv` — cron's `PATH` is minimal and `uv` will not be found via `PATH` lookup unless the crontab is configured with `PATH=` at the top. `which uv` on the host that runs cron gives the path to paste.
+- `var/scheduler.log` accumulates cron stdout/stderr; rotate it with `logrotate` (Linux) or `newsyslog` (macOS) if the host runs the tick long enough for the file to matter. `var/scheduler_runs.jsonl` — the per-URL structured audit log — is the primary artifact and is never rotated automatically.
+- The default cadence in `sources.yaml` is 6 hours per account; a 15-minute cron interval means most ticks are no-ops that short-circuit on the cadence gate (each still writes one `gate_reason="cadence_not_ready"` record per configured URL).
+
 ## Memory model demos
 
 ```bash
@@ -131,7 +160,8 @@ Each script redirects both store roots (`memory.facts.MEMORY_ROOT`, `storage.db.
 │   ├── monitor/           out-of-band LLM-as-judge over run logs
 │   ├── storage/           db.py (connection + schema_v1.sql only)
 │   ├── config.py          shared env-check helper
-│   ├── sources/           RawPost + MediaAsset + config; Instagram adapter (Dockerized)
+│   ├── sources/           RawPost + MediaAsset + config; Instagram adapter (Dockerized); anon + hikerapi discovery clients
+│   ├── scheduler/         run_tick + planazo-scheduler CLI; scan_state repository; SchedulerRunRecord audit log
 │   └── agents/            loop.py (generic runtime), event_agent.py (composition root), cli.py
 ├── src/tools/
 │   ├── schema.py           schema_for() — derives a tool's JSON schema from its signature/docstring

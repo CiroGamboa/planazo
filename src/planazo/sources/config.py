@@ -7,13 +7,16 @@ names (`"instagram"`, future `"tiktok"`, ...) and whose values are per-source
 work-lists the scheduler consumes on every tick:
 
 - `accounts: list[AccountConfig]` — accounts to scan for recent posts.
-  Depends on the Instagram adapter's `list_recent_posts` implementation
-  (an authenticated `instagrapi` session; see ADR 0011).
-- `posts: list[PostConfig]` — explicit post URLs to (re-)extract. A
-  fallback path that works from anonymous access (`Post.from_shortcode`)
-  and does not depend on the burner account. Successful extractions are
-  locked out by the composite `UNIQUE(source_url, event_index_in_post)`
-  in `events`; the entry's `cadence` only gates failure-retry.
+  Discovery lives in the `scheduler/` bounded context: each account routes
+  through the configured `AccountConfig.backend` to one of the two
+  `InstagramDiscoveryProtocol` implementations the scheduler composes
+  (`anonymous` via `curl_cffi` + Meta's `web_profile_info`; `hikerapi` via
+  the paid multi-key pool). See ADR 0011 + ADR 0014.
+- `posts: list[PostConfig]` — explicit post URLs to (re-)extract. Works
+  from anonymous access (`Post.from_shortcode`) and skips discovery
+  entirely. Successful extractions are locked out by the composite
+  `UNIQUE(source_url, event_index_in_post)` in `events`; the entry's
+  `cadence` only gates failure-retry.
 
 Both lists default to empty — a config with only `accounts:`, only
 `posts:`, both, or neither is valid.
@@ -23,7 +26,9 @@ any fetch runs, per AGENTS.md rule 1 (validate at the boundary) and rule 4
 (typed error state, never a partial-config surprise). `PostConfig.url` is
 validated against the `instagram.com/{p|reel}/{shortcode}/` shape at load
 time so a typo (an account URL pasted into `posts:`) surfaces as a
-`ValidationError`, not a runtime `not_found`.
+`ValidationError`, not a runtime `not_found`. `is_instagram_post_url(url)`
+exposes the same shape check for callers that need to discriminate a
+loose URL (e.g. the `planazo-scheduler --once <url>` CLI branch).
 
 Cadence strings accept a shorthand `<int>[smhd]` (`"6h"`, `"30m"`, `"7d"`)
 alongside Pydantic's native ISO-8601 duration parsing (`"PT6H"`). The
@@ -38,8 +43,8 @@ default shape. `PostConfig.resolved_cadence(source_defaults)` folds the
 same way for post entries.
 
 `enumerate_configured_posts(source_config)` returns the flat list of post
-URLs in config order — the scheduler consumes it alongside
-`InstagramSource.list_recent_posts` to build the per-tick work-list.
+URLs in config order — the scheduler consumes it alongside every
+`AccountConfig` entry's discovery output to build the per-tick work-list.
 """
 
 from __future__ import annotations
@@ -156,13 +161,13 @@ class AccountConfig(BaseModel):
 class PostConfig(BaseModel):
     """One explicit post URL for the scheduler's URL-list mode.
 
-    The `posts:` block is the fallback path when account-scan discovery
-    (`accounts:` + `InstagramSource.list_recent_posts`) is unavailable —
-    the operator pastes specific post URLs and each tick sends them to
-    `extract_once`. Successful extractions are naturally idempotent via
-    the composite `UNIQUE(source_url, event_index_in_post)` in `events`;
-    the entry's `cadence` only gates how often a *failed* extraction
-    (rate-limit, transient network error) is retried.
+    The `posts:` block skips discovery entirely — the operator pastes
+    specific post URLs and each tick sends them straight to `extract_once`
+    without walking any account backend. Successful extractions are
+    naturally idempotent via the composite
+    `UNIQUE(source_url, event_index_in_post)` in `events`; the entry's
+    `cadence` only gates how often a *failed* extraction (rate-limit,
+    transient network error) is retried.
 
     `url` is validated against the `instagram.com/{p|reel}/{shortcode}/`
     shape so a mistyped account URL surfaces as a `ValidationError` at
@@ -210,10 +215,10 @@ class SourceConfig(BaseModel):
 
     Two independently-populated work-lists, either or both may be empty:
 
-    - `accounts` — accounts to scan for recent posts (needs authenticated
-      `list_recent_posts`).
-    - `posts` — explicit post URLs to (re-)extract (works from anonymous
-      access; the M3.5 scheduler fallback path).
+    - `accounts` — accounts to scan for recent posts (routes through the
+      scheduler's discovery backends via `AccountConfig.backend`).
+    - `posts` — explicit post URLs to (re-)extract (skips discovery; works
+      from anonymous `Post.from_shortcode`).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -255,7 +260,21 @@ def enumerate_configured_posts(source_config: SourceConfig) -> list[str]:
     """Return the flat list of post URLs from `source_config.posts`, in order.
 
     Pure function — no I/O, no side effects. The scheduler (#67) consumes
-    it alongside `InstagramSource.list_recent_posts` to build the per-tick
-    work-list.
+    it alongside each `AccountConfig` entry's discovery-backend output to
+    build the per-tick work-list.
     """
     return [entry.url for entry in source_config.posts]
+
+
+def is_instagram_post_url(url: str) -> bool:
+    """True when `url` matches the shape `PostConfig.url` accepts.
+
+    Reuses the same compiled regex `PostConfig`'s field validator applies
+    at load time, so a caller (the `planazo-scheduler --once <url>` CLI
+    branch) uses one canonical discriminator between post URLs and
+    account URLs instead of re-inventing the pattern. Returns `False` for
+    account URLs, garbage strings, and `/tv/` legacy URLs — an operator
+    calling `--once` with an account URL falls through to the account-URL
+    branch (which looks it up in `sources.yaml`).
+    """
+    return _INSTAGRAM_POST_URL.match(url) is not None

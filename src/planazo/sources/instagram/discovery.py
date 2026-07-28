@@ -17,10 +17,11 @@ from typing import Protocol
 class InstagramDiscoveryProtocol(Protocol):
     """Structural contract for account-URL → post-URL discovery.
 
-    Any concrete discovery backend (HikerAPI, anonymous `curl_cffi`, future
-    burner-account `instagrapi` when it comes back) conforms to this Protocol
-    by exposing `list_recent_posts(account_url, limit)` with the same shape.
-    The scheduler (#67) depends on this Protocol, not any concrete class.
+    Any concrete discovery backend (HikerAPI, anonymous `curl_cffi`, or
+    a future third implementation slotted in as a peer) conforms to this
+    Protocol by exposing `list_recent_posts(account_url, limit)` with the
+    same shape. The scheduler (#67) depends on this Protocol, not any
+    concrete class.
     """
 
     def list_recent_posts(self, account_url: str, limit: int = 12) -> list[str]: ...
