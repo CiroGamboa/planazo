@@ -137,6 +137,7 @@ Under `src/planazo/`, each domain concept lives in a self-contained folder that 
 | `memory/` | Facts + notes + rules (private/shared) | `Fact`, `Note`, `MemoryScopeRequest`, closured memory tools |
 | `rank/` | Deterministic ranker (LLM re-ranker deferred) | `RankingPreferences`, `RankedEvent`, `rank_events` — landed by M4 |
 | `monitor/` | Out-of-band LLM-as-judge grader | `RunStep`, `RunSession`, `Verdict`, `GradedRun` |
+| `observability/` | Per-loop SQLite audit rows in `agent_runs` + per-decision rationale rows in `llm_decisions` — write-side only, wired best-effort at composition roots alongside the JSONL sidecars | `AgentRunRecord`, `LLMDecision`, `format_stored_text`, `record_agent_run`/`query_agent_runs`, `record_llm_decision`/`query_llm_decisions`, `AgentRunLogger`, `LLMDecisionLogger` |
 
 **Shared kernel** — `agentlib/` (LLM wrapper) and `tools/schema.py` (function-signature reflection). Product-agnostic; imported by every context; may not import any context.
 
@@ -232,19 +233,21 @@ Governed by [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-
 
 SQLite + JSON columns (via SQLite's JSON1). Domain-only — free-form agent memory lives elsewhere (§8).
 
-- **`storage/db.py`** — `connect()`: connection + migrations (`schema_v1.sql` applied idempotently on every connection open).
+- **`storage/db.py`** — `connect()`: connection + migration runner. Reads `PRAGMA user_version`, applies every pending `NNN_*.sql` file in `storage/migrations/` in lexicographic order inside a transaction that bumps `user_version` in the same commit, so a mid-migration failure leaves the database at the last successful version.
 - **`storage/dao.py`** — narrow DAO surface, no ORM. Two tiers: connection-parameterized primitives for internal composition, and the self-contained `save_event`/`search_events` wrappers that open their own connection and return a typed-error-or-success dict, so they are usable directly as LLM tools.
 
-Schema (v1):
+Schema:
 
 | Table | Purpose |
 | --- | --- |
-| `events(id, source, source_url, title, start_utc, end_utc, category, city, price_cents, geo_lat, geo_lng, confidence, extra JSON, ingested_at, event_index_in_post, UNIQUE(source_url, event_index_in_post))` | The shared domain surface. `extra JSON` absorbs source-specific fields without altering the table. Composite `(source_url, event_index_in_post)` UNIQUE lets one Instagram post persist N distinct events (multi-event carousels) — see ADR 0012. |
+| `events(id, source, source_url, title, start_utc, end_utc, category, city, price_cents, geo_lat, geo_lng, confidence, extra JSON, ingested_at, event_index_in_post, source_account, venue_name, venue_address, organizer, tags JSON, description, ticket_url, image_url, language, recurring, UNIQUE(source_url, event_index_in_post))` | The shared domain surface. `extra JSON` absorbs source-specific fields without altering the table; `tags` is a JSON array in the same TEXT-column shape. Composite `(source_url, event_index_in_post)` UNIQUE lets one Instagram post persist N distinct events (multi-event carousels) — see ADR 0012. `category` is the `EventCategory` Literal shared with `SearchIntent`; the ten domain-model columns after `event_index_in_post` land in migration 002 (see ADR 0015). Composite indexes `idx_events_city_start(city, start_utc)` and `idx_events_category_start(category, start_utc)` back the two hot Recommender filter shapes. |
 | `users(id, telegram_user_id UNIQUE, display_name, created_at)` | Multi-user seam. |
 | `preferences(user_id FK, key, value, updated_at)` | Structured filter prefs used by the ranker and pushed into the agent context. |
 | `approvals(id, user_id FK, artifact_kind, artifact_id, decision, decided_at)` | Audit trail for future calendar wiring. |
 | `extraction_runs_index(id, run_id, user_id, url, started_at)` | Thin index; the full run payload lives in the JSONL log (§9). |
 | `scan_state(source_url PK, last_scanned_at, last_success_at, consecutive_failures)` | Per-source-URL scheduler bookkeeping — post entries and account entries share the table (`source_url` is the honest name for both). `next_run_after(cadence, last_scanned_at)` drives the cadence gate; `consecutive_failures` drives the failure-skip gate (ADR 0011 §D9). Read + upserted every `planazo-scheduler --tick`. |
+| `agent_runs(id, run_id UNIQUE, agent_kind CHECK IN ('recommender', 'extractor'), user_id FK, user_query, final_answer, stopped, steps_count, started_at, ended_at)` | One row per completed Recommender or Extractor loop, written best-effort at the composition roots alongside the JSONL sidecars. `user_query` and `final_answer` are sanitized via `observability/models.py::format_stored_text`. Backs future per-user history reads (`/find` history, #23) via the composite index `idx_agent_runs_user_started(user_id, started_at)`. |
+| `llm_decisions(id, run_id FK -> agent_runs.run_id, decision_kind CHECK IN ('save_event', 'needs_clarification', 'error', 'answered'), event_db_id FK -> events.id ON DELETE SET NULL, error_type, rationale, recorded_at)` | Zero-to-N rows per `agent_runs` — one per terminal LLM decision. The Extractor emits `save_event` / `needs_clarification` / `error` rows from its tool-call trace; the Recommender emits one `answered` row (or an `error` row on `truncated` / `max_steps`). `rationale` is DB-inside per Rule 2 (full LLM reasoning allowed subject to `RATIONALE_CAP=500` + `format_stored_text` sanitization). Written best-effort via `observability/logging.py::LLMDecisionLogger` alongside `AgentRunLogger`; disabled together by the Recommender's `record_runs=False` seam. Indexed on `run_id` (per-run join) and `decision_kind` (corpus-analysis shape M4's ranker will read). |
 
 ```mermaid
 erDiagram
@@ -304,6 +307,30 @@ erDiagram
         datetime last_success_at
         int consecutive_failures
     }
+    agent_runs {
+        int id PK
+        string run_id UK
+        string agent_kind
+        int user_id FK
+        string user_query
+        string final_answer
+        string stopped
+        int steps_count
+        datetime started_at
+        datetime ended_at
+    }
+    llm_decisions {
+        int id PK
+        string run_id FK
+        string decision_kind
+        int event_db_id FK
+        string error_type
+        string rationale
+        datetime recorded_at
+    }
+    users ||--o{ agent_runs : owns
+    agent_runs ||--o{ llm_decisions : produces
+    events ||--o{ llm_decisions : referenced_by
 ```
 
 Unit tests run against real SQLite in two tiers, matching how the two dao tiers open connections: the connection-parameterized primitives share one `:memory:` connection held across every call in a test, and the self-contained `save_event`/`search_events` wrappers — which open and close their own connection per call — run against a `tmp_path` file so state carries between calls.
@@ -392,6 +419,7 @@ Copied verbatim into the Extractor's system prompt (also lives as `DELEGATION_BR
 #### Terminal calls
 
 - **Success ends with one or more `save_event` calls.** When a valid `Event` has been parsed, call `save_event` with its fields; the catalog persists the row and returns `{"saved": ..., "event_db_id": ...}`. When a single post announces multiple distinct events (curator carousels), call `save_event` once per event with `event_index_in_post` = `0`, `1`, `2`, ... — one call per slot, in order. Do not answer in free-form text after the final `save_event` — the tool call is the terminal signal.
+- **Copy `author_handle` from `fetch_instagram_post`'s return into `save_event(source_account=...)`.** The source-account handle names the account that posted the flyer (e.g. `sala_apolo`); it is a wire-level pass-through, not a field the LLM composes.
 - **Unhappy ends with `report_extraction_status(status, error_type, notes)`.** Every non-success branch terminates with exactly one `report_extraction_status` call. Map from this brief's branches to `error_type` literals as follows.
   - "Asks (returns `status: "needs_clarification"`)": `status="needs_clarification"`, `error_type` ∈ `{"ambiguous_content", "missing_date", "location_out_of_metro", "multiple_events_in_post"}`.
   - "Escalates (returns `status: "error"`)": `status="error"`, `error_type` ∈ `{"rate_limited", "auth_failed", "not_found", "unsupported_source", "unsupported_media", "no_visual_asset", "low_confidence_extraction", "save_event_failed"}`.
@@ -589,6 +617,7 @@ Accepted ADRs describe current state; planned ADRs are reserved for their own ti
 | 0012 | [`multi-event-extraction`](adr/0012-multi-event-extraction.md) | Lift extraction cardinality to 0..N events per post: `ExtractionResult.events: list[Event]`, `save_event(event_index_in_post)`, composite `UNIQUE(source_url, event_index_in_post)`, `events_exist_for_source_url` primitive. Supersedes ADR 0005 §Decision 10; partially supersedes §Decision 11's invariant clause. |
 | 0013 | [`extractor-side-frame-extraction`](adr/0013-extractor-side-frame-extraction.md) | Reel multimodal input: the extractor downloads the reel `video_url` to a temp file, extracts `MAX_REEL_FRAMES=3` evenly-spaced JPEG frames via `ffmpeg`, and sends them as base64 `input_image` parts alongside the thumbnail; silent degrade to thumbnail-only on `FrameExtractionError`. Extends ADR 0005's delegation-brief effort budget with the reel-frame arm; partially supersedes ADR 0006 §Decision 4 (extractor now downloads binaries; the adapter still emits URL-only `MediaAsset` entries). |
 | 0014 | [`instagram-discovery-backends`](adr/0014-instagram-discovery-backends.md) | Two-backend discovery split routed by `AccountConfig.backend`: `anonymous` (`curl_cffi` + Meta `web_profile_info`) and `hikerapi` (paid HikerAPI, multi-key pool with uniform random selection + 5-minute retirement window). Discovery lives in the `scheduler/` bounded context, not on `InstagramSource`. Partially supersedes ADR 0011's Context claim of an adapter-side `list_recent_posts`, ADR 0011 §Decision 3 (`scan_state` primary key renamed `account_url` → `source_url`), and ADR 0011 §Decision 8 (audit-log field set extended with `source_kind`, `backend`, `started_at`, `ended_at`; grain changed to per source URL). |
+| 0015 | [`storage-migrations-and-observability`](adr/0015-storage-migrations-and-observability.md) | Versioned `PRAGMA user_version` migration framework at `src/planazo/storage/migrations/`, applied in per-file transactions; `events` table grown to the full domain model (ten new columns + `EventCategory` Literal) in one migration; new `observability/` bounded context persists one `agent_runs` row per completed loop and 0..N `llm_decisions` rows per loop, best-effort at composition roots. Rationale text stays DB-inside per Rule 2 (redaction happens on the way out, not into DB). Down migrations, retention rotation, and JSONL → SQLite convergence deferred. Refines ADR 0003's schema-evolution follow-up. |
 
 Until each ADR lands, its section here reads as "planned — ADR NNNN"; when it lands, the entry is edited in place to link the accepted ADR.
 

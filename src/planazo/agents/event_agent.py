@@ -27,19 +27,30 @@ the replacement.
 import json
 import sqlite3
 from collections.abc import Callable
+from datetime import UTC, datetime
 from functools import wraps
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 from agentlib.core import CHEAP
-from planazo.agents.loop import StepRecord, run_loop
+from planazo.agents.loop import LoopResult, StepRecord, run_loop
 from planazo.catalog import Event, filter_events_for_intent
 from planazo.catalog import search_events as catalog_search_events
 from planazo.identity import PreferenceReadResult, PreferenceRecord, get_preferences, set_preference
 from planazo.memory.api import build_memory_tools
 from planazo.memory.rules import load_rules
 from planazo.monitor.logging import RunStepLogger
+from planazo.observability import (
+    FINAL_ANSWER_CAP,
+    RATIONALE_CAP,
+    USER_QUERY_CAP,
+    AgentRunLogger,
+    AgentRunRecord,
+    LLMDecision,
+    LLMDecisionLogger,
+    format_stored_text,
+)
 from planazo.query.models import SearchIntent
 from planazo.storage import db
 from tools import tools as calendar_tools
@@ -346,7 +357,12 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
     def search_events(
         category: str = "", city: str = "", start_after: str = "", max_results: int = 20
     ) -> dict[str, object]:
-        return catalog_search_events(category, city, start_after, max_results)
+        return catalog_search_events(
+            category=category,
+            city=city,
+            start_after=start_after,
+            max_results=max_results,
+        )
 
     tool_schemas: list[dict[str, Any]] = [schema_for(search_events)]  # Any: see schema_for
     registry: dict[str, Callable[..., dict[str, object]]] = {"search_events": search_events}
@@ -437,8 +453,9 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
 
     model = run_context.get("model", CHEAP)
     supplied_observer = run_context.get("on_step")
+    record_runs = run_context.get("record_runs", True)
     logger: RunStepLogger | None = None
-    if run_context.get("record_runs", True):
+    if record_runs:
         logger = RunStepLogger(
             user_message=RECOMMENDER_WORK_MESSAGE,
             model=model,
@@ -454,6 +471,10 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
         if supplied_observer is not None:
             supplied_observer(record)
 
+    # Capture the loop's wall-clock boundaries around `run_loop` so the
+    # `agent_runs` row's `started_at` / `ended_at` cover the full loop —
+    # including tool dispatches, not just the LLM turns.
+    started_at = datetime.now(UTC)
     result = run_loop(
         user_message=RECOMMENDER_WORK_MESSAGE,
         tools=tool_schemas,
@@ -467,8 +488,31 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
         # system message is worse than none at all.
         system=system_text or None,
     )
+    ended_at = datetime.now(UTC)
     if logger is not None:
         logger.complete(result)
+        # SQLite write is gated by the same `record_runs` seam as the JSONL
+        # writer above. Best-effort: `AgentRunLogger` catches every exception
+        # and logs a WARNING; the Recommender's answer is the primary flow
+        # and observability failures must not affect it (Rule 4). Runs BEFORE
+        # the `RecommenderResult` post-processing below so it fires regardless
+        # of which return branch is taken.
+        # Post-rebase adaptation: the M4-era `run_once` no longer receives the
+        # user's raw text (the interpreter upstream turned it into a
+        # `SearchIntent`). Store the intent's JSON serialization as the
+        # `user_query` — it's the concrete input the recommender ran against.
+        _record_agent_run_best_effort(
+            run_id=logger.run_id,
+            user_id=user_id,
+            user_message=intent.model_dump_json(),
+            result=result,
+            started_at=started_at,
+            ended_at=ended_at,
+        )
+        # T4 rationale audit — writes AFTER `record_agent_run` because
+        # `llm_decisions.run_id` is FK to `agent_runs.run_id`. Disabling
+        # `record_runs` disables both surfaces alongside the JSONL writer.
+        _record_llm_decisions_best_effort(run_id=logger.run_id, result=result, recorded_at=ended_at)
     successful_searches: list[Event] = []
     for record in search_trace:
         error = _search_error(record.result)
@@ -514,3 +558,97 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
         candidates=candidates,
         interpreter_fallback=intent.error_type == "interpreter_fallback",
     )
+
+
+def _record_agent_run_best_effort(
+    *,
+    run_id: str,
+    user_id: int | None,
+    user_message: str,
+    result: LoopResult,
+    started_at: datetime,
+    ended_at: datetime,
+) -> None:
+    """Build the sanitized `AgentRunRecord` and hand it to `AgentRunLogger`.
+
+    The `preference_read_error` branch cannot reach here — `run_once`
+    returns early before the loop starts, before this helper is called.
+    Every other `LoopResult.stopped` value is a valid `AgentRunStopped`
+    Literal, so the aggregate constructs cleanly and the logger's own
+    best-effort swallow only catches genuine DB-side failures.
+    """
+    # `LoopResult.stopped` widens over `AgentRunStopped` by two pre-run
+    # branches (`preference_read_error`, `missing_search_origin`). Both
+    # cause `run_once` to return before this helper is called, so at
+    # runtime `result.stopped` is one of the three post-loop terminals.
+    # Assert for documentation and narrow via `cast` for mypy.
+    assert result.stopped not in {"preference_read_error", "missing_search_origin"}, (
+        "agent_runs records actual loop terminals; pre-run failures must not be logged"
+    )
+    stopped_literal = cast(Literal["answered", "truncated", "max_steps"], result.stopped)
+    agent_logger = AgentRunLogger(conn_factory=db.connect)
+    record = AgentRunRecord(
+        run_id=run_id,
+        agent_kind="recommender",
+        user_id=user_id,
+        user_query=format_stored_text(user_message, USER_QUERY_CAP),
+        final_answer=(
+            format_stored_text(result.answer, FINAL_ANSWER_CAP)
+            if result.answer is not None
+            else None
+        ),
+        stopped=stopped_literal,
+        steps_count=result.steps,
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+    agent_logger.record(record)
+
+
+def _record_llm_decisions_best_effort(
+    *, run_id: str, result: LoopResult, recorded_at: datetime
+) -> None:
+    """Emit one `LLMDecision` row per Recommender-loop terminal state.
+
+    The Recommender does not project per-item structured reasoning
+    today (per-recommendation reasons live in M4 #20). What lands is
+    one row per loop:
+
+    - `stopped == "answered"` — one `answered` row with the sanitized
+      final answer as rationale (`format_stored_text` → `RATIONALE_CAP`).
+      Empty answer is a legal branch (`LoopResult.answer` may be
+      `""`); the rationale is empty-string in that case.
+    - `stopped in {"truncated", "max_steps"}` — one `error` row with
+      `error_type="loop_terminated_early"` and the truncated final
+      answer (or an empty string for `max_steps`) as rationale.
+
+    `preference_read_error` never reaches here — the composition root
+    returns before the loop starts, before this helper is called (same
+    invariant as `_record_agent_run_best_effort`).
+    """
+    assert result.stopped != "preference_read_error", (
+        "llm_decisions records actual loop terminals; pre-run failures must not be logged"
+    )
+    if result.stopped == "answered":
+        rationale = (
+            format_stored_text(result.answer, RATIONALE_CAP) if result.answer is not None else ""
+        )
+        decision = LLMDecision(
+            run_id=run_id,
+            decision_kind="answered",
+            event_db_id=None,
+            error_type=None,
+            rationale=rationale,
+            recorded_at=recorded_at,
+        )
+    else:
+        raw_answer = result.answer or ""
+        decision = LLMDecision(
+            run_id=run_id,
+            decision_kind="error",
+            event_db_id=None,
+            error_type="loop_terminated_early",
+            rationale=format_stored_text(raw_answer, RATIONALE_CAP),
+            recorded_at=recorded_at,
+        )
+    LLMDecisionLogger(conn_factory=db.connect).record_many([decision])

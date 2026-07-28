@@ -40,8 +40,9 @@ from __future__ import annotations
 import base64
 import logging
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final, cast, get_args
+from typing import Any, Final, Literal, cast, get_args
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -58,6 +59,17 @@ from planazo.extraction.models import (
     ExtractionStatus,
 )
 from planazo.memory.rules import load_rules
+from planazo.observability import (
+    FINAL_ANSWER_CAP,
+    RATIONALE_CAP,
+    USER_QUERY_CAP,
+    AgentRunLogger,
+    AgentRunRecord,
+    DecisionKind,
+    LLMDecision,
+    LLMDecisionLogger,
+    format_stored_text,
+)
 from planazo.sources.config import load_config
 from planazo.sources.instagram.adapter import InstagramSource
 from planazo.sources.instagram.client import InstagramClient
@@ -377,6 +389,10 @@ def extract_once(
         trace.append(record)
         logger(record)
 
+    # Capture wall-clock boundaries around `run_loop` so the `agent_runs`
+    # row's `started_at` / `ended_at` cover the full loop, including every
+    # tool dispatch (source fetch, save_event writes) — not just LLM turns.
+    started_at = datetime.now(UTC)
     loop_result = run_loop(
         user_message=USER_MESSAGE,
         tools=tool_schemas,
@@ -388,9 +404,226 @@ def extract_once(
         on_tool_output=_build_multimodal_hook(url),
         system=system_text,
     )
+    ended_at = datetime.now(UTC)
     logger.complete(loop_result)
 
+    # Best-effort SQLite audit-row write. `AgentRunLogger` catches every
+    # exception and logs a WARNING; the Extractor's `ExtractionResult` is
+    # the primary flow and observability failures must not affect it
+    # (Rule 4). No `record_runs` seam on `extract_once` — the JSONL writer
+    # above is always on, and the SQLite row-writer matches.
+    _record_agent_run_best_effort(
+        run_id=run_id,
+        user_id=delegator_user_id,
+        result=loop_result,
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+    # T4 rationale audit — writes AFTER `record_agent_run` because
+    # `llm_decisions.run_id` is FK to `agent_runs.run_id`. If the
+    # `agent_runs` write failed (T3 swallowed the exception), the
+    # `llm_decisions` writes will also fail on FK — both are best-effort
+    # by design.
+    _record_llm_decisions_best_effort(
+        run_id=run_id,
+        trace=trace,
+        result=loop_result,
+        recorded_at=ended_at,
+    )
+
     return _build_result(trace, loop_result)
+
+
+def _record_agent_run_best_effort(
+    *,
+    run_id: str,
+    user_id: int,
+    result: LoopResult,
+    started_at: datetime,
+    ended_at: datetime,
+) -> None:
+    """Build the sanitized `AgentRunRecord` and hand it to `AgentRunLogger`.
+
+    `USER_MESSAGE` is the fixed Extractor prompt — the caption itself
+    rides the system prompt (ADR 0005 §Trust boundary), never `user_query`,
+    so the sanitizer's leak channel is not exercised on the Extractor
+    side. `preference_read_error` cannot reach here — that branch is
+    Recommender-side only. The assert narrows the Literal-widening hole
+    mypy would otherwise flag on `result.stopped`.
+    """
+    assert result.stopped not in {"preference_read_error", "missing_search_origin"}, (
+        "agent_runs records actual loop terminals; pre-run failures must not be logged"
+    )
+    stopped_literal = cast(Literal["answered", "truncated", "max_steps"], result.stopped)
+    agent_logger = AgentRunLogger(conn_factory=db.connect)
+    record = AgentRunRecord(
+        run_id=run_id,
+        agent_kind="extractor",
+        user_id=user_id,
+        user_query=format_stored_text(USER_MESSAGE, USER_QUERY_CAP),
+        final_answer=(
+            format_stored_text(result.answer, FINAL_ANSWER_CAP)
+            if result.answer is not None
+            else None
+        ),
+        stopped=stopped_literal,
+        steps_count=result.steps,
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+    agent_logger.record(record)
+
+
+def _record_llm_decisions_best_effort(
+    *,
+    run_id: str,
+    trace: list[StepRecord],
+    result: LoopResult,
+    recorded_at: datetime,
+) -> None:
+    """Emit one `LLMDecision` per terminal LLM tool call plus a loop-terminal row.
+
+    Rationale sourcing per branch:
+
+    - Successful `save_event` — a `save_event` call has no per-call
+      LLM rationale (the LLM produces structured tool arguments, no
+      free-form reasoning). Rationale is formulaic:
+      ``"saved event: <title>"`` truncated to `RATIONALE_CAP`. Sourcing
+      from `title` matches the M4 ranker's corpus-analysis shape: a
+      cluster on `error_type` for the failure branches, a cluster on
+      "what kinds of events land" for the success branch.
+    - `report_extraction_status` — rationale is the LLM's own `notes`
+      arg, sanitized through `format_stored_text`. This is the primary
+      per-decision rationale channel today.
+    - Loop-terminal `truncated` / `max_steps` — one synthetic `error`
+      row with a formulaic rationale ("loop truncated" or "max steps
+      reached"). No structured `error_type` is emitted by the LLM in
+      this branch, so we use the loop-terminal string itself as
+      `error_type`.
+
+    Best-effort: `LLMDecisionLogger.record_many` swallows every raise
+    with a WARNING log line. The Extractor's `ExtractionResult` is the
+    primary flow — an FK violation from a missing `agent_runs` row
+    (T3 write failed, T4 must fail too), a driver error, a bogus
+    trace entry — none propagates out of this helper.
+    """
+    decisions: list[LLMDecision] = []
+    for record in trace:
+        if record.tool == "save_event":
+            decision = _decision_from_save_event(record, run_id=run_id, recorded_at=recorded_at)
+            if decision is not None:
+                decisions.append(decision)
+        elif record.tool == "report_extraction_status":
+            decision = _decision_from_report_status(record, run_id=run_id, recorded_at=recorded_at)
+            if decision is not None:
+                decisions.append(decision)
+
+    if result.stopped in ("truncated", "max_steps"):
+        # Loop-terminal branch — no LLM tool call fired to explain the
+        # early stop. Emit one synthetic `error` row so post-hoc trace
+        # inspection can distinguish "extractor gave up" from "extractor
+        # explicitly refused" — same shape M4's ranker will filter on.
+        stopped_str = result.stopped
+        raw_rationale = (
+            format_stored_text(result.answer, RATIONALE_CAP)
+            if result.answer is not None
+            else ("loop truncated mid-turn" if stopped_str == "truncated" else "max_steps reached")
+        )
+        decisions.append(
+            LLMDecision(
+                run_id=run_id,
+                decision_kind="error",
+                event_db_id=None,
+                error_type=("loop_truncated" if stopped_str == "truncated" else "max_steps"),
+                rationale=raw_rationale or "loop terminated early",
+                recorded_at=recorded_at,
+            )
+        )
+
+    LLMDecisionLogger(conn_factory=db.connect).record_many(decisions)
+
+
+def _decision_from_save_event(
+    record: StepRecord, *, run_id: str, recorded_at: datetime
+) -> LLMDecision | None:
+    """Build the `save_event` `LLMDecision` row, or `None` on non-success.
+
+    A `save_event` return with `error_type` (invalid data, duplicate row,
+    an unregistered-tool marker) is NOT persisted as a `save_event`
+    LLMDecision — the row would advertise a persisted `Event` that
+    never existed. Failures of `save_event` are visible in the JSONL
+    sidecar and the caller-side aggregation on `_build_result`; the
+    corpus stays clean.
+
+    Rationale is formulaic — `save_event` has no LLM `notes` arg (see
+    module docstring). The `title` argument is caption-derived and the
+    Rule 2 hook allows it inside the DB subject to sanitization.
+    """
+    result = record.result
+    if not isinstance(result, dict):
+        return None
+    event_db_id = result.get("event_db_id")
+    saved = result.get("saved")
+    if not isinstance(saved, dict) or not isinstance(event_db_id, int):
+        return None
+    title = record.arguments.get("title", "") if isinstance(record.arguments, dict) else ""
+    rationale = format_stored_text(f"saved event: {title}", RATIONALE_CAP)
+    return LLMDecision(
+        run_id=run_id,
+        decision_kind="save_event",
+        event_db_id=event_db_id,
+        error_type=None,
+        rationale=rationale or "saved event",
+        recorded_at=recorded_at,
+    )
+
+
+def _decision_from_report_status(
+    record: StepRecord, *, run_id: str, recorded_at: datetime
+) -> LLMDecision | None:
+    """Build the `report_extraction_status` `LLMDecision` row, or `None`.
+
+    `_ReportedStatus` rejects invalid args and returns an
+    `invalid_reported_status` marker with `"reported": False`. Those
+    rejected calls are skipped — they describe an LLM misuse of the
+    tool, not a decision. `status="ok"` on `report_extraction_status`
+    is also a caller bug (that tool is not the success terminal); we
+    skip it too so the corpus does not mis-attribute an `answered`
+    row to a non-success decision kind.
+    """
+    result = record.result
+    if not isinstance(result, dict):
+        return None
+    if not result.get("reported"):
+        return None
+    status = result.get("status")
+    error_type = result.get("error_type")
+    notes = result.get("notes", "")
+    if not isinstance(status, str) or not isinstance(error_type, str):
+        return None
+    if status == "ok":
+        return None
+    if status not in ("needs_clarification", "error"):
+        return None
+    decision_kind: DecisionKind = (
+        "needs_clarification" if status == "needs_clarification" else "error"
+    )
+    rationale_source = notes if isinstance(notes, str) else ""
+    rationale = format_stored_text(rationale_source, RATIONALE_CAP)
+    if not rationale:
+        # `notes` is optional on `report_extraction_status`; when empty
+        # fall back to the error_type token so the audit trail always
+        # has *something* other than "" — a rationale field of "" is
+        # legally sanitized but useless for post-hoc inspection.
+        rationale = format_stored_text(f"reported {status}: {error_type}", RATIONALE_CAP)
+    return LLMDecision(
+        run_id=run_id,
+        decision_kind=decision_kind,
+        event_db_id=None,
+        error_type=error_type,
+        rationale=rationale,
+        recorded_at=recorded_at,
+    )
 
 
 def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> ExtractionResult:
