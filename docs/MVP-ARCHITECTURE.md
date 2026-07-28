@@ -182,12 +182,13 @@ Push-context (attached before the loop starts): `load_rules()` output, the user'
   ```python
   ExtractionResult = {
       "status": "ok" | "error" | "needs_clarification",
-      "event": Event | None,
+      "events": list[Event],  # one entry per event the post announces (0..N)
       "needs_approval": False,  # extraction is reversible
       "notes": str,  # short summary for the recommender
       "error_type": str | None,  # typed branch, per AGENTS.md rule 4
   }
   ```
+  `status == "ok"` ⇔ `len(events) >= 1`; `status in {"error", "needs_clarification"}` ⇔ `events == []`. A curator carousel that announces N distinct events becomes N entries under the composite `(source_url, event_index_in_post)` natural key.
 - `dispatch_extraction` on the Recommender side calls `extract_once` and returns the structured object only. The caption text never enters the Recommender's messages — see §Trust boundaries below.
 
 Governed by [**ADR 0005 — Multi-agent shape**](adr/0005-multi-agent-shape.md) (Recommender/Extractor split, delegation brief, `ExtractionResult` hand-off, audit-log schema) and [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-extraction-approach.md) (source-adapter error taxonomy the Extractor surfaces).
@@ -365,7 +366,7 @@ Copied verbatim into the Extractor's system prompt (also lives as `DELEGATION_BR
 - **Acts alone when:** URL matches a known Instagram post pattern and the post has both an image and a caption.
 - **Asks (returns `status: "needs_clarification"`) when:** the post is ambiguous, the date/time cannot be extracted, or the location is not in Barcelona metro.
 - **Escalates (returns `status: "error"` + `error_type` and halts) when:** rate-limited, auth failure, image unavailable, or extraction confidence < 0.3.
-- **Effort budget:** `max_steps=4`, `max_output_tokens=2000`, one image per call. Enforced by `run_loop` parameters, not by prompt text.
+- **Effort budget:** `max_steps=8`, `max_output_tokens=2000`, one image per call. Enforced by `run_loop` parameters, not by prompt text.
 
 #### Terminal calls
 
@@ -381,7 +382,7 @@ Copied verbatim into the Extractor's system prompt (also lives as `DELEGATION_BR
 Both agents branch on the field, not on prose. The hand-off from `dispatch_extraction`:
 
 ```python
-{"status": "ok" | "error" | "needs_clarification", "result": Event | None, "needs_approval": False}
+{"status": "ok" | "error" | "needs_clarification", "events": list[Event], "needs_approval": False}
 ```
 
 ### Flow — extraction delegation
@@ -399,7 +400,7 @@ sequenceDiagram
 
     R->>E: dispatch_extraction(url, user_id, run_id)
 
-    Note over E: system prompt =<br/>rules + delegation brief<br/>max_steps=4, 1 image/call
+    Note over E: system prompt =<br/>rules + delegation brief<br/>max_steps=8, 1 image/call
 
     E->>IG: fetch_instagram_post(url)
     IG-->>E: RawPost{image, caption, meta}
@@ -407,16 +408,16 @@ sequenceDiagram
     Note over E: multimodal LLM parses<br/>image + caption + meta
 
     alt confidence ≥ 0.3
-        E->>DB: save_event(Event)
+        E->>DB: save_event(Event, event_index_in_post) × N
         DB-->>E: ok
         E->>L: log run_id + turns + timing
-        E-->>R: {status:"ok", event, needs_approval:false}
+        E-->>R: {status:"ok", events, needs_approval:false}
     else confidence < 0.3
         E->>L: log run_id + error_type
         E-->>R: {status:"error", error_type:"low_confidence_extraction"}
     end
 
-    Note right of R: R never sees raw caption text
+    Note right of R: R never sees raw caption text;<br/>0..N events per post
 ```
 
 The trust boundary is the return type: `E` returns a validated `Event` object (or a typed error state), never the raw caption. `sources/instagram/` is imported only by `E`, never by `R` — enforced by module layout, verified by a static check.
@@ -544,13 +545,14 @@ Each is its own PR, blocked by its own ticket. This doc is what those PRs will p
 | --- | --- | --- |
 | 0003 | [`sqlite-domain-store`](adr/0003-sqlite-domain-store.md) | SQLite + JSON columns for `events`/`users`/`preferences`/`approvals`. Supersedes 0002's JSON persistence for the domain surface only. |
 | 0004 | [`three-store-memory-model`](adr/0004-three-store-memory-model.md) | Relational (SQLite), non-relational (JSON docstore), rules (markdown). Facts vs rules; private vs shared. |
-| 0005 | [`multi-agent-shape`](adr/0005-multi-agent-shape.md) | Recommender + Extractor split; `DELEGATION_BRIEF` byte-verbatim with this doc; `ExtractionResult` hand-off (`status`, `event`, `needs_approval=False`, `notes`, `error_type`); Extractor audit log = `RunStep(agent="extractor", ...)` lines joined by `run_id`. |
+| 0005 | [`multi-agent-shape`](adr/0005-multi-agent-shape.md) | Recommender + Extractor split; `DELEGATION_BRIEF` byte-verbatim with this doc; `ExtractionResult` hand-off (`status`, `event`, `needs_approval=False`, `notes`, `error_type`); Extractor audit log = `RunStep(agent="extractor", ...)` lines joined by `run_id`. — §Decision 10 superseded and §Decision 11's invariant clause partially superseded by ADR 0012 (#64) |
 | 0006 | [`instagram-extraction-approach`](adr/0006-instagram-extraction-approach.md) | Scraper: `instaloader` on `python:3.12-slim`; session via `INSTAGRAM_SESSION_ID` env var (anonymous fallback); per-media-type strategy (static, reel, carousel, video) with `unsupported_media` typed branch; rate-limit envelope surfaced to the caller, never retried inside the adapter; URL-only `MediaAsset` — the adapter never downloads binaries. |
 | 0007 | [`monitor-scheduling-and-grades`](adr/0007-monitor-scheduling-and-grades.md) | Categorical axes, rationale requirement, cron/GHA plan. |
 | 0008 | [`domain-driven-module-layout`](adr/0008-domain-driven-module-layout.md) | Bounded-context folder layout under `planazo/`; per-aggregate `models.py` + `repository.py` (+ `tools.py`); preserves ADR 0003/0004 API contracts. |
 | 0009 | [`repo-root-layout`](adr/0009-repo-root-layout.md) | Flatten the outer `agent/` directory. `src/planazo/`, `tests/`, `pyproject.toml` at repo root. Supersedes ADR 0001's layout paragraph only. |
 | 0010 | `telegram-bot-interface` | Bot layer, no-LLM-in-bot invariant, approval callback, interpreter step wiring. |
 | 0011 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
+| 0012 | [`multi-event-extraction`](adr/0012-multi-event-extraction.md) | Lift extraction cardinality to 0..N events per post: `ExtractionResult.events: list[Event]`, `save_event(event_index_in_post)`, composite `UNIQUE(source_url, event_index_in_post)`, `events_exist_for_source_url` primitive. Supersedes ADR 0005 §Decision 10; partially supersedes §Decision 11's invariant clause. |
 
 Until each ADR lands, its section here reads as "planned — ADR NNNN"; when it lands, the entry is edited in place to link the accepted ADR.
 
@@ -584,7 +586,7 @@ Post-doc, code verification happens in each follow-up ticket:
 ## Risks / open questions
 
 - **Instagram scraping fragility.** Any scraper breaks when Meta changes markup or throttles. Mitigation: the Extractor treats `sources/instagram/` as a swappable adapter behind `fetch_instagram_post`. If scraping proves too fragile, we swap to a manual "paste this URL + I'll paste the caption" flow without touching the Extractor agent. ADR 0006 will name the choice.
-- **Multimodal cost.** `STRONG` + image = material per-call cost. The delegation brief's effort budget (`max_steps=4`, one image per call) is the primary lever. Add a per-user daily cap in v0.2 if needed.
+- **Multimodal cost.** `STRONG` + image = material per-call cost. The delegation brief's effort budget (`max_steps=8`, one image per call) is the primary lever. Add a per-user daily cap in v0.2 if needed.
 - **Cue-match precision.** Token-overlap cue matching will over-surface (a fact cued "music" appearing on any query with the word). MVP acceptance bar: manual review shows no obviously-wrong surfacing across the three memory scenarios. Embeddings + cosine is a follow-up ADR.
 - **Monitor bootstrapping.** The monitor needs run logs to grade. v1 accepts a one-run bootstrap: seed with a canned session, then have the monitor grade it as the demo. Real automated cadence lands with ADR 0007.
 

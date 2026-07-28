@@ -31,7 +31,7 @@ from planazo.agents.extractor import (
     report_extraction_status,
 )
 from planazo.agents.loop import StepRecord
-from planazo.catalog import list_extraction_runs, save_event
+from planazo.catalog import events_exist_for_source_url, list_extraction_runs, save_event
 from planazo.extraction.audit import default_extraction_log_path
 from planazo.extraction.models import ExtractionResult
 from planazo.identity import get_or_create_user
@@ -1183,3 +1183,108 @@ def test_extract_once_multi_event_success_then_report_extraction_status(
     assert result.events[0].event_index_in_post == 0
     assert result.error_type is None
     assert "ambiguous_content" in result.notes
+
+
+# ------------------------------
+# Multi-event idempotency — end-to-end contract
+# ------------------------------
+
+
+def test_extract_once_multi_event_idempotency_contract_end_to_end(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three slots persist under one URL; the pre-check primitive returns
+    `[0, 1, 2]`; a fourth `save_event(event_index_in_post=0)` on the same URL
+    returns `duplicate_event`.
+
+    Locks the M3.5 idempotency contract end-to-end: composite
+    `UNIQUE(source_url, event_index_in_post)` on the DB side + the
+    `events_exist_for_source_url` primitive the scheduler pre-checks against.
+    Driven through the real Extractor loop (fake LLM, real DB) so the whole
+    stack — tool wire, repository, primitive, and composite key — is under
+    test in one place.
+    """
+    _seed_user()
+    source = _build_source(caption="Three back-to-back nights at Nitsa this weekend!")
+
+    fake_call = MagicMock(
+        side_effect=[
+            _turn("", [_fetch_call()]),
+            _turn(
+                "",
+                [
+                    _save_event_call_multi(
+                        event_index_in_post=0,
+                        title="Nitsa Friday",
+                        call_id="call_save_0",
+                    )
+                ],
+            ),
+            _turn(
+                "",
+                [
+                    _save_event_call_multi(
+                        event_index_in_post=1,
+                        title="Nitsa Saturday",
+                        start_utc="2026-08-16T22:00:00+00:00",
+                        end_utc="2026-08-17T04:00:00+00:00",
+                        call_id="call_save_1",
+                    )
+                ],
+            ),
+            _turn(
+                "",
+                [
+                    _save_event_call_multi(
+                        event_index_in_post=2,
+                        title="Nitsa Sunday",
+                        start_utc="2026-08-17T20:00:00+00:00",
+                        end_utc="2026-08-18T02:00:00+00:00",
+                        call_id="call_save_2",
+                    )
+                ],
+            ),
+            _turn(""),  # brief forbids free-form text after the final save
+        ]
+    )
+    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
+
+    result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    assert result.status == "ok"
+    assert len(result.events) == 3
+    assert [event.event_index_in_post for event in result.events] == [0, 1, 2]
+
+    # Pre-check primitive: the scheduler uses this to skip URLs that are
+    # already fully processed.
+    conn = db.connect()
+    try:
+        persisted_slots = events_exist_for_source_url(conn, _TEST_URL)
+    finally:
+        conn.close()
+    assert persisted_slots == [0, 1, 2]
+
+    # Composite UNIQUE fires end-to-end: a re-save of slot 0 on the same URL
+    # comes back as `duplicate_event` with the existing row's id, not a
+    # silently-persisted duplicate row.
+    dup_response = save_event(
+        title="Nitsa Friday retry",
+        category="music",
+        source="instagram",
+        source_url=_TEST_URL,
+        start_utc="2026-08-15T22:00:00+00:00",
+        end_utc="2026-08-16T04:00:00+00:00",
+        city="Barcelona",
+        confidence=0.85,
+        event_index_in_post=0,
+    )
+    assert dup_response["error_type"] == "duplicate_event"
+    assert isinstance(dup_response.get("event_db_id"), int)
+
+    # Row count under the URL is still 3 — no ghost row from the retry.
+    conn = db.connect()
+    try:
+        slots_after_retry = events_exist_for_source_url(conn, _TEST_URL)
+    finally:
+        conn.close()
+    assert slots_after_retry == [0, 1, 2]
