@@ -225,9 +225,10 @@ async def handle_registration_answer(
 ) -> None:
     """Validate one answer against the pending step, then advance or re-prompt.
 
-    Inert when nothing is pending: no reply, no write — the shape #57 layers
-    its own free-text routing onto without touching this mechanism. On a
-    valid answer, the field and the pointer's next value are written in one
+    Inert when nothing is pending: no reply, no write — `bot/chat.py`'s
+    dispatch routes only an in-flight answer here, and this function does
+    not itself decide when that is the case. On a valid answer, the field
+    and the pointer's next value are written in one
     call (`record_registration_answer`), so there is no state between "the
     answer landed" and "the pointer advanced" for a crash to land inside.
     """
