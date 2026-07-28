@@ -13,6 +13,7 @@ _EXPECTED_TABLES = {
     "extraction_runs_index",
     "scan_state",
     "agent_runs",
+    "llm_decisions",
 }
 
 

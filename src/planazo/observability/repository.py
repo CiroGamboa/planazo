@@ -33,7 +33,7 @@ import sqlite3
 from pydantic import ValidationError
 
 from planazo.monitor.models import AgentName
-from planazo.observability.models import AgentRunRecord
+from planazo.observability.models import AgentRunRecord, DecisionKind, LLMDecision
 
 logger = logging.getLogger(__name__)
 
@@ -138,3 +138,101 @@ def query_agent_runs(
         params,
     ).fetchall()
     return [record for row in rows if (record := _record_from_row(row)) is not None]
+
+
+def record_llm_decision(conn: sqlite3.Connection, decision: LLMDecision) -> int:
+    """Insert one `llm_decisions` row for `decision` and return its row id.
+
+    Commits on success. The four-way `decision_kind` consistency
+    (`event_db_id` / `error_type` presence per branch) is guaranteed by
+    `LLMDecision`'s `model_validator`; the `CHECK` on `decision_kind` in
+    migration 004 is defense-in-depth for a raw-SQL diagnostic caller.
+    Every raised `sqlite3.IntegrityError` — an FK violation from an
+    orphan `run_id`, an FK violation from an `event_db_id` pointing at
+    a since-deleted `events` row before `ON DELETE SET NULL` fires, a
+    CHECK violation from a raw-SQL bypass — propagates. The best-effort
+    suppression lives one layer up in the composition-root helpers,
+    same discipline as `AgentRunLogger.record`.
+    """
+    cursor = conn.execute(
+        "INSERT INTO llm_decisions"
+        " (run_id, decision_kind, event_db_id, error_type, rationale, recorded_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            decision.run_id,
+            decision.decision_kind,
+            decision.event_db_id,
+            decision.error_type,
+            decision.rationale,
+            decision.recorded_at.isoformat(),
+        ),
+    )
+    conn.commit()
+    row_id = cursor.lastrowid
+    if row_id is None:
+        # See `record_agent_run` — SQLite always populates lastrowid on a
+        # rowid table INSERT; a None here is a driver invariant break,
+        # not a caller-facing branch.
+        raise RuntimeError("record_llm_decision: sqlite3 lastrowid was None after INSERT")
+    return row_id
+
+
+def _decision_from_row(row: sqlite3.Row) -> LLMDecision | None:
+    """Rehydrate one `LLMDecision` from a `sqlite3.Row`, or `None` if unrecoverable.
+
+    Mirrors `_record_from_row`'s graceful discipline: a row whose stored
+    shape no longer matches the current Pydantic aggregate (a legacy
+    `decision_kind` value, a raw-SQL write that bypassed the sanitizer)
+    is skipped with one WARNING log line naming the `run_id`, so the
+    reader stays usable for the healthy rows around a bad one.
+    """
+    try:
+        return LLMDecision.model_validate(dict(row))
+    except ValidationError as exc:
+        logger.warning(
+            "query_llm_decisions: skipping row run_id=%s that failed re-validation: %s",
+            row["run_id"],
+            exc.errors(),
+        )
+        return None
+
+
+def query_llm_decisions(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str | None = None,
+    decision_kind: DecisionKind | None = None,
+    limit: int = 100,
+) -> list[LLMDecision]:
+    """Return persisted `llm_decisions` for the given filter, newest first.
+
+    `run_id=None` returns rows across every run (corpus-analysis shape
+    the M4 ranker will read). `decision_kind=None` returns rows across
+    all four branches. Ordering by `recorded_at DESC` matches the
+    inspection shape a future `/find` history projection or an operator
+    trace reader will use; `limit` caps the result set.
+
+    When `run_id` is filtered, `idx_llm_decisions_run` backs the query
+    — an `EXPLAIN QUERY PLAN` test locks that choice, matching the
+    pattern established for `idx_agent_runs_user_started` under T3.
+    """
+    if limit < 1:
+        raise ValueError(f"query_llm_decisions limit must be >= 1, got {limit}")
+
+    clauses: list[str] = []
+    params: list[object] = []
+    if run_id is not None:
+        clauses.append("run_id = ?")
+        params.append(run_id)
+    if decision_kind is not None:
+        clauses.append("decision_kind = ?")
+        params.append(decision_kind)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+
+    rows = conn.execute(
+        "SELECT run_id, decision_kind, event_db_id, error_type, rationale, recorded_at"
+        f" FROM llm_decisions{where} ORDER BY recorded_at DESC LIMIT ?",
+        params,
+    ).fetchall()
+    return [decision for row in rows if (decision := _decision_from_row(row)) is not None]
