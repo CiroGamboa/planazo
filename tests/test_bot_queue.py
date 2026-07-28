@@ -128,7 +128,61 @@ async def test_bound_admits_waiting_jobs_and_overflows_beyond_it() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_raising_job_still_releases_the_lock_for_the_next_dispatch() -> None:
+async def test_same_key_preserves_call_order_even_when_second_ack_resolves_first() -> None:
+    """The bug this guards against: joining the FIFO line only once
+    `on_enqueued()` resolves, instead of at the moment `dispatch()` is
+    called. Job2 is dispatched before job3 (same key); job3's ack resolves
+    immediately while job2's ack stays pending on a gate the test controls.
+    Arrival order (job2, then job3) must still hold once both are released,
+    regardless of which ack finished first.
+    """
+    queue = PerUserQueue(bound=5)
+    events: list[str] = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    second_ack_gate = asyncio.Event()
+
+    async def first_job() -> None:
+        first_started.set()
+        await release_first.wait()
+
+    async def second_job() -> None:
+        events.append("second-run")
+
+    async def third_job() -> None:
+        events.append("third-run")
+
+    async def slow_second_ack() -> None:
+        await second_ack_gate.wait()
+        events.append("second-ack")
+
+    async def fast_third_ack() -> None:
+        events.append("third-ack")
+
+    first_task = asyncio.create_task(queue.dispatch("alice", first_job, _noop))
+    await first_started.wait()
+
+    second_task = asyncio.create_task(queue.dispatch("alice", second_job, slow_second_ack))
+    await asyncio.sleep(0)  # second reserves its FIFO turn, then blocks on its own ack
+
+    third_task = asyncio.create_task(queue.dispatch("alice", third_job, fast_third_ack))
+    await asyncio.sleep(0)  # third reserves its turn; its (immediate) ack fires right away
+
+    assert events == ["third-ack"]
+
+    second_ack_gate.set()
+    await asyncio.sleep(0)
+    assert events == ["third-ack", "second-ack"]
+
+    release_first.set()
+    assert await first_task is DispatchOutcome.RAN
+    assert await second_task is DispatchOutcome.ENQUEUED
+    assert await third_task is DispatchOutcome.ENQUEUED
+    assert events == ["third-ack", "second-ack", "second-run", "third-run"]
+
+
+@pytest.mark.asyncio
+async def test_a_raising_job_still_hands_off_the_key_for_the_next_dispatch() -> None:
     queue = PerUserQueue(bound=5)
 
     async def failing_job() -> None:
