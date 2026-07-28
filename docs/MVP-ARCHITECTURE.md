@@ -204,17 +204,19 @@ Governed by [**ADR 0005 — Multi-agent shape**](adr/0005-multi-agent-shape.md) 
 - **`sources/models.py`** — `RawPost` + `MediaAsset` (Pydantic v2). Media-type-agnostic: `RawPost` carries `title`, `caption`, `posted_at`, `author_handle`, `permalink`, and a `media: list[MediaAsset]` where each asset has a `kind` (`image` / `video` / `thumbnail`) plus its URL and metadata (duration for videos, dimensions for images). Reels and carousels return the same shape as static posts; the Extractor (M3) branches on `media[*].kind` when it decides how to probe the multimodal LLM.
 - **`sources/config.py`** — Pydantic-validated config loader. Reads `data/sources.yaml` at startup: target accounts (URLs) per source, per-source or per-account scrape cadence (`every: 6h`), and per-account media-type flags (`static_posts`, `reels`, `carousels`, `video_posts`). Malformed config is a boot-time failure, not a per-scrape surprise.
 - **`sources/instagram/`** — the real adapter, running inside a Docker service (see below). Reads the config, respects per-source cadence, attempts static posts (must work) + reels / carousels / video posts (exploratory — the ticket's acceptance bar is "each type either produces a validated `RawPost` or a typed `unsupported_media` error"). Returns `RawPost` to the Extractor's `fetch_instagram_post` tool only; never to the Recommender's tools.
-- **`sources/meetup/`** — future adapter against public GraphQL (ADR 0012, conditional).
-- **`sources/eventbrite/`** — future adapter (ADR 0012, conditional).
+- **`sources/meetup/`** — future adapter against public GraphQL (conditional on Meetup shipping past POC).
+- **`sources/eventbrite/`** — future adapter (conditional on Eventbrite shipping past POC).
 - Registration is config-driven via `SOURCES: dict[str, EventSource]` (module constant), monkeypatched in tests.
 
 **Docker isolation.** Instagram scraping is fragile — the runtime lives in a container (`docker/sources.Dockerfile` + `compose.yaml`'s `sources-instagram` service) so it's isolated from the local machine's Python version, cookie state, and IP hygiene. Dev flow: `docker compose up sources-instagram` runs the adapter against the mounted `data/sources.yaml`. CI runs the same image against a stubbed network fixture — no real Instagram calls in the test suite.
 
 **Extractor-host prerequisite.** The Extractor (§4) needs `ffmpeg` on `PATH` for the reel frame-extraction pipeline — `brew install ffmpeg` (macOS) or `apt-get install ffmpeg` (Linux) on the host that runs `planazo-agent`. Not required inside the `sources-instagram` container, which does not run the extractor.
 
+**Scheduled ingestion.** A host-cron `planazo-scheduler --tick` invocation is the clock that drives the adapter on a real schedule: for each account in `data/sources.yaml`, the scheduler consults `scan_state` + `next_run_after` for the cadence gate, calls `InstagramSource.list_recent_posts(account_url)` for discovery, pre-checks each `PostRef.url` against `catalog/repository.py::events_exist_for_source_url` to skip already-persisted URLs before spending STRONG-tier LLM budget, and dispatches the survivors into `extract_once` under a seeded system user (`telegram_user_id="system"`). One JSONL line per account per tick lands in `var/scheduler_runs.jsonl` for post-hoc observability. Governed by [**ADR 0011 — Scheduled Instagram ingestion**](adr/0011-scheduled-ingestion.md).
+
 **Typed error branches** (rule 4): `unsupported_source`, `rate_limited`, `auth_failed`, `not_found`, `unsupported_media`. The adapter never raises on the happy path.
 
-Governed by [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-extraction-approach.md) (scraper choice, container base, rate-limit envelope, cookie/session policy, per-media-type fallback rules, plus the generalized-protocol argument that TikTok/YouTube/news adapters drop into the same slot). Meetup and Eventbrite ADR 0012, conditional.
+Governed by [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-extraction-approach.md) (scraper choice, container base, rate-limit envelope, cookie/session policy, per-media-type fallback rules, plus the generalized-protocol argument that TikTok/YouTube/news adapters drop into the same slot).
 
 ### 6. Ranking — `src/planazo/rank/scorer.py`
 
@@ -565,6 +567,7 @@ Accepted ADRs describe current state; planned ADRs are reserved for their own ti
 | 0013 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
 | 0010 | [`extensibility-interfaces`](adr/0010-extensibility-interfaces.md) | `Protocol` classes at the four swap seams — `UserSurface`, `EventSource`, `Repository[T]`, `AgentLoop` — in `src/planazo/interfaces/`. |
 | 0011 | [`telegram-bot-interface`](adr/0011-telegram-bot-interface.md) | Bot layer, no-LLM-in-bot invariant, PTB-free command signature, session mapping, the `UserSurface` shape, and the approval seam's threading contract. Supersedes ADR 0010's `UserSurface` declaration only. |
+| 0011 | [`scheduled-ingestion`](adr/0011-scheduled-ingestion.md) | Host-cron `planazo-scheduler --tick`; `events_exist_for_source_url` pre-check as the idempotency source of truth; dedicated `scan_state` table; seeded system user identity; per-shape extraction discipline (multi-event carousels, multi-slide LLM turn, extractor-side reel frame extraction). Partially supersedes ADR 0005 §D7 (via #65) and ADR 0006 §D4 (via ADR 0013); supersedes ADR 0005 §D10 outright (via ADR 0012). |
 | 0012 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
 | 0012 | [`multi-event-extraction`](adr/0012-multi-event-extraction.md) | Lift extraction cardinality to 0..N events per post: `ExtractionResult.events: list[Event]`, `save_event(event_index_in_post)`, composite `UNIQUE(source_url, event_index_in_post)`, `events_exist_for_source_url` primitive. Supersedes ADR 0005 §Decision 10; partially supersedes §Decision 11's invariant clause. |
 | 0013 | [`extractor-side-frame-extraction`](adr/0013-extractor-side-frame-extraction.md) | Reel multimodal input: the extractor downloads the reel `video_url` to a temp file, extracts `MAX_REEL_FRAMES=3` evenly-spaced JPEG frames via `ffmpeg`, and sends them as base64 `input_image` parts alongside the thumbnail; silent degrade to thumbnail-only on `FrameExtractionError`. Extends ADR 0005's delegation-brief effort budget with the reel-frame arm; partially supersedes ADR 0006 §Decision 4 (extractor now downloads binaries; the adapter still emits URL-only `MediaAsset` entries). |
@@ -584,6 +587,7 @@ Every capability the MVP claims maps to a module, an evidence trace, and an ADR.
 | Shared content is untrusted | Extractor trust boundary + `save_note` quoting | `untrusted-content.md` | 0005 (invariant), 0006 (source) |
 | Executor + specialist agent with delegation brief + shared memory | `event_agent.py` + `extractor.py` + `events` table + `extraction_runs.jsonl` | (integrated across bot flows) | [0005](adr/0005-multi-agent-shape.md) |
 | Monitor on its own clock, categorical grades + rationale | `monitor/` | `data/monitor/YYYY-MM-DD.md` | 0007 |
+| Scheduled ingestion pipeline | `scheduler/` + `sources/instagram/` + `events` table + `scan_state` | `var/scheduler_runs.jsonl` | [0011](adr/0011-scheduled-ingestion.md) |
 
 ## Verification
 
