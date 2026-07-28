@@ -15,6 +15,7 @@ import instaloader
 import pytest
 from instaloader.exceptions import (
     BadResponseException,
+    ConnectionException,
     LoginRequiredException,
     QueryReturnedNotFoundException,
     TooManyRequestsException,
@@ -135,6 +136,7 @@ def test_instagram_client_error_carries_error_type() -> None:
         (TooManyRequestsException, "rate_limited"),
         (LoginRequiredException, "auth_failed"),
         (BadResponseException, "not_found"),
+        (ConnectionException, "rate_limited"),
     ],
 )
 def test_client_maps_instaloader_exception_to_wrapper_error(

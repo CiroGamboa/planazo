@@ -26,6 +26,7 @@ Reconciled against `instaloader==4.15.3`:
 | `TooManyRequestsException`            | `rate_limited`        |
 | `LoginRequiredException`              | `auth_failed`         |
 | `BadResponseException`                | `not_found`           |
+| `ConnectionException` (plain)         | `rate_limited`        |
 | `typename` outside the routed set     | `unsupported_media`   |
 
 The two condition branches (URL host, `typename`) are decided in the adapter,
@@ -51,6 +52,7 @@ from typing import Any, Protocol
 import instaloader
 from instaloader.exceptions import (
     BadResponseException,
+    ConnectionException,
     LoginRequiredException,
     QueryReturnedNotFoundException,
     TooManyRequestsException,
@@ -156,6 +158,24 @@ class InstagramClient:
             # gone). Surfaced by the M3 live smoke.
             raise InstagramClientError(
                 "not_found", f"instagram returned empty metadata for {shortcode!r} ({exc})"
+            ) from exc
+        except ConnectionException as exc:
+            # Meta actively rejected the GraphQL query (typically observed as
+            # HTTP redirect from `/graphql/query` to `/`, which surfaces as
+            # `ConnectionException: JSON Query to graphql/query: Expecting
+            # value: ...`). This is Meta's soft-ban / anti-scraping response —
+            # distinct from `TooManyRequestsException` (explicit 429). Mapped
+            # to `rate_limited` because it is the least-specific interpretation
+            # of "Meta refused to serve us"; a caller sees the same class of
+            # backoff-and-retry-later semantics. Surfaced by the M3 live smoke
+            # after `session_loaded=True` still hit the redirect. Note this
+            # catch is AFTER `TooManyRequestsException` and `BadResponseException`
+            # (both subclass `ConnectionException`) — Python matches them
+            # against their specific `except` first, so the mapping stays
+            # branch-precise; this clause only fires for the plain
+            # `ConnectionException` raised on redirect / malformed response.
+            raise InstagramClientError(
+                "rate_limited", f"instagram refused GraphQL query for {shortcode!r} ({exc})"
             ) from exc
 
 
