@@ -1,11 +1,10 @@
 """Environment loading and the two env-var guards.
 
-Two of these tests are about a bug rather than a feature: `.env` used to reach
-the process only because every caller transitively imported `agentlib.core`,
-which calls `load_dotenv(find_dotenv())` at import time. Anything that did not
-pull `agentlib` in — the bot — saw no `.env` at all. The pair below locks both
-halves of the fix: that the anchor resolves to the repository root, and that
-importing `planazo.config` alone actually calls `load_dotenv` with it.
+The invariant two of these tests lock, in its two halves: `_env_path()`
+resolves to the repository root's `.env`, and importing `planazo.config` on its
+own — with no `agentlib` module in `sys.modules` — is what calls `load_dotenv`
+with it. A surface that never touches the LLM wrapper still gets the repo
+`.env`.
 """
 
 from __future__ import annotations

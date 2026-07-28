@@ -45,7 +45,7 @@ uv run mypy src            # types
 uv run python -m planazo.bot   # long-poll for updates until interrupted
 ```
 
-`TELEGRAM_BOT_TOKEN` must be set in the repo-root `.env` (copy `../.env.example`); without it the entrypoint prints one line and exits 1, the same shape as the missing-key guard above. The bot long-polls — no webhook, no public endpoint, no certificate.
+`TELEGRAM_BOT_TOKEN` must be set in the repo-root `.env` (copy `.env.example`); without it the entrypoint prints one line and exits 1, the same shape as the missing-key guard above. The bot long-polls — no webhook, no public endpoint, no certificate.
 
 The first message from a Telegram account creates its `users` row, so there is no sign-up step. Four commands:
 
@@ -54,7 +54,7 @@ The first message from a Telegram account creates its `users` row, so there is n
 - **`/me`** — the sender's internal id, their Telegram handle, and how many preferences they have stored.
 - **`/prefs`** — list stored preferences; `/prefs set <key> <value>` stores or replaces one; `/prefs remove <key>` deletes one. A key over 64 characters, a value over 200, or either spanning two lines comes back as a named refusal and writes nothing.
 
-Replies are plain text with no `parse_mode`, so a preference value containing `*`, `_`, or `<` is echoed back verbatim instead of being read as formatting. An edited command is answered with a notice rather than re-run: replaying an old command against newer state can undo a later change. No LLM call originates in the bot layer — the commands are CRUD against the same SQLite store — and [ADR 0011](../docs/adr/0011-telegram-bot-interface.md) records the layering, the `UserSurface` contract, and the threading rule any future handler that runs the agent loop must follow.
+Replies are plain text with no `parse_mode`, so a preference value containing `*`, `_`, or `<` is echoed back verbatim instead of being read as formatting. An edited command is answered with a notice rather than re-run: replaying an old command against newer state can undo a later change. No LLM call originates in the bot layer — the commands are CRUD against the same SQLite store — and [ADR 0011](docs/adr/0011-telegram-bot-interface.md) records the layering, the `UserSurface` contract, and the threading rule any future handler that runs the agent loop must follow.
 
 ## Tools
 

@@ -17,15 +17,20 @@ from planazo.bot.session import resolve_user
 from planazo.storage import db
 
 
-def make_message(**overrides: object) -> IncomingMessage:
-    defaults: dict[str, object] = {
-        "telegram_user_id": "tg-1",
-        "display_name": "Dani V",
-        "telegram_handle": "daniv",
-        "text": "/start",
-    }
-    defaults.update(overrides)
-    return IncomingMessage(**defaults)  # type: ignore[arg-type]
+def make_message(
+    *,
+    telegram_user_id: str = "tg-1",
+    display_name: str = "Dani V",
+    telegram_handle: str | None = "daniv",
+    text: str = "/start",
+) -> IncomingMessage:
+    """One valid `IncomingMessage`, with every field overridable by keyword."""
+    return IncomingMessage(
+        telegram_user_id=telegram_user_id,
+        display_name=display_name,
+        telegram_handle=telegram_handle,
+        text=text,
+    )
 
 
 @pytest.fixture

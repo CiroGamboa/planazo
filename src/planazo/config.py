@@ -47,7 +47,7 @@ def _env_path() -> Path:
 load_dotenv(_env_path())
 
 _MISSING_MESSAGE = (
-    "OPENCODE_API_KEY is not set. Copy ../.env.example to a .env file at the "
+    "OPENCODE_API_KEY is not set. Copy .env.example to a .env file at the "
     "repo root and set OPENCODE_API_KEY."
 )
 

@@ -9,19 +9,22 @@ What the tiers cover, in the order they appear: that each registered command
 actually dispatches (including the `/cmd@botname` form group chats deliver),
 that the registered set is the set the bot advertises, that an `Update`
 projects into the right `IncomingMessage`, that a malformed update is ignored
-rather than crashing, and that an edited command is refused before it can
-replay an old write over a newer one.
+rather than crashing, that an edited command is refused before it can replay an
+old write over a newer one, and that `main()` explains a missing token instead
+of polling with one.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 from telegram import Chat, Message, MessageEntity, Update, User
 
-from planazo.bot.app import adapter_for, build_application
+from planazo.bot import app
+from planazo.bot.app import adapter_for, build_application, main
 from planazo.bot.commands import COMMANDS, MESSAGES, handle_prefs, handle_start
 from planazo.bot.models import IncomingMessage
 from planazo.identity import get_preferences
@@ -126,6 +129,11 @@ def _accepting(text: str) -> list[frozenset[str]]:
     """The registered commands whose handler accepts `text`."""
     update = Update(update_id=1, message=make_message(text))
     return [handler.commands for handler in _registered_handlers() if handler.check_update(update)]
+
+
+def _refuse_to_build(token: str) -> NoReturn:
+    """Stands in for `build_application` where reaching it is the defect."""
+    raise AssertionError("main() built an application without a token")
 
 
 def _stored_preferences() -> list[tuple[str, str]]:
@@ -305,3 +313,25 @@ async def test_a_command_runs_end_to_end_against_real_sqlite() -> None:
     (sent,) = bot.sent
     assert sent["chat_id"] == CHAT_ID
     assert "Dani V" in str(sent["text"])
+
+
+def test_main_explains_a_missing_token_and_exits_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No token: one line on stdout, exit code 1, and nothing built.
+
+    `build_application` is replaced by a tripwire rather than left in place,
+    because reaching it is the failure this branch exists to prevent — the next
+    call is `run_polling()`, which long-polls the Bot API for real. The token
+    is deleted from the environment after `.env` has already been loaded at
+    import, so a developer's real token cannot turn this test into a live one.
+    """
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setattr(app, "build_application", _refuse_to_build)
+
+    assert main() == 1
+
+    captured = capsys.readouterr()
+    assert len(captured.out.splitlines()) == 1
+    assert "TELEGRAM_BOT_TOKEN" in captured.out
+    assert captured.err == ""
