@@ -47,7 +47,7 @@ from __future__ import annotations
 import re
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -115,13 +115,21 @@ class MediaTypeFlags(BaseModel):
 
 
 class AccountConfig(BaseModel):
-    """One target URL for a source, with optional per-account overrides."""
+    """One target URL for a source, with optional per-account overrides.
+
+    `backend` picks the discovery backend the scheduler routes to for this
+    account: `"anonymous"` (default; `curl_cffi` + Meta's `web_profile_info`)
+    or `"hikerapi"` (paid multi-key pool). Business venue accounts must
+    route via `hikerapi` — the anonymous endpoint refuses them with a
+    `laser.provider` schema block.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     url: str = Field(min_length=1)
     cadence: timedelta | None = None
     media_types: MediaTypeFlags | None = None
+    backend: Literal["anonymous", "hikerapi"] = "anonymous"
 
     @field_validator("cadence", mode="before")
     @classmethod
