@@ -75,7 +75,7 @@ def _source_config() -> SourceConfig:
 
 def test_fetch_post_static_happy_path_returns_raw_post() -> None:
     client = _FakeClient(view=_static_post_view())
-    adapter = InstagramSource(_source_config(), client)  # type: ignore[arg-type]
+    adapter = InstagramSource(_source_config(), client)
 
     url = "https://www.instagram.com/p/ABC123/"
     result = adapter.fetch_post(url)
@@ -94,7 +94,7 @@ def test_fetch_post_static_happy_path_returns_raw_post() -> None:
 
 def test_fetch_post_unsupported_source_when_url_not_instagram() -> None:
     client = _FakeClient(view=_static_post_view())
-    adapter = InstagramSource(_source_config(), client)  # type: ignore[arg-type]
+    adapter = InstagramSource(_source_config(), client)
 
     result = adapter.fetch_post("https://twitter.com/foo")
 
@@ -138,7 +138,7 @@ def test_fetch_post_carousel_all_image_nodes_returns_one_asset_per_node() -> Non
     }
     view = InstaloaderPostView.model_validate(payload)
     client = _FakeClient(view=view)
-    adapter = InstagramSource(_source_config(), client)  # type: ignore[arg-type]
+    adapter = InstagramSource(_source_config(), client)
 
     url = "https://www.instagram.com/p/SIDE1/"
     result = adapter.fetch_post(url)
@@ -187,7 +187,7 @@ def test_fetch_post_carousel_mixed_image_and_video_nodes_expands_video_to_pair()
     }
     view = InstaloaderPostView.model_validate(payload)
     client = _FakeClient(view=view)
-    adapter = InstagramSource(_source_config(), client)  # type: ignore[arg-type]
+    adapter = InstagramSource(_source_config(), client)
 
     url = "https://www.instagram.com/p/SIDE2/"
     result = adapter.fetch_post(url)
@@ -222,7 +222,7 @@ def test_fetch_post_video_returns_video_then_thumbnail_media() -> None:
     }
     view = InstaloaderPostView.model_validate(payload)
     client = _FakeClient(view=view)
-    adapter = InstagramSource(_source_config(), client)  # type: ignore[arg-type]
+    adapter = InstagramSource(_source_config(), client)
 
     url = "https://www.instagram.com/reel/REEL42/"
     result = adapter.fetch_post(url)
@@ -259,7 +259,7 @@ def test_fetch_post_returns_unsupported_media_when_typename_is_unknown() -> None
     }
     view = InstaloaderPostView.model_validate(payload)
     client = _FakeClient(view=view)
-    adapter = InstagramSource(_source_config(), client)  # type: ignore[arg-type]
+    adapter = InstagramSource(_source_config(), client)
 
     url = "https://www.instagram.com/p/AUDIO1/"
     result = adapter.fetch_post(url)
@@ -285,7 +285,7 @@ def test_fetch_post_video_without_video_url_returns_unsupported_media() -> None:
     }
     view = InstaloaderPostView.model_validate(payload)
     client = _FakeClient(view=view)
-    adapter = InstagramSource(_source_config(), client)  # type: ignore[arg-type]
+    adapter = InstagramSource(_source_config(), client)
 
     url = "https://www.instagram.com/reel/REEL99/"
     result = adapter.fetch_post(url)
@@ -320,7 +320,7 @@ def test_fetch_post_maps_instaloader_exception_to_typed_error(
         def fetch_metadata(self, shortcode: str) -> InstaloaderPostView:
             raise InstagramClientError(expected_error_type, f"wrapped {exception_class.__name__}")
 
-    adapter = InstagramSource(_source_config(), _RaisingClient())  # type: ignore[arg-type]
+    adapter = InstagramSource(_source_config(), _RaisingClient())
 
     result = adapter.fetch_post("https://www.instagram.com/p/ABC123/")
 
@@ -338,7 +338,7 @@ def test_targets_iterates_configured_account_urls() -> None:
         ],
     )
     client = _FakeClient(view=_static_post_view())
-    adapter = InstagramSource(config, client)  # type: ignore[arg-type]
+    adapter = InstagramSource(config, client)
 
     assert list(adapter.targets()) == [
         "https://instagram.com/venue_a",
@@ -348,7 +348,7 @@ def test_targets_iterates_configured_account_urls() -> None:
 
 def test_fetch_post_accepts_reel_and_tv_url_shapes() -> None:
     client = _FakeClient(view=_static_post_view())
-    adapter = InstagramSource(_source_config(), client)  # type: ignore[arg-type]
+    adapter = InstagramSource(_source_config(), client)
 
     # /reel/ and /tv/ shortcodes both extract cleanly; the adapter passes them
     # through to the client (which decides on typename). Since the fake client
@@ -376,7 +376,7 @@ def test_plan_for_skips_disabled_media_types_from_resolved_flags() -> None:
         accounts=[account],
     )
     client = _FakeClient(view=_static_post_view())
-    adapter = InstagramSource(config, client)  # type: ignore[arg-type]
+    adapter = InstagramSource(config, client)
 
     plan = adapter.plan_for(account)
 
@@ -398,10 +398,65 @@ def test_plan_for_falls_back_to_source_default_media_types() -> None:
         accounts=[account],
     )
     client = _FakeClient(view=_static_post_view())
-    adapter = InstagramSource(config, client)  # type: ignore[arg-type]
+    adapter = InstagramSource(config, client)
 
     plan = adapter.plan_for(account)
 
     kinds = [kind for _, kind in plan]
     assert "video_posts" not in kinds
     assert set(kinds) == {"static_posts", "reels", "carousels"}
+
+
+@pytest.mark.parametrize(
+    "malformed_url",
+    [
+        "https://www.instagram.com/p/AB.C/",  # dot in shortcode
+        "https://www.instagram.com/p/AB C/",  # space
+        "https://www.instagram.com/p/AB!C/",  # punctuation
+        "https://www.instagram.com/p/AB%20C/",  # url-encoded
+    ],
+)
+def test_fetch_post_rejects_urls_with_non_shortcode_characters(malformed_url: str) -> None:
+    """The URL regex accepts only `[A-Za-z0-9_-]+` shortcodes.
+
+    Anything else (dots, spaces, punctuation, url-encoded chars) fails-fast
+    into `unsupported_source` at regex time, without a network round-trip.
+    """
+    client = _FakeClient(view=_static_post_view())
+    adapter = InstagramSource(_source_config(), client)
+
+    result = adapter.fetch_post(malformed_url)
+
+    assert isinstance(result, dict)
+    assert result["error_type"] == "unsupported_source"
+    assert client.calls == []
+
+
+def test_fetch_post_carousel_with_no_sidecar_nodes_returns_unsupported_media() -> None:
+    """A `GraphSidecar` with an empty `sidecar_nodes` list is not a happy-path.
+
+    An Extractor consuming `RawPost.media == []` has nothing to work with; the
+    adapter surfaces this shape as a typed `unsupported_media` branch instead
+    of a `RawPost` with zero media entries.
+    """
+    payload: dict[str, Any] = {
+        "shortcode": "EMPTYSIDE",
+        "typename": "GraphSidecar",
+        "caption": "empty carousel",
+        "date_utc": datetime(2026, 7, 20, 14, 30, tzinfo=UTC),
+        "owner_username": "test_venue",
+        "url": "https://scontent.cdninstagram.com/thumb.jpg",
+        "video_url": None,
+        "video_duration": None,
+        "mediacount": 0,
+        "sidecar_nodes": [],
+    }
+    view = InstaloaderPostView.model_validate(payload)
+    client = _FakeClient(view=view)
+    adapter = InstagramSource(_source_config(), client)
+
+    result = adapter.fetch_post("https://www.instagram.com/p/EMPTYSIDE/")
+
+    assert isinstance(result, dict)
+    assert result["error_type"] == "unsupported_media"
+    assert "no sidecar nodes" in result["message"]
