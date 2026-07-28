@@ -205,6 +205,8 @@ Governed by [**ADR 0005 — Multi-agent shape**](adr/0005-multi-agent-shape.md) 
 
 **Docker isolation.** Instagram scraping is fragile — the runtime lives in a container (`docker/sources.Dockerfile` + `compose.yaml`'s `sources-instagram` service) so it's isolated from the local machine's Python version, cookie state, and IP hygiene. Dev flow: `docker compose up sources-instagram` runs the adapter against the mounted `data/sources.yaml`. CI runs the same image against a stubbed network fixture — no real Instagram calls in the test suite.
 
+**Extractor-host prerequisite.** The Extractor (§4) needs `ffmpeg` on `PATH` for the reel frame-extraction pipeline — `brew install ffmpeg` (macOS) or `apt-get install ffmpeg` (Linux) on the host that runs `planazo-agent`. Not required inside the `sources-instagram` container, which does not run the extractor.
+
 **Typed error branches** (rule 4): `unsupported_source`, `rate_limited`, `auth_failed`, `not_found`, `unsupported_media`. The adapter never raises on the happy path.
 
 Governed by [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-extraction-approach.md) (scraper choice, container base, rate-limit envelope, cookie/session policy, per-media-type fallback rules, plus the generalized-protocol argument that TikTok/YouTube/news adapters drop into the same slot). Meetup and Eventbrite ADR 0011, conditional.
@@ -368,7 +370,7 @@ Copied verbatim into the Extractor's system prompt (also lives as `DELEGATION_BR
 - **Acts alone when:** URL matches a known Instagram post pattern and the post has both an image and a caption.
 - **Asks (returns `status: "needs_clarification"`) when:** the post is ambiguous, the date/time cannot be extracted, or the location is not in Barcelona metro.
 - **Escalates (returns `status: "error"` + `error_type` and halts) when:** rate-limited, auth failure, image unavailable, or extraction confidence < 0.3.
-- **Effort budget:** `max_steps=8`, `max_output_tokens=2000`, one image for single-image posts and reels; up to 3 images for carousels. Enforced by `run_loop` parameters, not by prompt text.
+- **Effort budget:** `max_steps=8`, `max_output_tokens=2000`, one image for single-image posts; up to 3 images for carousels; 3 evenly-spaced frames + thumbnail for reels. Enforced by `run_loop` parameters, not by prompt text.
 
 #### Terminal calls
 
@@ -402,7 +404,7 @@ sequenceDiagram
 
     R->>E: dispatch_extraction(url, user_id, run_id)
 
-    Note over E: system prompt =<br/>rules + delegation brief<br/>max_steps=8, ≤3 images/call
+    Note over E: system prompt =<br/>rules + delegation brief<br/>max_steps=8, ≤3 images/call plus optional reel frames
 
     E->>IG: fetch_instagram_post(url)
     IG-->>E: RawPost{image, caption, meta}
@@ -555,6 +557,7 @@ Each is its own PR, blocked by its own ticket. This doc is what those PRs will p
 | 0010 | `telegram-bot-interface` | Bot layer, no-LLM-in-bot invariant, approval callback, interpreter step wiring. |
 | 0011 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
 | 0012 | [`multi-event-extraction`](adr/0012-multi-event-extraction.md) | Lift extraction cardinality to 0..N events per post: `ExtractionResult.events: list[Event]`, `save_event(event_index_in_post)`, composite `UNIQUE(source_url, event_index_in_post)`, `events_exist_for_source_url` primitive. Supersedes ADR 0005 §Decision 10; partially supersedes §Decision 11's invariant clause. |
+| 0013 | [`extractor-side-frame-extraction`](adr/0013-extractor-side-frame-extraction.md) | Reel multimodal input: the extractor downloads the reel `video_url` to a temp file, extracts `MAX_REEL_FRAMES=3` evenly-spaced JPEG frames via `ffmpeg`, and sends them as base64 `input_image` parts alongside the thumbnail; silent degrade to thumbnail-only on `FrameExtractionError`. Extends ADR 0005's delegation-brief effort budget with the reel-frame arm; partially supersedes ADR 0006 §Decision 4 (extractor now downloads binaries; the adapter still emits URL-only `MediaAsset` entries). |
 
 Until each ADR lands, its section here reads as "planned — ADR NNNN"; when it lands, the entry is edited in place to link the accepted ADR.
 
@@ -588,7 +591,7 @@ Post-doc, code verification happens in each follow-up ticket:
 ## Risks / open questions
 
 - **Instagram scraping fragility.** Any scraper breaks when Meta changes markup or throttles. Mitigation: the Extractor treats `sources/instagram/` as a swappable adapter behind `fetch_instagram_post`. If scraping proves too fragile, we swap to a manual "paste this URL + I'll paste the caption" flow without touching the Extractor agent. ADR 0006 will name the choice.
-- **Multimodal cost.** `STRONG` + image = material per-call cost. The delegation brief's effort budget (`max_steps=8`, ≤3 images per call for carousels) is the primary lever. Add a per-user daily cap in v0.2 if needed.
+- **Multimodal cost.** `STRONG` + image = material per-call cost. The delegation brief's effort budget (`max_steps=8`, ≤3 images per call for carousels) is the primary lever. Reels pay 3× image-token cost (~$0.015 per reel on STRONG) plus a ~10 MB video download + ~1s ffmpeg CPU on the extractor host. Add a per-user daily cap in v0.2 if needed.
 - **Cue-match precision.** Token-overlap cue matching will over-surface (a fact cued "music" appearing on any query with the word). MVP acceptance bar: manual review shows no obviously-wrong surfacing across the three memory scenarios. Embeddings + cosine is a follow-up ADR.
 - **Monitor bootstrapping.** The monitor needs run logs to grade. v1 accepts a one-run bootstrap: seed with a canned session, then have the monitor grade it as the demo. Real automated cadence lands with ADR 0007.
 
