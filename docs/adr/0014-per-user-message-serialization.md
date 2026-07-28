@@ -1,6 +1,6 @@
 # 0014 — Per-user message serialization at the dispatch layer
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-29
 - **Deciders:** system-architect-planner (planning #58)
 - **Relates to:** [`0011-telegram-bot-interface.md`](0011-telegram-bot-interface.md) (the threading contract and `concurrent_updates` default this ADR changes), [`0013-registration-conversation-state.md`](0013-registration-conversation-state.md) (names #58 as the consumer of "is this user's next message a registration answer" — that check now runs *inside* the serialized job, unchanged), [`../MVP-ARCHITECTURE.md`](../MVP-ARCHITECTURE.md#multi-agent-coordination) (§Multi-agent coordination → Shared memory; §Out of scope: no worker pool, no horizontal scaling).
