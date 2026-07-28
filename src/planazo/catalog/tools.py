@@ -42,7 +42,7 @@ def save_event(
     `duplicate_event` with the id of the row that already exists, so read that
     branch instead of retrying. Do NOT call this with raw, unnormalized scraped
     text as `title` or `city`, and do NOT call it to look up events (it has no
-    read-back behaviour — use `search_events`).
+    read-back behaviour).
     """
     try:
         parsed_start = datetime.fromisoformat(start_utc)

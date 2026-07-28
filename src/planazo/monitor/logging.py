@@ -15,7 +15,7 @@ from planazo.monitor.models import ModelTier, RunStep, ToolCallTrace
 
 def default_run_log_dir() -> Path:
     """Return the repository-level directory reserved for Recommender trace logs."""
-    return Path(__file__).resolve().parents[4] / "data" / "runs"
+    return Path(__file__).resolve().parents[3] / "data" / "runs"
 
 
 def model_tier_for(model: str) -> ModelTier:

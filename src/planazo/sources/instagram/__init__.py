@@ -11,5 +11,6 @@ of instaloader's pinned exception surface is in `client.py`.
 """
 
 from planazo.sources.instagram.adapter import InstagramSource
+from planazo.sources.instagram.tools import build_fetch_instagram_post
 
-__all__ = ["InstagramSource"]
+__all__ = ["InstagramSource", "build_fetch_instagram_post"]

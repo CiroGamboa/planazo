@@ -705,3 +705,233 @@ def test_run_loop_without_a_system_prompt_opens_with_the_user_message_alone(
     loop.run_loop("what is 6*7?", [], {}, model=CHEAP)
 
     assert mock_call.call_args.kwargs["messages"] == [{"role": "user", "content": "what is 6*7?"}]
+
+
+def test_run_loop_with_no_on_tool_output_matches_baseline_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression guard for the default path: with `on_tool_output` omitted or
+    # None, a two-turn tool-calling run's message list is byte-identical to the
+    # baseline before the hook shipped.
+    tool_call = {"name": "echo", "arguments": {"text": "hi"}, "call_id": "call_1"}
+    output_item = {
+        "type": "function_call",
+        "name": "echo",
+        "arguments": '{"text": "hi"}',
+        "call_id": "call_1",
+    }
+    turn_1 = make_result(text="", tool_calls=[tool_call], output_items=[output_item])
+    turn_2 = make_result(text="done", tool_calls=[], output_items=[])
+
+    def make_call() -> MagicMock:
+        return MagicMock(side_effect=[turn_1, turn_2])
+
+    baseline_call = make_call()
+    monkeypatch.setattr(loop, "call", baseline_call)
+    baseline = loop.run_loop("echo hi", [_ECHO_SCHEMA], {"echo": _echo}, model=CHEAP)
+
+    none_call = make_call()
+    monkeypatch.setattr(loop, "call", none_call)
+    with_none = loop.run_loop(
+        "echo hi", [_ECHO_SCHEMA], {"echo": _echo}, model=CHEAP, on_tool_output=None
+    )
+
+    assert baseline == with_none == loop.LoopResult(answer="done", steps=2, stopped="answered")
+    assert (
+        baseline_call.call_args_list[1].kwargs["messages"]
+        == (none_call.call_args_list[1].kwargs["messages"])
+    )
+
+
+def test_run_loop_appends_hook_returned_messages_after_function_call_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call = {"name": "echo", "arguments": {"text": "hi"}, "call_id": "call_1"}
+    output_item = {
+        "type": "function_call",
+        "name": "echo",
+        "arguments": '{"text": "hi"}',
+        "call_id": "call_1",
+    }
+    turn_1 = make_result(text="", tool_calls=[tool_call], output_items=[output_item])
+    turn_2 = make_result(text="done", tool_calls=[], output_items=[])
+    mock_call = MagicMock(side_effect=[turn_1, turn_2])
+    monkeypatch.setattr(loop, "call", mock_call)
+
+    injected = {"role": "user", "content": [{"type": "input_text", "text": "sniff"}]}
+
+    def hook(_record: loop.StepRecord) -> list[dict[str, object]]:
+        return [injected]
+
+    loop.run_loop(
+        "echo hi",
+        [_ECHO_SCHEMA],
+        {"echo": _echo},
+        model=CHEAP,
+        on_tool_output=hook,
+    )
+
+    second_call_messages = mock_call.call_args_list[1].kwargs["messages"]
+    assert second_call_messages == [
+        {"role": "user", "content": "echo hi"},
+        output_item,
+        {
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": json.dumps({"result": _echo("hi")}),
+        },
+        injected,
+    ]
+
+
+def test_run_loop_skips_hook_on_unknown_tool_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call = {"name": "mystery", "arguments": {"text": "hi"}, "call_id": "call_1"}
+    output_item = {
+        "type": "function_call",
+        "name": "mystery",
+        "arguments": '{"text": "hi"}',
+        "call_id": "call_1",
+    }
+    turn_1 = make_result(text="", tool_calls=[tool_call], output_items=[output_item])
+    turn_2 = make_result(text="done", tool_calls=[], output_items=[])
+    monkeypatch.setattr(loop, "call", MagicMock(side_effect=[turn_1, turn_2]))
+    hook = MagicMock()
+
+    loop.run_loop(
+        "use mystery",
+        [_ECHO_SCHEMA],
+        {"echo": _echo},
+        model=CHEAP,
+        on_tool_output=hook,
+    )
+
+    assert hook.call_count == 0
+
+
+def test_run_loop_skips_hook_when_registered_tool_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call = {"name": "echo", "arguments": {"text": "hi"}, "call_id": "call_1"}
+    output_item = {
+        "type": "function_call",
+        "name": "echo",
+        "arguments": '{"text": "hi"}',
+        "call_id": "call_1",
+    }
+    turn_1 = make_result(text="", tool_calls=[tool_call], output_items=[output_item])
+    turn_2 = make_result(text="done", tool_calls=[], output_items=[])
+    monkeypatch.setattr(loop, "call", MagicMock(side_effect=[turn_1, turn_2]))
+
+    def _boom(text: str) -> str:
+        raise RuntimeError("kaboom")
+
+    hook = MagicMock()
+
+    loop.run_loop(
+        "echo hi",
+        [_ECHO_SCHEMA],
+        {"echo": _boom},
+        model=CHEAP,
+        on_tool_output=hook,
+    )
+
+    assert hook.call_count == 0
+
+
+def test_run_loop_invokes_hook_per_dispatched_call_and_interleaves_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call_1 = {"name": "echo", "arguments": {"text": "a"}, "call_id": "call_1"}
+    tool_call_2 = {"name": "echo", "arguments": {"text": "b"}, "call_id": "call_2"}
+    output_items = [
+        {
+            "type": "function_call",
+            "name": "echo",
+            "arguments": '{"text": "a"}',
+            "call_id": "call_1",
+        },
+        {
+            "type": "function_call",
+            "name": "echo",
+            "arguments": '{"text": "b"}',
+            "call_id": "call_2",
+        },
+    ]
+    turn_1 = make_result(text="", tool_calls=[tool_call_1, tool_call_2], output_items=output_items)
+    turn_2 = make_result(text="done", tool_calls=[], output_items=[])
+    mock_call = MagicMock(side_effect=[turn_1, turn_2])
+    monkeypatch.setattr(loop, "call", mock_call)
+
+    def hook(record: loop.StepRecord) -> list[dict[str, object]]:
+        text = record.arguments["text"]
+        return [{"role": "user", "content": [{"type": "input_text", "text": f"after-{text}"}]}]
+
+    loop.run_loop(
+        "echo a and b",
+        [_ECHO_SCHEMA],
+        {"echo": _echo},
+        model=CHEAP,
+        on_tool_output=hook,
+    )
+
+    second_call_messages = mock_call.call_args_list[1].kwargs["messages"]
+    # Structural assertion: for each dispatched call, the function_call_output
+    # is followed immediately by the hook's injected message before the next
+    # function_call_output for the second call.
+    assert second_call_messages == [
+        {"role": "user", "content": "echo a and b"},
+        output_items[0],
+        output_items[1],
+        {
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": json.dumps({"result": _echo("a")}),
+        },
+        {"role": "user", "content": [{"type": "input_text", "text": "after-a"}]},
+        {
+            "type": "function_call_output",
+            "call_id": "call_2",
+            "output": json.dumps({"result": _echo("b")}),
+        },
+        {"role": "user", "content": [{"type": "input_text", "text": "after-b"}]},
+    ]
+
+
+def test_run_loop_propagates_hook_exception_after_on_step_fired(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call = {"name": "echo", "arguments": {"text": "hi"}, "call_id": "call_1"}
+    output_item = {
+        "type": "function_call",
+        "name": "echo",
+        "arguments": '{"text": "hi"}',
+        "call_id": "call_1",
+    }
+    turn_1 = make_result(text="", tool_calls=[tool_call], output_items=[output_item])
+    turn_2 = make_result(text="done", tool_calls=[], output_items=[])
+    monkeypatch.setattr(loop, "call", MagicMock(side_effect=[turn_1, turn_2]))
+
+    def hook(_record: loop.StepRecord) -> list[dict[str, object]]:
+        raise RuntimeError("boom")
+
+    records: list[loop.StepRecord] = []
+
+    with pytest.raises(RuntimeError, match="boom"):
+        loop.run_loop(
+            "echo hi",
+            [_ECHO_SCHEMA],
+            {"echo": _echo},
+            model=CHEAP,
+            on_step=records.append,
+            on_tool_output=hook,
+        )
+
+    # Pre-hook on_step observation fired before the raise, so the caller can
+    # still reconstruct the step that triggered the hook.
+    assert len(records) == 1
+    assert records[0].tool == "echo"
+    # And no `tool_failure_result` marker was written into the trace — the
+    # hook's raise is a caller-side bug, not a tool failure.
+    assert not (isinstance(records[0].result, dict) and records[0].result.get("tool_failed"))
