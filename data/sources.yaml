@@ -1,4 +1,19 @@
-# Schema example — replace PLACEHOLDER_* with real public Barcelona venue accounts.
+# Schema example — replace PLACEHOLDER_* with real public Barcelona venue accounts
+# and post URLs before running the scheduler.
+#
+# The scheduler processes both blocks on every tick:
+#   - `accounts:` — discover recent posts on each account, then extract each URL.
+#     Requires the Instagram adapter's authenticated `list_recent_posts` path
+#     (#63 — instagrapi + burner). Comment out entries whose account you don't
+#     want scanned yet.
+#   - `posts:` — extract these specific post URLs directly (works from anonymous
+#     access via `Post.from_shortcode`; the M3.5 fallback path independent of
+#     account-scan discovery). Successful extractions are idempotent — the
+#     composite `UNIQUE(source_url, event_index_in_post)` in `events` locks out
+#     re-persistence — so a post entry's `cadence` only gates *failure retry*.
+#
+# Either block may be empty. A config with only `accounts:`, only `posts:`, both,
+# or neither is valid (an empty scan produces an empty tick).
 sources:
   instagram:
     default_cadence: "6h"
@@ -7,6 +22,9 @@ sources:
       reels: true
       carousels: true
       video_posts: true
+
+    # Scan the recent posts of these accounts. Each account's plan expands to
+    # `(url, media_kind)` pairs via `InstagramSource.plan_for`.
     accounts:
       - url: "https://instagram.com/PLACEHOLDER_ACCOUNT_1"
         cadence: "24h"
@@ -16,3 +34,11 @@ sources:
           reels: false
           carousels: true
           video_posts: true
+
+    # Extract these specific post URLs on every tick. URL must match
+    # `https://[www.]instagram.com/{p|reel}/<shortcode>/…` — account URLs pasted
+    # here are rejected at load time by the Pydantic validator.
+    posts:
+      - url: "https://www.instagram.com/p/PLACEHOLDER_SHORTCODE_1/"
+      - url: "https://www.instagram.com/p/PLACEHOLDER_SHORTCODE_2/"
+        cadence: "24h"

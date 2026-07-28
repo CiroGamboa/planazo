@@ -13,6 +13,8 @@ every source adapter shares:
   `now` callable.
 - `SourcesConfig`, `load_config` — Pydantic-validated `data/sources.yaml`
   loader; fails at boot on a malformed config.
+- `enumerate_configured_posts` — flat list of the `posts:` URLs from a
+  `SourceConfig`, in config order (consumed by the scheduler; see #67).
 
 Concrete adapters (`sources/instagram/`, future `sources/tiktok/`) live in
 their own subpackages; each conforms structurally to
@@ -20,7 +22,7 @@ their own subpackages; each conforms structurally to
 """
 
 from planazo.sources.base import SOURCES, ErrorType, error_state, next_run_after
-from planazo.sources.config import SourcesConfig, load_config
+from planazo.sources.config import SourcesConfig, enumerate_configured_posts, load_config
 from planazo.sources.models import MediaAsset, RawPost
 
 __all__ = [
@@ -29,6 +31,7 @@ __all__ = [
     "MediaAsset",
     "RawPost",
     "SourcesConfig",
+    "enumerate_configured_posts",
     "error_state",
     "load_config",
     "next_run_after",
