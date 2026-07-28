@@ -7,8 +7,9 @@ does, so this is CRUD-plus-validation against real SQLite that any surface
 can drive.
 
 `handle_register` starts or resumes the flow. `handle_registration_answer` is
-the plain-text continuation #57 will route free text past; it is inert (no
-reply, no write) whenever nothing is pending. Both read
+the plain-text continuation `bot/chat.py`'s three-way dispatch routes an
+in-flight answer to; it is inert (no reply, no write) whenever nothing is
+pending. Both read
 `UserRecord.pending_registration_field` as the entire state machine — one
 column names the next step, `NULL` means nothing is in flight
 (`docs/adr/0013-registration-conversation-state.md`).
