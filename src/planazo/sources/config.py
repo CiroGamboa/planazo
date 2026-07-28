@@ -72,6 +72,16 @@ class MediaTypeFlags(BaseModel):
     carousels: bool = True
     video_posts: bool = True
 
+    def enabled_kinds(self) -> list[str]:
+        """The enabled media-kind names in declaration order.
+
+        Single source of truth for both the adapter's `plan_for` and the
+        CLI's `--dry-run` — callers that need the enabled subset iterate
+        this list rather than reflecting on the model.
+        """
+        fields = ("static_posts", "reels", "carousels", "video_posts")
+        return [name for name in fields if getattr(self, name)]
+
 
 class AccountConfig(BaseModel):
     """One target URL for a source, with optional per-account overrides."""
