@@ -9,9 +9,10 @@ messages:
   command_line: {en: "{command} — {description}", es: "{command} — {description}"}
   start: {en: "Hi {display_name}! You are all set. Here is what I can do:\n\n{commands}", es: "¡Hola {display_name}! Ya estás listo. Esto es lo que puedo hacer:\n\n{commands}"}
   help: {en: "Here is what I can do:\n\n{commands}", es: "Esto es lo que puedo hacer:\n\n{commands}"}
-  me: {en: "Your Planazo id: {user_id}\nTelegram: {handle}\nPreferences stored: {count}", es: "Tu id de Planazo: {user_id}\nTelegram: {handle}\nPreferencias guardadas: {count}"}
+  me: {en: "Your Planazo id: {user_id}\nTelegram: {handle}\nName: {display_name}\nAge: {age}\nLocation: {location}\nLanguage: {language}\nNationality: {nationality}\nPreferences stored: {count}", es: "Tu id de Planazo: {user_id}\nTelegram: {handle}\nNombre: {display_name}\nEdad: {age}\nUbicación: {location}\nIdioma: {language}\nNacionalidad: {nationality}\nPreferencias guardadas: {count}"}
   me_handle: {en: "@{handle}", es: "@{handle}"}
   me_no_handle: {en: "no handle set", es: "sin usuario configurado"}
+  me_not_registered: {en: "You haven't finished registration yet. Send /register to get started.", es: "Todavía no has terminado tu registro. Envía /register para empezar."}
   prefs_usage: {en: "Use one of:\n/prefs — list your preferences\n/prefs set <key> <value> — store or replace one\n/prefs remove <key> — delete one", es: "Usa una de estas opciones:\n/prefs — lista tus preferencias\n/prefs set <clave> <valor> — guarda o reemplaza una\n/prefs remove <clave> — elimina una"}
   prefs_empty: {en: "You have no preferences stored.\n\n{usage}", es: "No tienes preferencias guardadas.\n\n{usage}"}
   prefs_list: {en: "Your preferences:\n\n{lines}", es: "Tus preferencias:\n\n{lines}"}

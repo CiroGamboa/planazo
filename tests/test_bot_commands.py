@@ -32,7 +32,8 @@ from planazo.bot.commands import (
 )
 from planazo.bot.config import BotConfig, load_config
 from planazo.bot.models import IncomingMessage
-from planazo.identity import get_or_create_user, get_preferences
+from planazo.bot.registration import handle_register, handle_registration_answer
+from planazo.identity import get_or_create_user, get_preferences, record_registration_answer
 from planazo.storage import db
 
 
@@ -89,6 +90,29 @@ def _stored_preferences(conn: sqlite3.Connection) -> list[tuple[str, str]]:
     row = conn.execute("SELECT id FROM users WHERE telegram_user_id = ?", ("tg-1",)).fetchone()
     assert row is not None, "the command should have registered the sender"
     return [(pref.key, pref.value) for pref in get_preferences(conn, row["id"]).rows]
+
+
+def _complete_registration(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    display_name: str = "Dani V",
+    age: int = 29,
+    location: str = "Barcelona",
+    language: str = "en",
+    nationality: str = "Spanish",
+) -> None:
+    """Fill every field the precedence rule's `profile_complete` check reads.
+
+    Five direct `record_registration_answer` calls, not a full `/register`
+    conversation — `tests/test_bot_registration.py` already covers the flow
+    itself; these tests are about `/me`'s rendering and gating.
+    """
+    record_registration_answer(conn, user_id, "display_name", display_name, "age")
+    record_registration_answer(conn, user_id, "age", age, "location")
+    record_registration_answer(conn, user_id, "location", location, "language")
+    record_registration_answer(conn, user_id, "language", language, "nationality")
+    record_registration_answer(conn, user_id, "nationality", nationality, None)
 
 
 def _write_corrupt_preference_row(conn: sqlite3.Connection, user_id: int) -> None:
@@ -267,10 +291,11 @@ async def test_me_reports_the_internal_id_the_handle_and_the_preference_count(
     conn: sqlite3.Connection, surface: RecordingSurface, config: BotConfig
 ) -> None:
     await handle_prefs(surface, conn, make_message(text="/prefs set city Barcelona"), config)
+    (user_id,) = _user_ids(conn)
+    _complete_registration(conn, user_id)
     await handle_me(surface, conn, make_message(text="/me"), config)
 
     _, me = surface.replies
-    (user_id,) = _user_ids(conn)
     assert str(user_id) in me
     assert "@daniv" in me
     assert "Preferences stored: 1" in me
@@ -280,6 +305,9 @@ async def test_me_reports_the_internal_id_the_handle_and_the_preference_count(
 async def test_me_without_a_handle_never_renders_none(
     conn: sqlite3.Connection, surface: RecordingSurface, config: BotConfig
 ) -> None:
+    user = get_or_create_user(conn, "tg-1", "Dani V")
+    assert user.id is not None
+    _complete_registration(conn, user.id)
     await handle_me(surface, conn, make_message(text="/me", telegram_handle=None), config)
 
     (me,) = surface.replies
@@ -303,7 +331,7 @@ async def test_handlers_resolve_the_spanish_catalog_when_the_default_locale_is_s
     start, help_text, me, prefs = surface.replies
     assert "Ya estás listo" in start
     assert "Esto es lo que puedo hacer" in help_text
-    assert "Preferencias guardadas" in me
+    assert "Envía /register" in me
     assert "No tienes preferencias guardadas" in prefs
 
 
@@ -313,6 +341,7 @@ async def test_a_corrupt_preference_row_reads_as_an_error_not_an_empty_list_or_a
 ) -> None:
     user = get_or_create_user(conn, "tg-1", "Dani V")
     assert user.id is not None
+    _complete_registration(conn, user.id)
     _write_corrupt_preference_row(conn, user.id)
 
     await handle_prefs(surface, conn, make_message(text="/prefs"), config)
@@ -323,3 +352,119 @@ async def test_a_corrupt_preference_row_reads_as_an_error_not_an_empty_list_or_a
         assert "could not read your stored preferences safely" in reply
         assert "no preferences stored" not in reply.lower()
         assert "preferences stored:" not in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_me_shows_the_full_profile_only_once_registration_is_complete(
+    conn: sqlite3.Connection, surface: RecordingSurface, config: BotConfig
+) -> None:
+    """AC4: an unregistered sender gets `me_not_registered` instead of a
+    partially-filled template; a fully registered sender sees every stored
+    profile field alongside the pre-existing id/handle/preference-count
+    content."""
+    await handle_me(surface, conn, make_message(text="/me"), config)
+
+    other = get_or_create_user(conn, "tg-2", "Other User")
+    assert other.id is not None
+    _complete_registration(
+        conn, other.id, display_name="Other User", age=30, location="Madrid", nationality="Chilean"
+    )
+
+    await handle_me(surface, conn, make_message(telegram_user_id="tg-2", text="/me"), config)
+
+    not_registered, registered = surface.replies
+    assert "/register" in not_registered
+    assert str(other.id) in registered
+    assert "@daniv" in registered
+    assert "Name: Other User" in registered
+    assert "Age: 30" in registered
+    assert "Location: Madrid" in registered
+    assert "Language: en" in registered
+    assert "Nationality: Chilean" in registered
+    assert "Preferences stored: 0" in registered
+
+
+@pytest.mark.asyncio
+async def test_me_precedence_corrupt_preferences_only_surface_for_a_registered_sender(
+    conn: sqlite3.Connection, surface: RecordingSurface, config: BotConfig
+) -> None:
+    """AC4 corollary — the precedence rule's not-registered gate is absolute.
+    A registered sender with a corrupt preference row still fails closed to
+    `prefs_read_error`; an unregistered sender with that same corrupt row
+    gets `me_not_registered` instead — the corruption is never surfaced for a
+    sender who has not finished registration."""
+    registered = get_or_create_user(conn, "tg-1", "Dani V")
+    assert registered.id is not None
+    _complete_registration(conn, registered.id)
+    _write_corrupt_preference_row(conn, registered.id)
+
+    unregistered = get_or_create_user(conn, "tg-2", "Other User")
+    assert unregistered.id is not None
+    _write_corrupt_preference_row(conn, unregistered.id)
+
+    await handle_me(surface, conn, make_message(text="/me"), config)
+    await handle_me(surface, conn, make_message(telegram_user_id="tg-2", text="/me"), config)
+
+    registered_reply, unregistered_reply = surface.replies
+    assert "could not read your stored preferences safely" in registered_reply
+    assert "/register" in unregistered_reply
+    assert "could not read your stored preferences safely" not in unregistered_reply
+
+
+@pytest.mark.asyncio
+async def test_me_not_registered_renders_in_the_senders_stored_language(
+    conn: sqlite3.Connection, surface: RecordingSurface, config: BotConfig
+) -> None:
+    """The specific gap a "read `user.language` only inside `profile_complete`"
+    implementation would miss: a sender who answered the language step but
+    not the last one is still `profile_complete is False`, yet already has a
+    stored `language`. `me_not_registered` must render in that stored
+    language, not `config.default_locale`."""
+    await handle_register(surface, conn, make_message(text="/register"), config)
+    await handle_registration_answer(surface, conn, make_message(text="Dani V"), config)
+    await handle_registration_answer(surface, conn, make_message(text="29"), config)
+    await handle_registration_answer(surface, conn, make_message(text="Barcelona"), config)
+    await handle_registration_answer(surface, conn, make_message(text="es"), config)
+    surface.replies.clear()
+
+    await handle_me(surface, conn, make_message(text="/me"), config)
+
+    (me,) = surface.replies
+    assert "Todavía no has terminado tu registro" in me
+
+
+@pytest.mark.asyncio
+async def test_a_completed_registrations_language_choice_threads_into_later_replies(
+    conn: sqlite3.Connection, surface: RecordingSurface, config: BotConfig
+) -> None:
+    """AC5: locale actually threads through a real registration-then-reply
+    round trip, not just a `config.model_copy` fixture swap."""
+    await handle_register(
+        surface,
+        conn,
+        make_message(telegram_user_id="tg-en", display_name="English User", text="/register"),
+        config,
+    )
+    for answer in ("English User", "29", "Barcelona", "en", "Spanish"):
+        await handle_registration_answer(
+            surface, conn, make_message(telegram_user_id="tg-en", text=answer), config
+        )
+
+    await handle_register(
+        surface,
+        conn,
+        make_message(telegram_user_id="tg-es", display_name="Spanish User", text="/register"),
+        config,
+    )
+    for answer in ("Spanish User", "29", "Barcelona", "es", "Spanish"):
+        await handle_registration_answer(
+            surface, conn, make_message(telegram_user_id="tg-es", text=answer), config
+        )
+
+    surface.replies.clear()
+    await handle_help(surface, conn, make_message(telegram_user_id="tg-en", text="/help"), config)
+    await handle_help(surface, conn, make_message(telegram_user_id="tg-es", text="/help"), config)
+
+    help_en, help_es = surface.replies
+    assert "Here is what I can do" in help_en
+    assert "Esto es lo que puedo hacer" in help_es
