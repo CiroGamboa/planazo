@@ -1,8 +1,10 @@
 import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from typing import get_args
 
 import pytest
+from pydantic import ValidationError
 
 from planazo import identity
 from planazo.catalog import (
@@ -14,6 +16,7 @@ from planazo.catalog import (
     query_events,
     record_extraction_run,
 )
+from planazo.query.models import EventCategory
 from planazo.storage import db
 
 
@@ -140,3 +143,154 @@ def test_record_extraction_run_round_trips_through_list_extraction_runs(
     assert stored[0].run_id == "run-1"
     assert stored[0].url == "https://instagram.example/p/1"
     assert stored[0].started_at is not None
+
+
+# ------------------------------------------------------------
+# Issue #88 — Event model + repository full-domain persistence
+# ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("category", list(get_args(EventCategory)))
+def test_event_model_accepts_every_literal_category(category: str) -> None:
+    """Every value in the `EventCategory` Literal must construct a valid
+    `Event`. Guards against the enum quietly diverging from `Event`."""
+    event = make_event(category=category)
+    assert event.category == category
+
+
+def test_event_model_rejects_a_category_outside_the_literal() -> None:
+    """A category outside the shared Literal raises `ValidationError` at
+    construction — the tool layer turns that into `invalid_event_data`."""
+    with pytest.raises(ValidationError):
+        make_event(category="party")
+
+
+def test_event_model_defaults_the_new_domain_fields_to_nullish() -> None:
+    """None of the migration-002 fields are required — the defaults reflect
+    "not known": strings default to `None`, `tags` to an empty list,
+    `recurring` to `False`."""
+    event = make_event()
+    assert event.source_account is None
+    assert event.venue_name is None
+    assert event.venue_address is None
+    assert event.organizer is None
+    assert event.tags == []
+    assert event.description is None
+    assert event.ticket_url is None
+    assert event.image_url is None
+    assert event.language is None
+    assert event.recurring is False
+
+
+@pytest.mark.parametrize("tags", [[], ["techno"], ["techno", "dj-set", "live-band"]])
+def test_insert_event_round_trips_tags_as_a_json_array(
+    conn: sqlite3.Connection, tags: list[str]
+) -> None:
+    """Every `Event.tags` payload survives the write→read round trip through
+    the JSON-encoded `tags` TEXT column."""
+    insert_event(conn, make_event(tags=tags))
+    found = query_events(conn)
+    assert len(found) == 1
+    assert found[0].tags == tags
+
+
+def test_insert_event_persists_every_new_domain_column(conn: sqlite3.Connection) -> None:
+    """A fully-populated `Event` — every rich-domain field set — round-trips
+    through `insert_event`/`query_events` without loss."""
+    insert_event(
+        conn,
+        make_event(
+            source_account="sala_apolo",
+            venue_name="Sala Apolo",
+            venue_address="Nou de la Rambla 113",
+            organizer="Nitsa",
+            tags=["techno", "dj-set"],
+            description="Marathon night.",
+            ticket_url="https://tickets.example/apolo",
+            image_url="https://cdn.example/apolo.jpg",
+            language="es",
+            recurring=True,
+        ),
+    )
+    found = query_events(conn)
+    assert len(found) == 1
+    row = found[0]
+    assert row.source_account == "sala_apolo"
+    assert row.venue_name == "Sala Apolo"
+    assert row.venue_address == "Nou de la Rambla 113"
+    assert row.organizer == "Nitsa"
+    assert row.tags == ["techno", "dj-set"]
+    assert row.description == "Marathon night."
+    assert row.ticket_url == "https://tickets.example/apolo"
+    assert row.image_url == "https://cdn.example/apolo.jpg"
+    assert row.language == "es"
+    assert row.recurring is True
+
+
+def test_query_events_filters_by_venue_name_exact_match(conn: sqlite3.Connection) -> None:
+    insert_event(conn, make_event(source_url="https://e/apolo", venue_name="Sala Apolo"))
+    insert_event(conn, make_event(source_url="https://e/razz", venue_name="Razzmatazz"))
+    assert {e.venue_name for e in query_events(conn, venue_name="Sala Apolo")} == {"Sala Apolo"}
+
+
+def test_query_events_filters_by_tag_membership(conn: sqlite3.Connection) -> None:
+    insert_event(conn, make_event(source_url="https://e/t1", tags=["techno", "dj-set"]))
+    insert_event(conn, make_event(source_url="https://e/t2", tags=["jazz"]))
+    insert_event(conn, make_event(source_url="https://e/t3", tags=[]))
+    assert {e.source_url for e in query_events(conn, tag="techno")} == {"https://e/t1"}
+    assert {e.source_url for e in query_events(conn, tag="jazz")} == {"https://e/t2"}
+    assert query_events(conn, tag="ballet") == []
+
+
+def test_query_events_filters_by_title_substring(conn: sqlite3.Connection) -> None:
+    insert_event(conn, make_event(source_url="https://e/t1", title="AI Meetup — Barcelona"))
+    insert_event(conn, make_event(source_url="https://e/t2", title="Rust Users Group"))
+    assert {e.source_url for e in query_events(conn, title_contains="Meetup")} == {"https://e/t1"}
+
+
+def test_query_events_filters_by_budget_cents_max_upper_bound(conn: sqlite3.Connection) -> None:
+    insert_event(conn, make_event(source_url="https://e/free", price_cents=0))
+    insert_event(conn, make_event(source_url="https://e/cheap", price_cents=1000))
+    insert_event(conn, make_event(source_url="https://e/paid", price_cents=5000))
+    assert {e.source_url for e in query_events(conn, budget_cents_max=1500)} == {
+        "https://e/free",
+        "https://e/cheap",
+    }
+
+
+# ------------------------------------------------------------
+# Migration 002 — schema shape assertions
+# ------------------------------------------------------------
+
+
+def test_migration_002_lands_and_bumps_user_version(conn: sqlite3.Connection) -> None:
+    """After `db.connect()` opens a fresh in-memory DB, `PRAGMA user_version`
+    reads back as at least `2` and every migration-002 column exists on the
+    `events` table."""
+    assert int(conn.execute("PRAGMA user_version").fetchone()[0]) >= 2
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+    for name in (
+        "source_account",
+        "venue_name",
+        "venue_address",
+        "organizer",
+        "tags",
+        "description",
+        "ticket_url",
+        "image_url",
+        "language",
+        "recurring",
+    ):
+        assert name in columns, f"migration 002 did not add column {name!r}"
+
+
+def test_migration_002_creates_the_two_composite_indexes(conn: sqlite3.Connection) -> None:
+    """The two hot-path composite indexes back the Recommender's filters."""
+    index_names = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'events'"
+        ).fetchall()
+    }
+    assert "idx_events_city_start" in index_names
+    assert "idx_events_category_start" in index_names

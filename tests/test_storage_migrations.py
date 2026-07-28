@@ -88,12 +88,13 @@ def test_second_connect_is_a_no_op(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 def test_migrations_apply_in_lexicographic_order(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A `002_*.sql` fixture placed alongside 001 runs after 001, in order.
+    """A synthetic top migration lands after every real one, in order.
 
     We build an isolated migrations directory that mirrors the real one, add
-    a second migration that depends on the baseline (`CREATE TABLE ...
-    REFERENCES users(id)`), and confirm both apply and `user_version` lands
-    on `2`. If order were wrong the FK reference to `users` would fail.
+    a synthetic migration that depends on the baseline (`CREATE TABLE ...
+    REFERENCES users(id)`) at a version one past the highest real migration,
+    and confirm both apply and `user_version` lands on that version. If
+    order were wrong the FK reference to `users` would fail.
     """
     real = db._MIGRATIONS_DIR
     fake = tmp_path / "migrations"
@@ -101,7 +102,9 @@ def test_migrations_apply_in_lexicographic_order(
     for path in real.iterdir():
         if path.suffix == ".sql":
             (fake / path.name).write_text(path.read_text(encoding="utf-8"))
-    (fake / "002_test_migration.sql").write_text(
+    real_migrations = db._discover_migrations(real)
+    next_version = real_migrations[-1][0] + 1
+    (fake / f"{next_version:03d}_test_migration.sql").write_text(
         "CREATE TABLE test_flag (\n"
         "    user_id INTEGER NOT NULL REFERENCES users(id),\n"
         "    flag    TEXT    NOT NULL\n"
@@ -115,8 +118,8 @@ def test_migrations_apply_in_lexicographic_order(
 
     conn = db.connect()
     try:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 2
-        # The FK column exists — proves 001 ran before 002.
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == next_version
+        # The FK column exists — proves every earlier migration ran first.
         tables = {
             row["name"]
             for row in conn.execute(
@@ -132,13 +135,13 @@ def test_migrations_apply_in_lexicographic_order(
 def test_mid_migration_failure_leaves_user_version_at_last_success(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Injected bad SQL in 002 aborts the whole 002 transaction.
+    """Injected bad SQL in a top migration aborts the whole transaction.
 
     Load-bearing invariant: after the failure, `user_version` reads back as
-    `1` (the last successful step), not `2`. The DDL that came before the
-    error inside 002 must not have persisted, so a re-run of the same
-    migration on a fixed file starts cleanly rather than tripping over
-    half-applied state.
+    the version of the last successful step — never the failing script's
+    version. The DDL that came before the error inside the failing script
+    must not have persisted, so a re-run of the same migration on a fixed
+    file starts cleanly rather than tripping over half-applied state.
     """
     real = db._MIGRATIONS_DIR
     fake = tmp_path / "migrations"
@@ -146,10 +149,13 @@ def test_mid_migration_failure_leaves_user_version_at_last_success(
     for path in real.iterdir():
         if path.suffix == ".sql":
             (fake / path.name).write_text(path.read_text(encoding="utf-8"))
+    real_migrations = db._discover_migrations(real)
+    last_good_version = real_migrations[-1][0]
+    fail_version = last_good_version + 1
     # Two statements: the first is valid DDL, the second is deliberately
     # malformed. If our transaction wrapper is honest, neither persists and
-    # `user_version` stays at 1.
-    (fake / "002_will_fail.sql").write_text(
+    # `user_version` stays at the previous version.
+    (fake / f"{fail_version:03d}_will_fail.sql").write_text(
         "CREATE TABLE partial_target (id INTEGER PRIMARY KEY);\nTHIS IS NOT VALID SQL;\n",
         encoding="utf-8",
     )
@@ -162,7 +168,7 @@ def test_mid_migration_failure_leaves_user_version_at_last_success(
         db.connect()
 
     # Re-open outside the runner to inspect the raw pragma + tables.
-    assert _user_version(dbfile) == 1
+    assert _user_version(dbfile) == last_good_version
     inspect = sqlite3.connect(dbfile)
     try:
         tables = {
@@ -171,7 +177,8 @@ def test_mid_migration_failure_leaves_user_version_at_last_success(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
-        # 001's tables are here; 002's `partial_target` must not be.
+        # Every real migration's tables are here; the failing script's
+        # `partial_target` must not be.
         assert "users" in tables
         assert "partial_target" not in tables
     finally:
