@@ -42,6 +42,9 @@ MESSAGES: Final[Mapping[str, str]] = {
     "start": "Hi {display_name}! You are all set. Here is what I can do:\n\n{commands}",
     "help": "Here is what I can do:\n\n{commands}",
     "me": "Your Planazo id: {user_id}\nTelegram: {handle}\nPreferences stored: {count}",
+    "me_preferences_unavailable": (
+        "Your Planazo id: {user_id}\nTelegram: {handle}\nPreferences stored: unavailable"
+    ),
     "me_handle": "@{handle}",
     "me_no_handle": "no handle set",
     "prefs_usage": (
@@ -53,6 +56,7 @@ MESSAGES: Final[Mapping[str, str]] = {
     "prefs_empty": "You have no preferences stored.\n\n{usage}",
     "prefs_list": "Your preferences:\n\n{lines}",
     "prefs_line": "{key}: {value}",
+    "prefs_unavailable": "I cannot safely read your preferences right now. Please try again later.",
     "prefs_saved": "Saved {key}: {value}",
     "prefs_removed": "Removed {key}.",
     "prefs_absent": "You have no preference named {key}.",
@@ -107,9 +111,13 @@ def _violations(error: ValidationError) -> str:
 
 def _list_preferences(conn: sqlite3.Connection, user_id: int) -> str:
     stored = get_preferences(conn, user_id)
-    if not stored:
+    if stored.error_type is not None:
+        return MESSAGES["prefs_unavailable"]
+    if not stored.rows:
         return MESSAGES["prefs_empty"].format(usage=MESSAGES["prefs_usage"])
-    lines = "\n".join(MESSAGES["prefs_line"].format(key=row.key, value=row.value) for row in stored)
+    lines = "\n".join(
+        MESSAGES["prefs_line"].format(key=row.key, value=row.value) for row in stored.rows
+    )
     return MESSAGES["prefs_list"].format(lines=lines)
 
 
@@ -158,11 +166,17 @@ async def handle_me(
         if message.telegram_handle is None
         else MESSAGES["me_handle"].format(handle=message.telegram_handle)
     )
+    preferences = get_preferences(conn, user_id)
+    if preferences.error_type is not None:
+        await surface.reply(
+            MESSAGES["me_preferences_unavailable"].format(user_id=user_id, handle=handle)
+        )
+        return
     await surface.reply(
         MESSAGES["me"].format(
             user_id=user_id,
             handle=handle,
-            count=len(get_preferences(conn, user_id)),
+            count=len(preferences.rows),
         )
     )
 

@@ -143,7 +143,9 @@ def _stored_preferences() -> list[tuple[str, str]]:
             "SELECT id FROM users WHERE telegram_user_id = ?", (str(SENDER_ID),)
         ).fetchone()
         assert row is not None, "the adapter should have registered the sender"
-        return [(pref.key, pref.value) for pref in get_preferences(conn, row["id"])]
+        result = get_preferences(conn, row["id"])
+        assert result.error_type is None
+        return [(pref.key, pref.value) for pref in result.rows]
     finally:
         conn.close()
 

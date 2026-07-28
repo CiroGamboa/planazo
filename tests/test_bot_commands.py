@@ -77,7 +77,9 @@ def _stored_preferences(conn: sqlite3.Connection) -> list[tuple[str, str]]:
     """What the default sender actually has on record, read back out of SQLite."""
     row = conn.execute("SELECT id FROM users WHERE telegram_user_id = ?", ("tg-1",)).fetchone()
     assert row is not None, "the command should have registered the sender"
-    return [(pref.key, pref.value) for pref in get_preferences(conn, row["id"])]
+    result = get_preferences(conn, row["id"])
+    assert result.error_type is None
+    return [(pref.key, pref.value) for pref in result.rows]
 
 
 @pytest.mark.asyncio
@@ -189,6 +191,47 @@ async def test_prefs_set_refuses_a_multi_line_value_and_writes_nothing(
     assert "value" in refusal
     assert "must be a single line" in refusal
     assert _stored_preferences(conn) == []
+
+
+@pytest.mark.asyncio
+async def test_prefs_hides_all_rows_when_a_persisted_preference_is_corrupt(
+    conn: sqlite3.Connection, surface: RecordingSurface
+) -> None:
+    await handle_prefs(surface, conn, make_message(text="/prefs set city Barcelona"))
+    user_id = _user_ids(conn)[0]
+    conn.execute(
+        "INSERT INTO preferences (user_id, key, value, updated_at) VALUES (?, ?, ?, ?)",
+        (user_id, "z-corrupt", "bad\nvalue", "2026-07-28T00:00:00"),
+    )
+    conn.commit()
+
+    await handle_prefs(surface, conn, make_message(text="/prefs"))
+
+    reply = surface.replies[-1]
+    assert "cannot safely read" in reply.lower()
+    assert "Barcelona" not in reply
+    assert "bad" not in reply
+
+
+@pytest.mark.asyncio
+async def test_me_marks_preferences_unavailable_when_a_persisted_row_is_corrupt(
+    conn: sqlite3.Connection, surface: RecordingSurface
+) -> None:
+    await handle_prefs(surface, conn, make_message(text="/prefs set city Barcelona"))
+    user_id = _user_ids(conn)[0]
+    conn.execute(
+        "INSERT INTO preferences (user_id, key, value, updated_at) VALUES (?, ?, ?, ?)",
+        (user_id, "z-corrupt", "not\na preference", "2026-07-28T00:00:00"),
+    )
+    conn.commit()
+
+    await handle_me(surface, conn, make_message(text="/me"))
+
+    reply = surface.replies[-1]
+    assert f"Your Planazo id: {user_id}" in reply
+    assert "@daniv" in reply
+    assert "Preferences stored: unavailable" in reply
+    assert "Preferences stored: 0" not in reply
 
 
 @pytest.mark.asyncio

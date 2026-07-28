@@ -109,7 +109,7 @@ def test_set_preference_rejects_an_over_long_key(conn: sqlite3.Connection) -> No
         set_preference(conn, user.id, "k" * 65, "tech")
 
     # The refused write left the key that fit in place, and added nothing.
-    assert [p.key for p in get_preferences(conn, user.id)] == ["k" * 64]
+    assert [p.key for p in get_preferences(conn, user.id).rows] == ["k" * 64]
 
 
 def test_set_preference_rejects_a_multi_line_key_naming_the_key_field(
@@ -126,7 +126,7 @@ def test_set_preference_rejects_a_multi_line_key_naming_the_key_field(
 
     assert "preference key must be a single line" in str(excinfo.value)
     assert "preference value must be a single line" not in str(excinfo.value)
-    assert get_preferences(conn, user.id) == []
+    assert get_preferences(conn, user.id).rows == ()
 
 
 def test_delete_preference_removes_the_row_and_reports_it(conn: sqlite3.Connection) -> None:
@@ -135,7 +135,7 @@ def test_delete_preference_removes_the_row_and_reports_it(conn: sqlite3.Connecti
     set_preference(conn, user.id, "city", "Barcelona")
 
     assert delete_preference(conn, user.id, "city") is True
-    assert get_preferences(conn, user.id) == []
+    assert get_preferences(conn, user.id).rows == ()
 
 
 def test_delete_preference_reports_false_the_second_time(conn: sqlite3.Connection) -> None:
@@ -170,8 +170,10 @@ def test_delete_preference_touches_only_the_named_key_for_the_named_user(
 
     assert delete_preference(conn, dani.id, "city") is True
 
-    assert [(p.key, p.value) for p in get_preferences(conn, dani.id)] == [("categories", "tech")]
-    assert [(p.key, p.value) for p in get_preferences(conn, other.id)] == [("city", "Madrid")]
+    dani_prefs = [(p.key, p.value) for p in get_preferences(conn, dani.id).rows]
+    other_prefs = [(p.key, p.value) for p in get_preferences(conn, other.id).rows]
+    assert dani_prefs == [("categories", "tech")]
+    assert other_prefs == [("city", "Madrid")]
 
 
 def test_a_preference_row_written_outside_the_schema_is_rejected_on_read(

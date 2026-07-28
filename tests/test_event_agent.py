@@ -584,7 +584,12 @@ def test_preferences_text_is_ascending_whole_rows_and_marks_omissions() -> None:
     assert lines[1:-1] == sorted(lines[1:-1])
 
 
-def test_preferences_text_removes_the_reserve_when_all_rows_exactly_fit() -> None:
+def test_preferences_text_removes_the_reserve_when_all_rows_exactly_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Use a reduced cap so the calculated exact-fit key stays within the 64-char
+    # model limit while values remain at the 200-char write boundary.
+    monkeypatch.setattr(event_agent, "PREFERENCE_PUSH_CAP", 1160)
     heading = "User preferences:"
     marker = "\n- [additional preferences omitted]"
     first_rows = tuple(_preference(key, "x" * 200) for key in "abcd")
@@ -609,7 +614,12 @@ def test_preferences_text_removes_the_reserve_when_all_rows_exactly_fit() -> Non
     assert rendered.endswith(repr(fifth_value))
 
 
-def test_preferences_text_marks_an_extra_row_after_an_exact_fit_sequence() -> None:
+def test_preferences_text_marks_an_extra_row_after_an_exact_fit_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Use a reduced cap so the calculated exact-fit key stays within the 64-char
+    # model limit while values remain at the 200-char write boundary.
+    monkeypatch.setattr(event_agent, "PREFERENCE_PUSH_CAP", 1160)
     heading = "User preferences:"
     marker = "\n- [additional preferences omitted]"
     first_rows = tuple(_preference(key, "x" * 200) for key in "abcd")
@@ -629,7 +639,9 @@ def test_preferences_text_marks_an_extra_row_after_an_exact_fit_sequence() -> No
     assert "z-extra" not in rendered
 
 
-def test_preferences_text_omits_an_oversized_first_row() -> None:
+def test_preferences_text_omits_an_oversized_first_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Use a small cap so the oversized key stays within the 64-char model limit.
+    monkeypatch.setattr(event_agent, "PREFERENCE_PUSH_CAP", 30)
     row = _preference("k" * event_agent.PREFERENCE_PUSH_CAP, "x")
 
     rendered = event_agent._preferences_text(PreferenceReadResult(rows=(row,)))

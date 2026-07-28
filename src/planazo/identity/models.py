@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator, field_validator, ValidationInfo
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 
 class UserRecord(BaseModel):
