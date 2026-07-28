@@ -5,7 +5,8 @@ Peer of `event_agent.py` (the Recommender). Composition root of the
 (`fetch_instagram_post`, `save_event`, `report_extraction_status`), a
 byte-verbatim delegation brief read at import time from
 `docs/MVP-ARCHITECTURE.md`, and a multimodal `on_tool_output` hook that
-feeds one visual asset per fetch to the LLM as an `input_image` message.
+feeds one visual asset per single-image fetch (or up to `MAX_CAROUSEL_IMAGES`
+image parts for carousels) to the LLM as `input_image` messages.
 
 The single fixed user prompt is `USER_MESSAGE`: extractors take no user-
 composed message. The URL rides the system prompt (delegation brief + rules
@@ -73,6 +74,7 @@ DELEGATION_BRIEF: Final[str] = _read_delegation_brief()
 USER_MESSAGE: Final[str] = "Extract every distinct event announced by the Instagram post above."
 MAX_STEPS: Final[int] = 8
 MAX_OUTPUT_TOKENS: Final[int] = 2000
+MAX_CAROUSEL_IMAGES: Final[int] = 3
 
 
 class _ReportedStatus(BaseModel):
@@ -122,9 +124,24 @@ def _build_multimodal_hook(
 ) -> Callable[[StepRecord], list[dict[str, Any]] | None]:
     """Return the `on_tool_output` hook closured over the extraction target `url`.
 
-    Selects exactly one visual asset per `fetch_instagram_post` return
-    (image → thumbnail → none) and injects it as an `input_image` content
-    part on the next LLM turn. See ADR 0005 decision 7.
+    Selection is driven by the count of `kind == "image"` assets in
+    `record.result["media"]`, keeping the hook domain-model-free:
+
+    - ``n >= 2`` — carousel branch. Emits one user message with interleaved
+      ``input_text`` + ``input_image`` parts for the first
+      ``MAX_CAROUSEL_IMAGES`` image assets (in media-list order), each slide
+      prefixed by ``"Slide {i}/{k} from the fetched post — {url}:"``.
+    - ``n == 1`` — single-image branch. One ``input_text`` + one
+      ``input_image`` for the sole image asset.
+    - ``n == 0`` and a ``kind == "thumbnail"`` asset exists — thumbnail
+      fallback. Same message shape as the single-image branch with the
+      thumbnail's URL.
+    - Otherwise — an ``input_text``-only "no visual asset available for
+      this post" fallback.
+
+    Video assets are never sent as ``input_image`` parts and are skipped
+    when interleaved with image assets in a carousel. See ADR 0005 §D7
+    (superseded in part by M3.5 for `GraphSidecar` — up to K=3 slides).
     """
 
     def _multimodal_hook(record: StepRecord) -> list[dict[str, Any]] | None:
@@ -152,25 +169,52 @@ def _build_multimodal_hook(
                     ],
                 }
             ]
-        selected: dict[str, Any] | None = None
-        for asset in media:
-            if isinstance(asset, dict) and asset.get("kind") == "image":
-                selected = asset
-                break
-        if selected is None:
-            for asset in media:
-                if isinstance(asset, dict) and asset.get("kind") == "thumbnail":
-                    selected = asset
-                    break
-        if selected is None:
+        image_assets: list[dict[str, Any]] = [
+            asset for asset in media if isinstance(asset, dict) and asset.get("kind") == "image"
+        ]
+        if len(image_assets) >= 2:
+            k = min(len(image_assets), MAX_CAROUSEL_IMAGES)
+            content: list[dict[str, Any]] = []
+            for i, asset in enumerate(image_assets[:k], start=1):
+                content.append(
+                    {
+                        "type": "input_text",
+                        "text": f"Slide {i}/{k} from the fetched post — {url}:",
+                    }
+                )
+                content.append({"type": "input_image", "image_url": asset.get("url", "")})
+            return [{"role": "user", "content": content}]
+        if len(image_assets) == 1:
+            selected = image_assets[0]
             return [
                 {
                     "role": "user",
                     "content": [
                         {
                             "type": "input_text",
-                            "text": "no visual asset available for this post",
-                        }
+                            "text": (f"Image content from the fetched post — {url} (kind=image):"),
+                        },
+                        {"type": "input_image", "image_url": selected.get("url", "")},
+                    ],
+                }
+            ]
+        thumbnail: dict[str, Any] | None = None
+        for asset in media:
+            if isinstance(asset, dict) and asset.get("kind") == "thumbnail":
+                thumbnail = asset
+                break
+        if thumbnail is not None:
+            return [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                f"Image content from the fetched post — {url} (kind=thumbnail):"
+                            ),
+                        },
+                        {"type": "input_image", "image_url": thumbnail.get("url", "")},
                     ],
                 }
             ]
@@ -180,12 +224,8 @@ def _build_multimodal_hook(
                 "content": [
                     {
                         "type": "input_text",
-                        "text": (
-                            f"Image content from the fetched post — {url} "
-                            f"(kind={selected.get('kind')}):"
-                        ),
-                    },
-                    {"type": "input_image", "image_url": selected.get("url", "")},
+                        "text": "no visual asset available for this post",
+                    }
                 ],
             }
         ]
@@ -426,6 +466,7 @@ def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> Extractio
 
 __all__ = [
     "DELEGATION_BRIEF",
+    "MAX_CAROUSEL_IMAGES",
     "MAX_OUTPUT_TOKENS",
     "MAX_STEPS",
     "USER_MESSAGE",

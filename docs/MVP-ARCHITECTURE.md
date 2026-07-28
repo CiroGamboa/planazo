@@ -373,7 +373,7 @@ Copied verbatim into the Extractor's system prompt (also lives as `DELEGATION_BR
 - **Acts alone when:** URL matches a known Instagram post pattern and the post has both an image and a caption.
 - **Asks (returns `status: "needs_clarification"`) when:** the post is ambiguous, the date/time cannot be extracted, or the location is not in Barcelona metro.
 - **Escalates (returns `status: "error"` + `error_type` and halts) when:** rate-limited, auth failure, image unavailable, or extraction confidence < 0.3.
-- **Effort budget:** `max_steps=8`, `max_output_tokens=2000`, one image per call. Enforced by `run_loop` parameters, not by prompt text.
+- **Effort budget:** `max_steps=8`, `max_output_tokens=2000`, one image for single-image posts and reels; up to 3 images for carousels. Enforced by `run_loop` parameters, not by prompt text.
 
 #### Terminal calls
 
@@ -407,7 +407,7 @@ sequenceDiagram
 
     R->>E: dispatch_extraction(url, user_id, run_id)
 
-    Note over E: system prompt =<br/>rules + delegation brief<br/>max_steps=8, 1 image/call
+    Note over E: system prompt =<br/>rules + delegation brief<br/>max_steps=8, ≤3 images/call
 
     E->>IG: fetch_instagram_post(url)
     IG-->>E: RawPost{image, caption, meta}
@@ -598,7 +598,7 @@ Post-doc, code verification happens in each follow-up ticket:
 ## Risks / open questions
 
 - **Instagram scraping fragility.** Any scraper breaks when Meta changes markup or throttles. Mitigation: the Extractor treats `sources/instagram/` as a swappable adapter behind `fetch_instagram_post`. If scraping proves too fragile, we swap to a manual "paste this URL + I'll paste the caption" flow without touching the Extractor agent. ADR 0006 will name the choice.
-- **Multimodal cost.** `STRONG` + image = material per-call cost. The delegation brief's effort budget (`max_steps=8`, one image per call) is the primary lever. Add a per-user daily cap in v0.2 if needed.
+- **Multimodal cost.** `STRONG` + image = material per-call cost. The delegation brief's effort budget (`max_steps=8`, ≤3 images per call for carousels) is the primary lever. Add a per-user daily cap in v0.2 if needed.
 - **Cue-match precision.** Token-overlap cue matching will over-surface (a fact cued "music" appearing on any query with the word). MVP acceptance bar: manual review shows no obviously-wrong surfacing across the three memory scenarios. Embeddings + cosine is a follow-up ADR.
 - **Monitor bootstrapping.** The monitor needs run logs to grade. v1 accepts a one-run bootstrap: seed with a canned session, then have the monitor grade it as the demo. Real automated cadence lands with ADR 0007.
 

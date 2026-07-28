@@ -24,6 +24,7 @@ from agentlib.core import STRONG, Result
 from planazo.agents import extractor
 from planazo.agents.extractor import (
     DELEGATION_BRIEF,
+    MAX_CAROUSEL_IMAGES,
     MAX_OUTPUT_TOKENS,
     MAX_STEPS,
     USER_MESSAGE,
@@ -307,6 +308,297 @@ def test_multimodal_hook_returns_no_visual_asset_when_only_video_present() -> No
     assert injected is not None
     content = injected[0]["content"]
     assert all(part["type"] == "input_text" for part in content)
+
+
+def test_max_carousel_images_is_three() -> None:
+    """K value drift guard. If K moves, this test breaks — matching tests
+    that hard-code `Slide i/3` prefixes also need to be revisited."""
+    assert MAX_CAROUSEL_IMAGES == 3
+
+
+def test_multimodal_hook_single_image_path_is_byte_identical() -> None:
+    """`n == 1` — the hook returns the pre-#65 message shape exactly. Locks
+    the `GraphImage` regression: prefix wording, `kind=image`, list-of-dicts
+    envelope."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={"media": [{"kind": "image", "url": "https://cdn/image.jpg"}]},
+    )
+
+    injected = hook(record)
+
+    assert injected == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (f"Image content from the fetched post — {_TEST_URL} (kind=image):"),
+                },
+                {"type": "input_image", "image_url": "https://cdn/image.jpg"},
+            ],
+        }
+    ]
+
+
+def test_multimodal_hook_video_thumbnail_path_is_byte_identical() -> None:
+    """`n == 0`, thumbnail present — pre-#65 `GraphVideo` fallback shape."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "video", "url": "https://cdn/video.mp4"},
+                {"kind": "thumbnail", "url": "https://cdn/thumb.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (
+                        f"Image content from the fetched post — {_TEST_URL} (kind=thumbnail):"
+                    ),
+                },
+                {"type": "input_image", "image_url": "https://cdn/thumb.jpg"},
+            ],
+        }
+    ]
+
+
+def test_multimodal_hook_carousel_with_two_images_returns_two_input_image_parts() -> None:
+    """`n == 2` — carousel branch fires with `k=2` (two slides, two images)."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "image", "url": "https://cdn/slide1.jpg"},
+                {"kind": "image", "url": "https://cdn/slide2.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": f"Slide 1/2 from the fetched post — {_TEST_URL}:",
+                },
+                {"type": "input_image", "image_url": "https://cdn/slide1.jpg"},
+                {
+                    "type": "input_text",
+                    "text": f"Slide 2/2 from the fetched post — {_TEST_URL}:",
+                },
+                {"type": "input_image", "image_url": "https://cdn/slide2.jpg"},
+            ],
+        }
+    ]
+
+
+def test_multimodal_hook_carousel_with_three_images_returns_three_input_image_parts() -> None:
+    """`n == 3` — carousel branch fires with `k=3`, prefixes 1/3, 2/3, 3/3."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "image", "url": "https://cdn/slide1.jpg"},
+                {"kind": "image", "url": "https://cdn/slide2.jpg"},
+                {"kind": "image", "url": "https://cdn/slide3.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected is not None
+    content = injected[0]["content"]
+    image_parts = [part for part in content if part["type"] == "input_image"]
+    text_parts = [part for part in content if part["type"] == "input_text"]
+    assert image_parts == [
+        {"type": "input_image", "image_url": "https://cdn/slide1.jpg"},
+        {"type": "input_image", "image_url": "https://cdn/slide2.jpg"},
+        {"type": "input_image", "image_url": "https://cdn/slide3.jpg"},
+    ]
+    assert [part["text"] for part in text_parts] == [
+        f"Slide 1/3 from the fetched post — {_TEST_URL}:",
+        f"Slide 2/3 from the fetched post — {_TEST_URL}:",
+        f"Slide 3/3 from the fetched post — {_TEST_URL}:",
+    ]
+
+
+def test_multimodal_hook_carousel_caps_at_max_carousel_images() -> None:
+    """`n > MAX_CAROUSEL_IMAGES` — only the first `MAX_CAROUSEL_IMAGES` land;
+    the denominator in the prefix is the *sent* count, not the total."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [{"kind": "image", "url": f"https://cdn/slide{i}.jpg"} for i in range(1, 6)]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected is not None
+    content = injected[0]["content"]
+    image_parts = [part for part in content if part["type"] == "input_image"]
+    assert len(image_parts) == MAX_CAROUSEL_IMAGES
+    assert image_parts == [
+        {"type": "input_image", "image_url": "https://cdn/slide1.jpg"},
+        {"type": "input_image", "image_url": "https://cdn/slide2.jpg"},
+        {"type": "input_image", "image_url": "https://cdn/slide3.jpg"},
+    ]
+    text_parts = [part for part in content if part["type"] == "input_text"]
+    denominators = {part["text"].split("/")[1].split(" ")[0] for part in text_parts}
+    assert denominators == {str(MAX_CAROUSEL_IMAGES)}
+
+
+def test_multimodal_hook_carousel_mixed_image_and_video_selects_only_image_kind() -> None:
+    """Mixed sidecar `[image, image, video, thumbnail, image]` → 3 images in
+    media-list order; video / thumbnail interlopers are skipped, never sent
+    as `input_image` parts."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "image", "url": "https://cdn/slide1.jpg"},
+                {"kind": "image", "url": "https://cdn/slide2.jpg"},
+                {"kind": "video", "url": "https://cdn/video.mp4"},
+                {"kind": "thumbnail", "url": "https://cdn/thumb.jpg"},
+                {"kind": "image", "url": "https://cdn/slide5.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected is not None
+    content = injected[0]["content"]
+    image_parts = [part for part in content if part["type"] == "input_image"]
+    assert image_parts == [
+        {"type": "input_image", "image_url": "https://cdn/slide1.jpg"},
+        {"type": "input_image", "image_url": "https://cdn/slide2.jpg"},
+        {"type": "input_image", "image_url": "https://cdn/slide5.jpg"},
+    ]
+
+
+def test_multimodal_hook_carousel_prefix_includes_url_and_slide_index() -> None:
+    """Spot-check the literal prefix format so a reword is a red test."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "image", "url": "https://cdn/slide1.jpg"},
+                {"kind": "image", "url": "https://cdn/slide2.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected is not None
+    content = injected[0]["content"]
+    text_parts = [part for part in content if part["type"] == "input_text"]
+    assert text_parts[0]["text"] == f"Slide 1/2 from the fetched post — {_TEST_URL}:"
+    assert text_parts[1]["text"] == f"Slide 2/2 from the fetched post — {_TEST_URL}:"
+
+
+def test_multimodal_hook_sidecar_with_one_image_uses_single_image_branch() -> None:
+    """A sidecar with one image + one video (`n == 1`) reuses the
+    single-image code path; no "Slide 1/1" prefix appears."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "image", "url": "https://cdn/only.jpg"},
+                {"kind": "video", "url": "https://cdn/video.mp4"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (f"Image content from the fetched post — {_TEST_URL} (kind=image):"),
+                },
+                {"type": "input_image", "image_url": "https://cdn/only.jpg"},
+            ],
+        }
+    ]
+
+
+def test_multimodal_hook_all_video_sidecar_falls_back_to_thumbnail() -> None:
+    """`[video, thumbnail, video, thumbnail]` — 0 images, thumbnails present.
+    Falls through to the single-thumbnail path (byte-identical to the M3
+    fallback shape)."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "video", "url": "https://cdn/v1.mp4"},
+                {"kind": "thumbnail", "url": "https://cdn/t1.jpg"},
+                {"kind": "video", "url": "https://cdn/v2.mp4"},
+                {"kind": "thumbnail", "url": "https://cdn/t2.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (
+                        f"Image content from the fetched post — {_TEST_URL} (kind=thumbnail):"
+                    ),
+                },
+                {"type": "input_image", "image_url": "https://cdn/t1.jpg"},
+            ],
+        }
+    ]
 
 
 # ---------------------------
