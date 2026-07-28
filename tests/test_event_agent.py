@@ -1,4 +1,6 @@
 import json
+import random
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -7,8 +9,10 @@ import pytest
 from agentlib.core import CHEAP, MODELS, STRONG, Result
 from planazo import identity
 from planazo.agents import event_agent, loop
-from planazo.agents.loop import LoopResult
+from planazo.agents.loop import LoopResult, StepRecord
 from planazo.approval import ApprovalGate
+from planazo.catalog.models import Event
+from planazo.extraction.models import ExtractionResult
 from planazo.memory import facts, rules
 from planazo.storage import db
 
@@ -237,23 +241,26 @@ def test_run_once_binds_the_memory_tools_when_a_user_id_is_supplied(
 
     event_agent.run_once("hi", user_id=1)
 
+    # Supplying `user_id` also binds `dispatch_extraction` via the lazy import
+    # inside `run_once`'s identity branch (ADR 0005 §Trust boundary).
     assert set(mock_run_loop.call_args.kwargs["registry"]) == {
         "search_events",
         "retrieve_memory",
         "save_memory",
         "retrieve_notes",
         "save_note",
+        "dispatch_extraction",
     }
-    memory_schemas = [
+    identity_bound_schemas = [
         schema
         for schema in mock_run_loop.call_args.kwargs["tools"]
         if schema["name"] != "search_events"
     ]
-    assert len(memory_schemas) == 4
-    for schema in memory_schemas:
-        # The identity is a closure's free variable, so there is no parameter
-        # for a tool call to override.
+    assert len(identity_bound_schemas) == 5
+    for schema in identity_bound_schemas:
+        # Identity is a closure's free variable — no tool-call arg can override.
         assert "user_id" not in schema["parameters"]["properties"]
+        assert "delegator_user_id" not in schema["parameters"]["properties"]
 
 
 # --------------------------------------------------------------------------
@@ -413,3 +420,130 @@ def test_retrieved_fact_content_never_reaches_the_system_role(
     assert system_messages, "the run pushed no system message at all"
     # Every turn, not just the first: the system message is re-sent on each one.
     assert all(sentinel not in m["content"] for m in system_messages)
+
+
+# --------------------------------------------------------------------------
+# `dispatch_extraction` — the Recommender-side delegation seam (#18).
+# --------------------------------------------------------------------------
+
+
+def test_run_once_registers_dispatch_extraction_when_user_id_is_bound(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`dispatch_extraction` joins the tool set exactly when an identity is bound.
+
+    Lazy-imported inside `run_once`'s `if user_id is not None:` block per
+    ADR 0005 §Trust boundary — omitting `user_id` never composes the tool,
+    so the Recommender cannot delegate anonymously.
+    """
+    mock_run_loop = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))
+    monkeypatch.setattr(event_agent, "run_loop", mock_run_loop)
+
+    event_agent.run_once("hi", user_id=1)
+
+    with_id_names = {schema["name"] for schema in mock_run_loop.call_args.kwargs["tools"]}
+    assert "dispatch_extraction" in with_id_names
+
+    mock_run_loop.reset_mock()
+    event_agent.run_once("hi")  # no user_id
+
+    without_id_names = {schema["name"] for schema in mock_run_loop.call_args.kwargs["tools"]}
+    assert "dispatch_extraction" not in without_id_names
+
+
+def _assert_no_40_char_substring(needle: str, hay: str) -> None:
+    """Assert no 40-character run of `needle` appears in `hay`."""
+    if len(needle) < 40:
+        return
+    for offset in range(len(needle) - 39):
+        segment = needle[offset : offset + 40]
+        assert segment not in hay, (
+            f"trust-boundary leak: 40-char caption substring {segment!r} "
+            f"appeared in the Recommender's message stream"
+        )
+
+
+def test_run_once_dispatch_extraction_never_leaks_caption_into_messages(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rule 2 by code shape: caption text never crosses the Recommender's messages.
+
+    Stubbed extractor holds the caption as a local variable (mirroring the
+    real Extractor's scope) but returns an `ExtractionResult` whose only
+    strings are the LLM's short summary — never the raw caption. The
+    Recommender's `dispatch_extraction` tool return, plus every other
+    message the LLM ever sees, is asserted free of any 40-character caption
+    substring across five random seeds.
+    """
+    seed_events: list[str] = []
+
+    for seed in (1, 7, 42, 100, 2026):
+        rng = random.Random(seed)
+        caption = "".join(rng.choices("abcdefghijklmnopqrstuvwxyz .,!?", k=500))
+
+        # The stub takes the caption in its enclosing scope only — never returns
+        # it. This mirrors the real Extractor: caption sits inside its scope,
+        # the returned ExtractionResult carries only structured fields.
+        def stub_extract_once(
+            url: str, *, delegator_user_id: int, _caption: str = caption
+        ) -> ExtractionResult:
+            _ = _caption  # captured, deliberately unused
+            return ExtractionResult(
+                status="ok",
+                event=Event(
+                    source="instagram",
+                    source_url=url,
+                    title="Barcelona show",
+                    start_utc=datetime(2026, 8, 15, 22, 0, tzinfo=UTC),
+                    end_utc=datetime(2026, 8, 16, 4, 0, tzinfo=UTC),
+                    category="music",
+                    city="Barcelona",
+                    confidence=0.9,
+                ),
+                error_type=None,
+                notes="short paraphrase",
+            )
+
+        monkeypatch.setattr("planazo.extraction.tools.extract_once", stub_extract_once)
+
+        arguments = {"url": "https://www.instagram.com/p/ABC/"}
+        tool_call = {
+            "name": "dispatch_extraction",
+            "arguments": arguments,
+            "call_id": "call_1",
+        }
+        output_item = {
+            "type": "function_call",
+            "name": "dispatch_extraction",
+            "arguments": json.dumps(arguments),
+            "call_id": "call_1",
+        }
+        turn_1 = make_result(text="", tool_calls=[tool_call], output_items=[output_item])
+        turn_2 = make_result(text="Sounds interesting.", tool_calls=[], output_items=[])
+        mock_call = MagicMock(side_effect=[turn_1, turn_2])
+        monkeypatch.setattr(loop, "call", mock_call)
+
+        observed_records: list[StepRecord] = []
+        event_agent.run_once(
+            "summarize this post please",
+            user_id=1,
+            on_step=observed_records.append,
+        )
+
+        # Sanity: the delegation actually happened.
+        assert any(record.tool == "dispatch_extraction" for record in observed_records)
+
+        # Assemble everything the LLM ever saw across both turns.
+        haystacks: list[str] = []
+        for invocation in mock_call.call_args_list:
+            for message in invocation.kwargs["messages"]:
+                haystacks.append(json.dumps(message))
+        # Plus the tool results the observer saw (belt-and-braces).
+        for record in observed_records:
+            haystacks.append(json.dumps(record.result))
+        haystack = "\n".join(haystacks)
+
+        _assert_no_40_char_substring(caption, haystack)
+        seed_events.append(f"seed={seed} clean")
+
+    assert len(seed_events) == 5

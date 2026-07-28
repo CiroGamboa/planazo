@@ -1,0 +1,390 @@
+"""Planazo's Extraction Agent — Instagram post → `Event` via `extract_once`.
+
+Peer of `event_agent.py` (the Recommender). Composition root of the
+`extraction/` bounded context: assembles a three-tool registry
+(`fetch_instagram_post`, `save_event`, `report_extraction_status`), a
+byte-verbatim delegation brief read at import time from
+`docs/MVP-ARCHITECTURE.md`, and a multimodal `on_tool_output` hook that
+feeds one visual asset per fetch to the LLM as an `input_image` message.
+
+The single fixed user prompt is `USER_MESSAGE`: extractors take no user-
+composed message. The URL rides the system prompt (delegation brief + rules
++ URL) so the LLM cannot confuse "the post to extract" with a caption's
+attempt to redirect the run.
+
+Terminal state is a code-shape guarantee (ADR 0005, decision 5): the LLM
+ends a run by calling exactly one of `save_event` (success) or
+`report_extraction_status` (unhappy). `extract_once` inspects the trace's
+tool calls to determine the terminal state — never JSON-parses
+`LoopResult.answer`.
+
+`save_event` runs without an `ApprovalGate` in the Extractor: `save_event`
+is not in `IRREVERSIBLE_TOOLS` (ADR 0002 + ADR 0005 decision 4).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, Final, cast, get_args
+from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from agentlib.core import STRONG
+from planazo.agents.loop import LoopResult, StepRecord, run_loop
+from planazo.catalog import ExtractionRunIndexEntry, record_extraction_run, save_event
+from planazo.catalog.models import Event
+from planazo.extraction.audit import ExtractionRunLogger
+from planazo.extraction.models import (
+    ExtractionErrorType,
+    ExtractionResult,
+    ExtractionStatus,
+)
+from planazo.memory.rules import load_rules
+from planazo.sources.config import load_config
+from planazo.sources.instagram.adapter import InstagramSource
+from planazo.sources.instagram.client import InstagramClient
+from planazo.sources.instagram.tools import build_fetch_instagram_post
+from planazo.storage import db
+from tools.schema import schema_for
+
+
+def _read_delegation_brief() -> str:
+    """Read the anchor-bracketed brief text from `docs/MVP-ARCHITECTURE.md`.
+
+    The block is bracketed by two HTML comment anchors — a rewrite of the
+    brief in MVP-ARCH lands in the same commit as any change to
+    `DELEGATION_BRIEF`, so future edits stay locked byte-for-byte. Anchor
+    scanning is used instead of heading-rank parsing so future heading
+    additions cannot silently truncate the constant.
+    """
+    doc_path = Path(__file__).resolve().parents[3] / "docs" / "MVP-ARCHITECTURE.md"
+    text = doc_path.read_text(encoding="utf-8")
+    start_marker = "<!-- extraction-delegation-brief:start -->"
+    end_marker = "<!-- extraction-delegation-brief:end -->"
+    start = text.index(start_marker) + len(start_marker)
+    end = text.index(end_marker)
+    return text[start:end].strip("\n")
+
+
+DELEGATION_BRIEF: Final[str] = _read_delegation_brief()
+
+USER_MESSAGE: Final[str] = "Extract the primary event announced by the Instagram post above."
+MAX_STEPS: Final[int] = 4
+MAX_OUTPUT_TOKENS: Final[int] = 2000
+
+
+class _ReportedStatus(BaseModel):
+    """Boundary-validated payload of one `report_extraction_status` call.
+
+    Same Literals as `ExtractionResult` (excluding the source-adapter
+    passthrough branches the terminal LLM tool never signals directly) and
+    the same 200-char cap on `notes`. Validation failure surfaces as an
+    `invalid_reported_status` typed error dict the LLM sees on its next
+    turn.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: ExtractionStatus
+    error_type: ExtractionErrorType
+    notes: str = Field(default="", max_length=200)
+
+
+def report_extraction_status(status: str, error_type: str, notes: str = "") -> dict[str, object]:
+    """Terminal LLM tool for every non-success Extractor branch.
+
+    Call this to end an extraction run that did not persist a new `Event`.
+    Pass `status` = `"needs_clarification"` when the post is ambiguous
+    (missing date, out-of-metro venue, multi-event carousel) and
+    `status` = `"error"` when the run cannot recover (rate-limited, auth
+    failure, low-confidence extraction). `notes` is capped at 200 characters
+    for operator-facing diagnostics only — never quote or paraphrase the
+    post's caption; `notes` is not for repeating scraped content.
+    """
+    try:
+        validated = _ReportedStatus.model_validate(
+            {"status": status, "error_type": error_type, "notes": notes}
+        )
+    except ValidationError as exc:
+        return {"error_type": "invalid_reported_status", "message": str(exc)}
+    return {
+        "reported": True,
+        "status": validated.status,
+        "error_type": validated.error_type,
+        "notes": validated.notes,
+    }
+
+
+def _build_multimodal_hook(
+    url: str,
+) -> Callable[[StepRecord], list[dict[str, Any]] | None]:
+    """Return the `on_tool_output` hook closured over the extraction target `url`.
+
+    Selects exactly one visual asset per `fetch_instagram_post` return
+    (image → thumbnail → none) and injects it as an `input_image` content
+    part on the next LLM turn. See ADR 0005 decision 7.
+    """
+
+    def _multimodal_hook(record: StepRecord) -> list[dict[str, Any]] | None:
+        if record.tool != "fetch_instagram_post":
+            return None
+        result = record.result
+        # Error-branch guards — state them first so a source-adapter typed
+        # error dict is never fed through the media selection logic.
+        if not isinstance(result, dict):
+            return None
+        if "error_type" in result:
+            return None
+        if "media" not in result:
+            return None
+        media = result["media"]
+        if not isinstance(media, list) or not media:
+            return [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "no visual asset available for this post",
+                        }
+                    ],
+                }
+            ]
+        selected: dict[str, Any] | None = None
+        for asset in media:
+            if isinstance(asset, dict) and asset.get("kind") == "image":
+                selected = asset
+                break
+        if selected is None:
+            for asset in media:
+                if isinstance(asset, dict) and asset.get("kind") == "thumbnail":
+                    selected = asset
+                    break
+        if selected is None:
+            return [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "no visual asset available for this post",
+                        }
+                    ],
+                }
+            ]
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            f"Image content from the fetched post — {url} "
+                            f"(kind={selected.get('kind')}):"
+                        ),
+                    },
+                    {"type": "input_image", "image_url": selected.get("url", "")},
+                ],
+            }
+        ]
+
+    return _multimodal_hook
+
+
+def _truncate_notes(text: str) -> str:
+    """Cap a free-form LLM string to the `ExtractionResult.notes` max length."""
+    if len(text) <= 200:
+        return text
+    return text[:200]
+
+
+def _default_source() -> InstagramSource:
+    client = InstagramClient()
+    client.load_session_from_env()
+    return InstagramSource(load_config().sources["instagram"], client)
+
+
+def extract_once(
+    url: str,
+    delegator_user_id: int,
+    *,
+    source: InstagramSource | None = None,
+    model: str = STRONG,
+) -> ExtractionResult:
+    """Run one Instagram-post → `Event` extraction and return the hand-off.
+
+    Delegated by the Recommender through the `dispatch_extraction` tool
+    (`extraction.tools.build_dispatch_extraction`). Not user-facing
+    directly: `url` and `delegator_user_id` come from the Recommender's
+    session; the caption text never crosses back across the return.
+    """
+    run_id = str(uuid4())
+    resolved_source = source if source is not None else _default_source()
+
+    conn = db.connect()
+    try:
+        record_extraction_run(
+            conn,
+            ExtractionRunIndexEntry(run_id=run_id, user_id=delegator_user_id, url=url),
+        )
+    finally:
+        conn.close()
+
+    fetch_schema, fetch_callable = build_fetch_instagram_post(resolved_source)
+    tool_schemas: list[dict[str, Any]] = [
+        fetch_schema,
+        schema_for(save_event),
+        schema_for(report_extraction_status),
+    ]
+    registry: dict[str, Any] = {
+        "fetch_instagram_post": fetch_callable,
+        "save_event": save_event,
+        "report_extraction_status": report_extraction_status,
+    }
+
+    system_text = f"{load_rules()}\n\n{DELEGATION_BRIEF}\n\nURL to extract: {url}"
+
+    logger = ExtractionRunLogger(
+        run_id=run_id,
+        url=url,
+        delegator_user_id=delegator_user_id,
+        user_message=USER_MESSAGE,
+        model=model,
+    )
+
+    trace: list[StepRecord] = []
+
+    def observe(record: StepRecord) -> None:
+        trace.append(record)
+        logger(record)
+
+    loop_result = run_loop(
+        user_message=USER_MESSAGE,
+        tools=tool_schemas,
+        registry=registry,
+        model=model,
+        max_steps=MAX_STEPS,
+        max_output_tokens=MAX_OUTPUT_TOKENS,
+        on_step=observe,
+        on_tool_output=_build_multimodal_hook(url),
+        system=system_text,
+    )
+    logger.complete(loop_result)
+
+    return _build_result(trace, loop_result)
+
+
+def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> ExtractionResult:
+    """Inspect the trace to decide the terminal state and shape the hand-off."""
+    save_event_records = [rec for rec in trace if rec.tool == "save_event"]
+    report_records = [rec for rec in trace if rec.tool == "report_extraction_status"]
+    fetch_records = [rec for rec in trace if rec.tool == "fetch_instagram_post"]
+
+    # Happy path — the LLM called `save_event` and the tool persisted the row.
+    # Two-pass: any successful save wins over any failed save, so a retry
+    # after a `duplicate_event`/`invalid_event_data` failure still yields an
+    # `ok` hand-off. Single-pass (first-record-wins) would report failure
+    # even though the DB persisted the event on a subsequent attempt.
+    for record in save_event_records:
+        result = record.result
+        if not isinstance(result, dict):
+            continue
+        saved = result.get("saved")
+        if isinstance(saved, dict):
+            event = Event.model_validate(saved)
+            answer = loop_result.answer or ""
+            return ExtractionResult(
+                status="ok",
+                event=event,
+                error_type=None,
+                notes=_truncate_notes(answer),
+            )
+    for record in save_event_records:
+        result = record.result
+        if not isinstance(result, dict):
+            continue
+        if "error_type" in result:
+            message = str(result.get("message", ""))
+            return ExtractionResult(
+                status="error",
+                event=None,
+                error_type="save_event_failed",
+                notes=_truncate_notes(message),
+            )
+
+    # Unhappy terminal call — `report_extraction_status`.
+    for record in reversed(report_records):
+        result = record.result
+        if not isinstance(result, dict):
+            continue
+        if "error_type" in result and not result.get("reported"):
+            # `_ReportedStatus` rejected the args; the LLM saw an
+            # `invalid_reported_status` typed error and the run continued.
+            continue
+        reported_status = result.get("status")
+        reported_error_type = result.get("error_type")
+        reported_notes = result.get("notes", "")
+        if isinstance(reported_status, str) and isinstance(reported_error_type, str):
+            status_cast = cast(ExtractionStatus, reported_status)
+            error_type_cast = cast(ExtractionErrorType, reported_error_type)
+            notes_cast = _truncate_notes(str(reported_notes))
+            if status_cast == "ok":
+                # `report_extraction_status` is not the success terminal — a
+                # status="ok" call is a caller bug; fall through to the
+                # low-confidence bucket.
+                continue
+            return ExtractionResult(
+                status=status_cast,
+                event=None,
+                error_type=error_type_cast,
+                notes=notes_cast,
+            )
+
+    # Source-adapter typed error and no terminal tool call — surface the
+    # first fetch's error branch (usually the only one before the LLM gives up).
+    # If the source-adapter taxonomy ever grows a branch outside
+    # `ExtractionErrorType` (ADR 0006 → ADR 0005), degrade to
+    # `low_confidence_extraction` rather than raising `ValidationError` at
+    # ExtractionResult construction — the unknown branch's name still lands
+    # in `notes` for the operator + monitor.
+    _known_error_types = set(get_args(ExtractionErrorType))
+    for record in fetch_records:
+        result = record.result
+        if isinstance(result, dict) and "error_type" in result:
+            error_type_str = cast(str, result["error_type"])
+            message = str(result.get("message", ""))
+            if error_type_str in _known_error_types:
+                error_type_cast = cast(ExtractionErrorType, error_type_str)
+                return ExtractionResult(
+                    status="error",
+                    event=None,
+                    error_type=error_type_cast,
+                    notes=_truncate_notes(message),
+                )
+            degraded_notes = _truncate_notes(f"unknown source error {error_type_str!r}: {message}")
+            return ExtractionResult(
+                status="error",
+                event=None,
+                error_type="low_confidence_extraction",
+                notes=degraded_notes,
+            )
+
+    # Budget cap or unexplained stop — the loop ended without a terminal call.
+    return ExtractionResult(
+        status="error",
+        event=None,
+        error_type="low_confidence_extraction",
+        notes="ran out of steps without a terminal call",
+    )
+
+
+__all__ = [
+    "DELEGATION_BRIEF",
+    "MAX_OUTPUT_TOKENS",
+    "MAX_STEPS",
+    "USER_MESSAGE",
+    "extract_once",
+    "report_extraction_status",
+]

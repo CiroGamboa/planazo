@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         since = parse_since("9999w")
     else:
         recommender_dir = root / "data" / "runs"
-        extractor_log = root / "agent" / "var" / "extraction_runs.jsonl"
+        extractor_log = root / "var" / "extraction_runs.jsonl"
         since = parse_since(args.since)
 
     try:
