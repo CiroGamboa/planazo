@@ -12,6 +12,7 @@ dependencies = [
     "pyyaml>=6",
     "instaloader>=4.14,<5",
     "python-telegram-bot>=22.8,<23",
+    "ffmpeg-python>=0.2,<0.3",
 ]
 
 [dependency-groups]
