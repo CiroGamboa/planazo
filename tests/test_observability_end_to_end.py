@@ -20,14 +20,31 @@ import pytest
 from agentlib.core import CHEAP, STRONG, Result
 from planazo.agents import event_agent
 from planazo.agents.extractor import extract_once
+from planazo.agents.loop import LoopResult
 from planazo.identity import get_or_create_user
 from planazo.memory import facts, rules
 from planazo.observability import query_agent_runs
+from planazo.query.models import SearchIntent
 from planazo.sources.config import MediaTypeFlags, SourceConfig
 from planazo.sources.instagram.adapter import InstagramSource
 from planazo.sources.instagram.client import InstagramClientProtocol
 from planazo.sources.instagram.model_view import InstaloaderPostView
 from planazo.storage import db
+
+
+def _intent() -> SearchIntent:
+    """Minimal SearchIntent fixture — matches test_event_agent.py's `_intent()`."""
+    return SearchIntent(
+        start_utc=datetime(2026, 8, 1, tzinfo=UTC),
+        end_utc=datetime(2026, 8, 2, tzinfo=UTC),
+        city="Barcelona",
+        categories=("tech",),
+    )
+
+
+def _answered() -> LoopResult:
+    return LoopResult(answer="done", steps=1, stopped="answered")
+
 
 _TEST_URL = "https://www.instagram.com/p/ABC123/"
 
@@ -224,14 +241,20 @@ def test_extract_once_agent_runs_run_id_matches_extraction_log(
 def test_run_once_writes_one_agent_runs_row(
     isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The Recommender loop lands one `agent_runs` row per run, kind=recommender."""
+    """The Recommender loop lands one `agent_runs` row per run, kind=recommender.
+
+    Post-M4-rebase: `run_once(user_id, intent, ...)` no longer receives the
+    user's raw text (interpreter upstream turned it into `SearchIntent`).
+    The observability write stores `intent.model_dump_json()` as
+    `user_query` — the concrete input the recommender ran against.
+    """
     user_id = _seed_user()
     (isolated_stores / "rules" / "000-core-rules.md").write_text("RULES", encoding="utf-8")
 
-    mock_call = MagicMock(return_value=_make_result(text="done", tool_calls=[], output_items=[]))
-    monkeypatch.setattr("planazo.agents.loop.call", mock_call)
+    intent = _intent()
+    monkeypatch.setattr(event_agent, "run_loop", MagicMock(return_value=_answered()))
 
-    event_agent.run_once("what can I do tonight?", user_id=user_id)
+    event_agent.run_once(user_id, intent)
 
     conn = db.connect()
     try:
@@ -242,12 +265,16 @@ def test_run_once_writes_one_agent_runs_row(
     row = rows[0]
     assert row.agent_kind == "recommender"
     assert row.user_id == user_id
-    assert row.user_query == "what can I do tonight?"
+    # `user_query` holds the JSON-serialized intent, sanitized via
+    # `format_stored_text` (newlines collapsed to spaces — Pydantic's
+    # `model_dump_json()` is single-line already, but the sanitizer
+    # runs regardless).
+    assert '"city":"Barcelona"' in row.user_query
+    assert '"categories":["tech"]' in row.user_query
     assert row.final_answer == "done"
     assert row.stopped == "answered"
-    # Recommender terminated on the first turn (no tool calls in the
-    # mocked result) — `steps_count == 1` locks the row to observable
-    # loop state and would trip if the loop invocation drifts.
+    # `_answered()` returned steps=1 — `steps_count == 1` locks the row
+    # to observable loop state and would trip if the loop invocation drifts.
     assert row.steps_count == 1
 
 
@@ -263,10 +290,9 @@ def test_run_once_record_runs_false_disables_sqlite_writer(
     user_id = _seed_user()
     (isolated_stores / "rules" / "000-core-rules.md").write_text("RULES", encoding="utf-8")
 
-    mock_call = MagicMock(return_value=_make_result(text="done", tool_calls=[], output_items=[]))
-    monkeypatch.setattr("planazo.agents.loop.call", mock_call)
+    monkeypatch.setattr(event_agent, "run_loop", MagicMock(return_value=_answered()))
 
-    event_agent.run_once("silent run", user_id=user_id, record_runs=False)
+    event_agent.run_once(user_id, _intent(), record_runs=False)
 
     conn = db.connect()
     try:
@@ -276,22 +302,9 @@ def test_run_once_record_runs_false_disables_sqlite_writer(
     assert rows == []
 
 
-def test_run_once_records_null_user_id_when_no_identity_supplied(
-    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An operator-triggered run without `user_id` lands with `user_id = NULL`."""
-    (isolated_stores / "rules" / "000-core-rules.md").write_text("RULES", encoding="utf-8")
-
-    mock_call = MagicMock(return_value=_make_result(text="done", tool_calls=[], output_items=[]))
-    monkeypatch.setattr("planazo.agents.loop.call", mock_call)
-
-    event_agent.run_once("no identity here")
-
-    conn = db.connect()
-    try:
-        rows = query_agent_runs(conn)
-    finally:
-        conn.close()
-    assert len(rows) == 1
-    assert rows[0].user_id is None
-    assert rows[0].user_query == "no identity here"
+# NOTE: `test_run_once_records_null_user_id_when_no_identity_supplied` was
+# removed post-rebase. The M4-era `run_once(user_id, intent, ...)` requires
+# `user_id: int` positionally, so the "no identity supplied" branch no
+# longer exists at the run_once seam. If the operator-run-without-identity
+# pattern comes back (e.g., a `--anonymous` CLI mode), a new test lands
+# alongside it.

@@ -42,7 +42,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final, cast, get_args
+from typing import Any, Final, Literal, cast, get_args
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -451,9 +451,10 @@ def _record_agent_run_best_effort(
     Recommender-side only. The assert narrows the Literal-widening hole
     mypy would otherwise flag on `result.stopped`.
     """
-    assert result.stopped != "preference_read_error", (
+    assert result.stopped not in {"preference_read_error", "missing_search_origin"}, (
         "agent_runs records actual loop terminals; pre-run failures must not be logged"
     )
+    stopped_literal = cast(Literal["answered", "truncated", "max_steps"], result.stopped)
     agent_logger = AgentRunLogger(conn_factory=db.connect)
     record = AgentRunRecord(
         run_id=run_id,
@@ -465,9 +466,7 @@ def _record_agent_run_best_effort(
             if result.answer is not None
             else None
         ),
-        # `LoopResult.stopped` widens by `preference_read_error`; the assert
-        # above narrows it out for the aggregate's Literal.
-        stopped=result.stopped,
+        stopped=stopped_literal,
         steps_count=result.steps,
         started_at=started_at,
         ended_at=ended_at,

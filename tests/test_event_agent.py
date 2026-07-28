@@ -520,6 +520,7 @@ def test_preferences_text_omits_an_oversized_first_row() -> None:
 
 def test_run_once_fails_closed_before_loop_observer_or_trace_for_corrupt_preferences(
     isolated_stores: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     def loop(**kwargs: object) -> LoopResult:
         observer = kwargs["on_step"]
         ask = kwargs["registry"]["ask_user"]  # type: ignore[index]

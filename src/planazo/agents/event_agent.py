@@ -29,12 +29,12 @@ import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import wraps
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 from agentlib.core import CHEAP
-from planazo.agents.loop import StepRecord, run_loop
+from planazo.agents.loop import LoopResult, StepRecord, run_loop
 from planazo.catalog import Event, filter_events_for_intent
 from planazo.catalog import search_events as catalog_search_events
 from planazo.identity import PreferenceReadResult, PreferenceRecord, get_preferences, set_preference
@@ -357,7 +357,12 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
     def search_events(
         category: str = "", city: str = "", start_after: str = "", max_results: int = 20
     ) -> dict[str, object]:
-        return catalog_search_events(category, city, start_after, max_results)
+        return catalog_search_events(
+            category=category,
+            city=city,
+            start_after=start_after,
+            max_results=max_results,
+        )
 
     tool_schemas: list[dict[str, Any]] = [schema_for(search_events)]  # Any: see schema_for
     registry: dict[str, Callable[..., dict[str, object]]] = {"search_events": search_events}
@@ -492,10 +497,14 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
         # and observability failures must not affect it (Rule 4). Runs BEFORE
         # the `RecommenderResult` post-processing below so it fires regardless
         # of which return branch is taken.
+        # Post-rebase adaptation: the M4-era `run_once` no longer receives the
+        # user's raw text (the interpreter upstream turned it into a
+        # `SearchIntent`). Store the intent's JSON serialization as the
+        # `user_query` — it's the concrete input the recommender ran against.
         _record_agent_run_best_effort(
             run_id=logger.run_id,
             user_id=user_id,
-            user_message=user_message,
+            user_message=intent.model_dump_json(),
             result=result,
             started_at=started_at,
             ended_at=ended_at,
@@ -568,9 +577,15 @@ def _record_agent_run_best_effort(
     Literal, so the aggregate constructs cleanly and the logger's own
     best-effort swallow only catches genuine DB-side failures.
     """
-    assert result.stopped != "preference_read_error", (
+    # `LoopResult.stopped` widens over `AgentRunStopped` by two pre-run
+    # branches (`preference_read_error`, `missing_search_origin`). Both
+    # cause `run_once` to return before this helper is called, so at
+    # runtime `result.stopped` is one of the three post-loop terminals.
+    # Assert for documentation and narrow via `cast` for mypy.
+    assert result.stopped not in {"preference_read_error", "missing_search_origin"}, (
         "agent_runs records actual loop terminals; pre-run failures must not be logged"
     )
+    stopped_literal = cast(Literal["answered", "truncated", "max_steps"], result.stopped)
     agent_logger = AgentRunLogger(conn_factory=db.connect)
     record = AgentRunRecord(
         run_id=run_id,
@@ -582,9 +597,7 @@ def _record_agent_run_best_effort(
             if result.answer is not None
             else None
         ),
-        # `LoopResult.stopped` widens over the aggregate's Literal by one
-        # branch (`preference_read_error`); the assert above narrows it out.
-        stopped=result.stopped,
+        stopped=stopped_literal,
         steps_count=result.steps,
         started_at=started_at,
         ended_at=ended_at,

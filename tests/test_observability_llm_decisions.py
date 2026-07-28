@@ -26,6 +26,7 @@ from pydantic import ValidationError
 from agentlib.core import CHEAP, STRONG, Result
 from planazo.agents import event_agent
 from planazo.agents.extractor import extract_once
+from planazo.agents.loop import LoopResult
 from planazo.identity import get_or_create_user
 from planazo.memory import facts, rules
 from planazo.observability import (
@@ -36,6 +37,7 @@ from planazo.observability import (
     query_llm_decisions,
     record_llm_decision,
 )
+from planazo.query.models import SearchIntent
 from planazo.sources.config import MediaTypeFlags, SourceConfig
 from planazo.sources.instagram.adapter import InstagramSource
 from planazo.sources.instagram.client import InstagramClientProtocol
@@ -542,21 +544,38 @@ def test_extract_once_writes_llm_decisions_for_save_event_plus_report(
     assert "warmup" in clarification_decision.rationale
 
 
+def _intent() -> SearchIntent:
+    return SearchIntent(
+        start_utc=datetime(2026, 8, 1, tzinfo=UTC),
+        end_utc=datetime(2026, 8, 2, tzinfo=UTC),
+        city="Barcelona",
+        categories=("tech",),
+    )
+
+
 def test_run_once_writes_one_answered_llm_decision(
     isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A Recommender loop that answers on the first turn → one `answered` row."""
+    """A Recommender loop that answers on the first turn → one `answered` row.
+
+    Post-M4-rebase: `run_once(user_id, intent, ...)` requires a typed
+    `SearchIntent`, not raw user text. The observability write path
+    is unchanged — one `llm_decisions` row per loop terminal.
+    """
     user_id = _seed_user()
     (isolated_stores / "rules" / "000-core-rules.md").write_text("RULES", encoding="utf-8")
 
-    mock_call = MagicMock(
-        return_value=_make_result(
-            text="here are three techno events", tool_calls=[], output_items=[]
-        )
+    monkeypatch.setattr(
+        event_agent,
+        "run_loop",
+        MagicMock(
+            return_value=LoopResult(
+                answer="here are three techno events", steps=1, stopped="answered"
+            )
+        ),
     )
-    monkeypatch.setattr("planazo.agents.loop.call", mock_call)
 
-    event_agent.run_once("what can I do tonight?", user_id=user_id)
+    event_agent.run_once(user_id, _intent())
 
     conn = db.connect()
     try:
@@ -582,10 +601,13 @@ def test_run_once_record_runs_false_disables_llm_decisions_writer(
     user_id = _seed_user()
     (isolated_stores / "rules" / "000-core-rules.md").write_text("RULES", encoding="utf-8")
 
-    mock_call = MagicMock(return_value=_make_result(text="done", tool_calls=[], output_items=[]))
-    monkeypatch.setattr("planazo.agents.loop.call", mock_call)
+    monkeypatch.setattr(
+        event_agent,
+        "run_loop",
+        MagicMock(return_value=LoopResult(answer="done", steps=1, stopped="answered")),
+    )
 
-    event_agent.run_once("silent run", user_id=user_id, record_runs=False)
+    event_agent.run_once(user_id, _intent(), record_runs=False)
 
     conn = db.connect()
     try:
