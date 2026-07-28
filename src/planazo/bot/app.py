@@ -26,7 +26,8 @@ from telegram.ext import (
     JobQueue,
 )
 
-from planazo.bot.commands import MESSAGES, handle_help, handle_me, handle_prefs, handle_start
+from planazo.bot.commands import handle_help, handle_me, handle_prefs, handle_start
+from planazo.bot.config import BotConfig, load_config, resolve
 from planazo.bot.models import IncomingMessage
 from planazo.bot.surface import surface_for
 from planazo.config import read_bot_token
@@ -49,7 +50,9 @@ type BotApplication = Application[
     JobQueue[ContextTypes.DEFAULT_TYPE],
 ]
 
-type BotCommand = Callable[[UserSurface, sqlite3.Connection, IncomingMessage], Awaitable[None]]
+type BotCommand = Callable[
+    [UserSurface, sqlite3.Connection, IncomingMessage, BotConfig], Awaitable[None]
+]
 
 # `Any`: the send and yield types of a coroutine nobody drives by hand.
 # `CommandHandler` types its callback as returning `Coroutine`, not the wider
@@ -64,7 +67,7 @@ _HANDLERS: Final[Mapping[str, BotCommand]] = {
 }
 
 
-def adapter_for(command: BotCommand) -> UpdateCallback:
+def adapter_for(command: BotCommand, config: BotConfig) -> UpdateCallback:
     """Wrap a PTB-free command coroutine into a PTB handler callback.
 
     The adapter is the whole transport contract, in one order:
@@ -102,7 +105,7 @@ def adapter_for(command: BotCommand) -> UpdateCallback:
         surface = surface_for(context.bot, message.chat_id)
 
         if update.edited_message is not None:
-            await surface.reply(MESSAGES["edited_command"])
+            await surface.reply(resolve(config, "edited_command", config.default_locale))
             return
 
         incoming = IncomingMessage(
@@ -114,30 +117,34 @@ def adapter_for(command: BotCommand) -> UpdateCallback:
 
         conn = db.connect()
         try:
-            await command(surface, conn, incoming)
+            await command(surface, conn, incoming, config)
         finally:
             conn.close()
 
     return adapter
 
 
-def build_application(token: str) -> BotApplication:
+def build_application(token: str, config: BotConfig) -> BotApplication:
     """Build the `Application` with one `CommandHandler` per command."""
     application: BotApplication = ApplicationBuilder().token(token).build()
     for name, command in _HANDLERS.items():
-        application.add_handler(CommandHandler(name, adapter_for(command)))
+        application.add_handler(CommandHandler(name, adapter_for(command, config)))
     return application
 
 
 def main() -> int:
-    """Long-poll for updates until interrupted, or explain a missing token.
+    """Load and validate the bot config, then long-poll until interrupted.
 
+    `load_config()` runs first, before the token check and before any
+    Telegram connection opens: a malformed or incomplete `data/bot.yaml`
+    raises `ValidationError` uncaught right here (AGENTS.md rule 1, rule 4).
     Long polling rather than a webhook: no public HTTPS endpoint, certificate,
     or deployment target is needed, which is what lets the bot run from a
     laptop and a `.env` (ADR 0011).
     """
+    config = load_config()
     token = read_bot_token()
     if token is None:
         return 1
-    build_application(token).run_polling()
+    build_application(token, config).run_polling()
     return 0
