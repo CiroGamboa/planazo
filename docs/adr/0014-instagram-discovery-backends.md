@@ -1,6 +1,6 @@
 # ADR 0014 — Instagram discovery: two backends + scheduler-side routing
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-28
 - **Deciders:** cirogam22
 - **Landed by:** M3.5 (#67)
