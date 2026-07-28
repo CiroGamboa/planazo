@@ -11,7 +11,9 @@ that the registered set is the set the bot advertises, that an `Update`
 projects into the right `IncomingMessage`, that a malformed update is ignored
 rather than crashing, that an edited command is refused before it can replay an
 old write over a newer one, and that `main()` explains a missing token instead
-of polling with one.
+of polling with one. `config` loads the real shipped `data/bot.yaml`, so
+`resolve(config, "edited_command", config.default_locale)` is the same text
+the running bot would send.
 """
 
 from __future__ import annotations
@@ -25,7 +27,8 @@ from telegram import Chat, Message, MessageEntity, Update, User
 
 from planazo.bot import app
 from planazo.bot.app import adapter_for, build_application, main
-from planazo.bot.commands import COMMANDS, MESSAGES, handle_prefs, handle_start
+from planazo.bot.commands import COMMANDS, handle_prefs, handle_start
+from planazo.bot.config import BotConfig, load_config, resolve
 from planazo.bot.models import IncomingMessage
 from planazo.identity import get_preferences
 from planazo.storage import db
@@ -67,7 +70,9 @@ class RecordingCommand:
     def __init__(self) -> None:
         self.calls: list[IncomingMessage] = []
 
-    async def __call__(self, surface: object, conn: object, message: IncomingMessage) -> None:
+    async def __call__(
+        self, surface: object, conn: object, message: IncomingMessage, config: object
+    ) -> None:
         self.calls.append(message)
 
 
@@ -121,17 +126,24 @@ def database(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return path
 
 
-def _registered_handlers() -> list[object]:
-    return list(build_application("1:A").handlers[0])
+@pytest.fixture
+def config() -> BotConfig:
+    return load_config(Path("data/bot.yaml"))
 
 
-def _accepting(text: str) -> list[frozenset[str]]:
+def _registered_handlers(config: BotConfig) -> list[object]:
+    return list(build_application("1:A", config).handlers[0])
+
+
+def _accepting(text: str, config: BotConfig) -> list[frozenset[str]]:
     """The registered commands whose handler accepts `text`."""
     update = Update(update_id=1, message=make_message(text))
-    return [handler.commands for handler in _registered_handlers() if handler.check_update(update)]
+    return [
+        handler.commands for handler in _registered_handlers(config) if handler.check_update(update)
+    ]
 
 
-def _refuse_to_build(token: str) -> NoReturn:
+def _refuse_to_build(token: str, config: BotConfig) -> NoReturn:
     """Stands in for `build_application` where reaching it is the defect."""
     raise AssertionError("main() built an application without a token")
 
@@ -143,9 +155,7 @@ def _stored_preferences() -> list[tuple[str, str]]:
             "SELECT id FROM users WHERE telegram_user_id = ?", (str(SENDER_ID),)
         ).fetchone()
         assert row is not None, "the adapter should have registered the sender"
-        result = get_preferences(conn, row["id"])
-        assert result.error_type is None
-        return [(pref.key, pref.value) for pref in result.rows]
+        return [(pref.key, pref.value) for pref in get_preferences(conn, row["id"]).rows]
     finally:
         conn.close()
 
@@ -161,39 +171,41 @@ def _stored_preferences() -> list[tuple[str, str]]:
         (f"/prefs@{BOT_USERNAME} remove city", "prefs"),
     ],
 )
-def test_each_command_routes_to_exactly_one_registered_handler(text: str, expected: str) -> None:
+def test_each_command_routes_to_exactly_one_registered_handler(
+    text: str, expected: str, config: BotConfig
+) -> None:
     # `check_update` is the tier registration and adaptation both miss: it also
     # requires the `BOT_COMMAND` entity at offset 0 and, for the `@`-targeted
     # form, a username match, so a wiring mistake would otherwise ship green.
-    assert _accepting(text) == [frozenset({expected})]
+    assert _accepting(text, config) == [frozenset({expected})]
 
 
-def test_an_unknown_command_routes_nowhere() -> None:
-    assert _accepting("/find techno tonight") == []
+def test_an_unknown_command_routes_nowhere(config: BotConfig) -> None:
+    assert _accepting("/find techno tonight", config) == []
 
 
-def test_the_registered_commands_are_the_ones_the_bot_advertises() -> None:
+def test_the_registered_commands_are_the_ones_the_bot_advertises(config: BotConfig) -> None:
     # `/start` and `/help` read their list from `COMMANDS`; this is what keeps
     # what the bot offers and what it answers from drifting apart.
-    registered = {name for handler in _registered_handlers() for name in handler.commands}
+    registered = {name for handler in _registered_handlers(config) for name in handler.commands}
 
     assert registered == {command.removeprefix("/") for command in COMMANDS}
 
 
-def test_build_application_registers_one_group_of_four_handlers() -> None:
-    application = build_application("1:A")
+def test_build_application_registers_one_group_of_four_handlers(config: BotConfig) -> None:
+    application = build_application("1:A", config)
 
     assert list(application.handlers) == [0]
     assert len(application.handlers[0]) == 4
 
 
 @pytest.mark.asyncio
-async def test_the_adapter_projects_the_update_into_an_incoming_message() -> None:
+async def test_the_adapter_projects_the_update_into_an_incoming_message(config: BotConfig) -> None:
     command = RecordingCommand()
     bot = StubBot()
     update = Update(update_id=1, message=make_message("/prefs set city Barcelona", bot=bot))
 
-    await adapter_for(command)(update, StubContext(bot))
+    await adapter_for(command, config)(update, StubContext(bot))
 
     (message,) = command.calls
     assert message.telegram_user_id == str(SENDER_ID)
@@ -202,7 +214,7 @@ async def test_the_adapter_projects_the_update_into_an_incoming_message() -> Non
 
 
 @pytest.mark.asyncio
-async def test_the_adapter_passes_the_message_text_through_unmodified() -> None:
+async def test_the_adapter_passes_the_message_text_through_unmodified(config: BotConfig) -> None:
     # Pre-splitting the text here — or reading the arguments from
     # `context.args`, which drops newlines — would silently repair a value
     # `/prefs set` is supposed to refuse.
@@ -210,7 +222,7 @@ async def test_the_adapter_passes_the_message_text_through_unmodified() -> None:
     command = RecordingCommand()
     bot = StubBot()
 
-    await adapter_for(command)(
+    await adapter_for(command, config)(
         Update(update_id=1, message=make_message(text, bot=bot)), StubContext(bot)
     )
 
@@ -218,12 +230,12 @@ async def test_the_adapter_passes_the_message_text_through_unmodified() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_sender_without_a_telegram_handle_projects_to_none() -> None:
+async def test_a_sender_without_a_telegram_handle_projects_to_none(config: BotConfig) -> None:
     command = RecordingCommand()
     bot = StubBot()
     update = Update(update_id=1, message=make_message("/me", bot=bot, handle=None))
 
-    await adapter_for(command)(update, StubContext(bot))
+    await adapter_for(command, config)(update, StubContext(bot))
 
     assert command.calls[0].telegram_handle is None
 
@@ -238,12 +250,12 @@ async def test_a_sender_without_a_telegram_handle_projects_to_none() -> None:
 )
 @pytest.mark.asyncio
 async def test_an_unusable_update_is_ignored_without_a_reply_or_a_write(
-    label: str, update: Update, database: Path
+    label: str, update: Update, database: Path, config: BotConfig
 ) -> None:
     command = RecordingCommand()
     bot = StubBot()
 
-    await adapter_for(command)(update, StubContext(bot))
+    await adapter_for(command, config)(update, StubContext(bot))
 
     assert command.calls == [], label
     assert bot.sent == [], label
@@ -251,7 +263,9 @@ async def test_an_unusable_update_is_ignored_without_a_reply_or_a_write(
 
 
 @pytest.mark.asyncio
-async def test_an_edited_command_is_refused_and_never_reaches_the_command(database: Path) -> None:
+async def test_an_edited_command_is_refused_and_never_reaches_the_command(
+    database: Path, config: BotConfig
+) -> None:
     command = RecordingCommand()
     bot = StubBot()
     update = Update(update_id=1, edited_message=make_message("/prefs remove city", bot=bot))
@@ -260,17 +274,19 @@ async def test_an_edited_command_is_refused_and_never_reaches_the_command(databa
     # of `effective_message` is the bug that would answer the user with silence.
     assert update.message is None
 
-    await adapter_for(command)(update, StubContext(bot))
+    await adapter_for(command, config)(update, StubContext(bot))
 
     assert command.calls == []
-    assert [call["text"] for call in bot.sent] == [MESSAGES["edited_command"]]
+    assert [call["text"] for call in bot.sent] == [
+        resolve(config, "edited_command", config.default_locale)
+    ]
     # The refusal returns before the database is opened, so "writes nothing" is
     # a fact about the control flow rather than a claim about the rows.
     assert not database.exists()
 
 
 @pytest.mark.asyncio
-async def test_editing_an_old_removal_does_not_destroy_the_newer_value() -> None:
+async def test_editing_an_old_removal_does_not_destroy_the_newer_value(config: BotConfig) -> None:
     """The scenario the notice exists for, end to end against real SQLite.
 
     Re-running the edited `remove` would delete a `city` the user has since
@@ -279,7 +295,7 @@ async def test_editing_an_old_removal_does_not_destroy_the_newer_value() -> None
     """
     bot = StubBot()
     context = StubContext(bot)
-    adapter = adapter_for(handle_prefs)
+    adapter = adapter_for(handle_prefs, config)
     removal = make_message("/prefs remove city", bot=bot, message_id=2)
 
     await adapter(
@@ -294,16 +310,16 @@ async def test_editing_an_old_removal_does_not_destroy_the_newer_value() -> None
     await adapter(Update(update_id=4, edited_message=removal), context)
 
     assert _stored_preferences() == [("city", "Madrid")]
-    assert bot.sent[-1]["text"] == MESSAGES["edited_command"]
+    assert bot.sent[-1]["text"] == resolve(config, "edited_command", config.default_locale)
 
 
 @pytest.mark.asyncio
-async def test_a_command_runs_end_to_end_against_real_sqlite() -> None:
+async def test_a_command_runs_end_to_end_against_real_sqlite(config: BotConfig) -> None:
     """The closest offline equivalent of sending `/start` from a real client."""
     bot = StubBot()
     update = Update(update_id=1, message=make_message("/start", bot=bot))
 
-    await adapter_for(handle_start)(update, StubContext(bot))
+    await adapter_for(handle_start, config)(update, StubContext(bot))
 
     conn = db.connect()
     try:

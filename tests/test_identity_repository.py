@@ -170,10 +170,10 @@ def test_delete_preference_touches_only_the_named_key_for_the_named_user(
 
     assert delete_preference(conn, dani.id, "city") is True
 
-    dani_prefs = [(p.key, p.value) for p in get_preferences(conn, dani.id).rows]
-    other_prefs = [(p.key, p.value) for p in get_preferences(conn, other.id).rows]
-    assert dani_prefs == [("categories", "tech")]
-    assert other_prefs == [("city", "Madrid")]
+    assert [(p.key, p.value) for p in get_preferences(conn, dani.id).rows] == [
+        ("categories", "tech")
+    ]
+    assert [(p.key, p.value) for p in get_preferences(conn, other.id).rows] == [("city", "Madrid")]
 
 
 def test_a_preference_row_written_outside_the_schema_is_rejected_on_read(

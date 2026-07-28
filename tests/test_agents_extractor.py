@@ -11,7 +11,9 @@ Rule 2 enforcement site).
 
 from __future__ import annotations
 
+import base64
 import json
+import logging
 import random
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,6 +26,7 @@ from agentlib.core import STRONG, Result
 from planazo.agents import extractor
 from planazo.agents.extractor import (
     DELEGATION_BRIEF,
+    MAX_CAROUSEL_IMAGES,
     MAX_OUTPUT_TOKENS,
     MAX_STEPS,
     USER_MESSAGE,
@@ -31,8 +34,9 @@ from planazo.agents.extractor import (
     report_extraction_status,
 )
 from planazo.agents.loop import StepRecord
-from planazo.catalog import list_extraction_runs, save_event
+from planazo.catalog import events_exist_for_source_url, list_extraction_runs, save_event
 from planazo.extraction.audit import default_extraction_log_path
+from planazo.extraction.frames import FrameExtractionError
 from planazo.extraction.models import ExtractionResult
 from planazo.identity import get_or_create_user
 from planazo.memory import facts, rules
@@ -43,6 +47,8 @@ from planazo.sources.instagram.client import InstagramClientProtocol
 from planazo.sources.instagram.model_view import InstaloaderPostView
 from planazo.sources.models import MediaAsset, RawPost
 from planazo.storage import db
+
+assert MAX_STEPS == 8, "multi-event budget cap moved — update ADR 0012 rationale"
 
 _MVP_ARCH_PATH = Path(__file__).resolve().parent.parent / "docs" / "MVP-ARCHITECTURE.md"
 _TEST_URL = "https://www.instagram.com/p/ABC123/"
@@ -269,7 +275,382 @@ def test_multimodal_hook_selects_image_before_thumbnail() -> None:
     assert image_parts == [{"type": "input_image", "image_url": "https://cdn/image.jpg"}]
 
 
-def test_multimodal_hook_falls_back_to_thumbnail_when_no_image() -> None:
+def test_max_carousel_images_is_three() -> None:
+    """K value drift guard. If K moves, this test breaks — matching tests
+    that hard-code `Slide i/3` prefixes also need to be revisited."""
+    assert MAX_CAROUSEL_IMAGES == 3
+
+
+def test_multimodal_hook_single_image_path_is_byte_identical() -> None:
+    """`n == 1` — the hook returns the pre-#65 message shape exactly. Locks
+    the `GraphImage` regression: prefix wording, `kind=image`, list-of-dicts
+    envelope."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={"media": [{"kind": "image", "url": "https://cdn/image.jpg"}]},
+    )
+
+    injected = hook(record)
+
+    assert injected == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (f"Image content from the fetched post — {_TEST_URL} (kind=image):"),
+                },
+                {"type": "input_image", "image_url": "https://cdn/image.jpg"},
+            ],
+        }
+    ]
+
+
+def test_multimodal_hook_carousel_with_two_images_returns_two_input_image_parts() -> None:
+    """`n == 2` — carousel branch fires with `k=2` (two slides, two images)."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "image", "url": "https://cdn/slide1.jpg"},
+                {"kind": "image", "url": "https://cdn/slide2.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": f"Slide 1/2 from the fetched post — {_TEST_URL}:",
+                },
+                {"type": "input_image", "image_url": "https://cdn/slide1.jpg"},
+                {
+                    "type": "input_text",
+                    "text": f"Slide 2/2 from the fetched post — {_TEST_URL}:",
+                },
+                {"type": "input_image", "image_url": "https://cdn/slide2.jpg"},
+            ],
+        }
+    ]
+
+
+def test_multimodal_hook_carousel_with_three_images_returns_three_input_image_parts() -> None:
+    """`n == 3` — carousel branch fires with `k=3`, prefixes 1/3, 2/3, 3/3."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "image", "url": "https://cdn/slide1.jpg"},
+                {"kind": "image", "url": "https://cdn/slide2.jpg"},
+                {"kind": "image", "url": "https://cdn/slide3.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected is not None
+    content = injected[0]["content"]
+    image_parts = [part for part in content if part["type"] == "input_image"]
+    text_parts = [part for part in content if part["type"] == "input_text"]
+    assert image_parts == [
+        {"type": "input_image", "image_url": "https://cdn/slide1.jpg"},
+        {"type": "input_image", "image_url": "https://cdn/slide2.jpg"},
+        {"type": "input_image", "image_url": "https://cdn/slide3.jpg"},
+    ]
+    assert [part["text"] for part in text_parts] == [
+        f"Slide 1/3 from the fetched post — {_TEST_URL}:",
+        f"Slide 2/3 from the fetched post — {_TEST_URL}:",
+        f"Slide 3/3 from the fetched post — {_TEST_URL}:",
+    ]
+
+
+def test_multimodal_hook_carousel_caps_at_max_carousel_images() -> None:
+    """`n > MAX_CAROUSEL_IMAGES` — only the first `MAX_CAROUSEL_IMAGES` land;
+    the denominator in the prefix is the *sent* count, not the total."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [{"kind": "image", "url": f"https://cdn/slide{i}.jpg"} for i in range(1, 6)]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected is not None
+    content = injected[0]["content"]
+    image_parts = [part for part in content if part["type"] == "input_image"]
+    assert len(image_parts) == MAX_CAROUSEL_IMAGES
+    assert image_parts == [
+        {"type": "input_image", "image_url": "https://cdn/slide1.jpg"},
+        {"type": "input_image", "image_url": "https://cdn/slide2.jpg"},
+        {"type": "input_image", "image_url": "https://cdn/slide3.jpg"},
+    ]
+    text_parts = [part for part in content if part["type"] == "input_text"]
+    denominators = {part["text"].split("/")[1].split(" ")[0] for part in text_parts}
+    assert denominators == {str(MAX_CAROUSEL_IMAGES)}
+
+
+def test_multimodal_hook_carousel_mixed_image_and_video_selects_only_image_kind() -> None:
+    """Mixed sidecar `[image, image, video, thumbnail, image]` → 3 images in
+    media-list order; video / thumbnail interlopers are skipped, never sent
+    as `input_image` parts."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "image", "url": "https://cdn/slide1.jpg"},
+                {"kind": "image", "url": "https://cdn/slide2.jpg"},
+                {"kind": "video", "url": "https://cdn/video.mp4"},
+                {"kind": "thumbnail", "url": "https://cdn/thumb.jpg"},
+                {"kind": "image", "url": "https://cdn/slide5.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected is not None
+    content = injected[0]["content"]
+    image_parts = [part for part in content if part["type"] == "input_image"]
+    assert image_parts == [
+        {"type": "input_image", "image_url": "https://cdn/slide1.jpg"},
+        {"type": "input_image", "image_url": "https://cdn/slide2.jpg"},
+        {"type": "input_image", "image_url": "https://cdn/slide5.jpg"},
+    ]
+
+
+def test_multimodal_hook_carousel_prefix_includes_url_and_slide_index() -> None:
+    """Spot-check the literal prefix format so a reword is a red test."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "image", "url": "https://cdn/slide1.jpg"},
+                {"kind": "image", "url": "https://cdn/slide2.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected is not None
+    content = injected[0]["content"]
+    text_parts = [part for part in content if part["type"] == "input_text"]
+    assert text_parts[0]["text"] == f"Slide 1/2 from the fetched post — {_TEST_URL}:"
+    assert text_parts[1]["text"] == f"Slide 2/2 from the fetched post — {_TEST_URL}:"
+
+
+def test_multimodal_hook_sidecar_with_one_image_uses_single_image_branch() -> None:
+    """A sidecar with one image + one video (`n == 1`) reuses the
+    single-image code path; no "Slide 1/1" prefix appears."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "image", "url": "https://cdn/only.jpg"},
+                {"kind": "video", "url": "https://cdn/video.mp4"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (f"Image content from the fetched post — {_TEST_URL} (kind=image):"),
+                },
+                {"type": "input_image", "image_url": "https://cdn/only.jpg"},
+            ],
+        }
+    ]
+
+
+def test_multimodal_hook_all_video_sidecar_falls_back_to_thumbnail() -> None:
+    """`[video, thumbnail, video, thumbnail]` — 0 images, thumbnails present.
+    Falls through to the single-thumbnail path (byte-identical to the M3
+    fallback shape)."""
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "video", "url": "https://cdn/v1.mp4"},
+                {"kind": "thumbnail", "url": "https://cdn/t1.jpg"},
+                {"kind": "video", "url": "https://cdn/v2.mp4"},
+                {"kind": "thumbnail", "url": "https://cdn/t2.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (
+                        f"Image content from the fetched post — {_TEST_URL} (kind=thumbnail):"
+                    ),
+                },
+                {"type": "input_image", "image_url": "https://cdn/t1.jpg"},
+            ],
+        }
+    ]
+
+
+# --- reel branch (ADR 0013) ---
+
+
+_REEL_FRAMES_CANNED: list[tuple[float, bytes]] = [
+    (1.25, b"\xff\xd8FRAME1"),
+    (2.50, b"\xff\xd8FRAME2"),
+    (3.75, b"\xff\xd8FRAME3"),
+]
+
+
+def test_multimodal_hook_reel_frames_success_sends_three_frames_and_thumbnail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path: single-video reel + thumbnail → envelope prefix, three
+    (text, base64-image) pairs, then a trailing (text, thumbnail-URL) pair."""
+
+    def _stub(video_url: str, *, frame_count: int = 3) -> list[tuple[float, bytes]]:
+        return list(_REEL_FRAMES_CANNED)
+
+    monkeypatch.setattr(extractor, "extract_reel_frames", _stub)
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "video", "url": "https://cdn/video.mp4", "duration_seconds": 5.0},
+                {"kind": "thumbnail", "url": "https://cdn/thumb.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected is not None
+    content = injected[0]["content"]
+    # 1 envelope + (1 text + 1 image) * 3 + 1 thumbnail-text + 1 thumbnail-image = 9 parts.
+    assert len(content) == 9
+    assert content[0] == {
+        "type": "input_text",
+        "text": (
+            f"Reel content from the fetched post — {_TEST_URL}. "
+            "3 evenly-spaced frames extracted from the video, "
+            "followed by the thumbnail cover frame:"
+        ),
+    }
+    for i, (timestamp, jpeg_bytes) in enumerate(_REEL_FRAMES_CANNED, start=1):
+        text_part = content[1 + (i - 1) * 2]
+        image_part = content[2 + (i - 1) * 2]
+        assert text_part == {
+            "type": "input_text",
+            "text": f"Frame {i}/3 at t≈{timestamp:.1f}s:",
+        }
+        assert image_part["type"] == "input_image"
+        assert image_part["image_url"].startswith("data:image/jpeg;base64,")
+        b64_payload = image_part["image_url"].split(",", 1)[1]
+        assert base64.b64decode(b64_payload) == jpeg_bytes
+    assert content[7] == {
+        "type": "input_text",
+        "text": f"Thumbnail cover frame from the fetched post — {_TEST_URL}:",
+    }
+    assert content[8] == {"type": "input_image", "image_url": "https://cdn/thumb.jpg"}
+
+
+def test_multimodal_hook_reel_frames_success_video_only_no_thumbnail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Single-video reel without a thumbnail — envelope drops the trailing
+    ", followed by the thumbnail cover frame" clause, and no trailing
+    (text, thumbnail-image) pair is emitted."""
+
+    def _stub(video_url: str, *, frame_count: int = 3) -> list[tuple[float, bytes]]:
+        return list(_REEL_FRAMES_CANNED)
+
+    monkeypatch.setattr(extractor, "extract_reel_frames", _stub)
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={"media": [{"kind": "video", "url": "https://cdn/video.mp4"}]},
+    )
+
+    injected = hook(record)
+
+    assert injected is not None
+    content = injected[0]["content"]
+    # 1 envelope + (1 text + 1 image) * 3 = 7 parts, no thumbnail block.
+    assert len(content) == 7
+    assert content[0] == {
+        "type": "input_text",
+        "text": (
+            f"Reel content from the fetched post — {_TEST_URL}. "
+            "3 evenly-spaced frames extracted from the video:"
+        ),
+    }
+    text_parts = [p for p in content if p["type"] == "input_text"]
+    for part in text_parts:
+        assert "Thumbnail cover frame" not in part["text"]
+    image_parts = [p for p in content if p["type"] == "input_image"]
+    assert len(image_parts) == 3
+    for part in image_parts:
+        assert part["image_url"].startswith("data:image/jpeg;base64,")
+
+
+def test_multimodal_hook_reel_frame_extraction_error_falls_back_to_thumbnail(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`FrameExtractionError` with a thumbnail present → byte-identical to
+    the pre-#66 `GraphVideo` thumbnail-only shape, and a WARNING record is
+    logged on `planazo.agents.extractor` naming the URL + the cause."""
+
+    def _boom(video_url: str, *, frame_count: int = 3) -> list[tuple[float, bytes]]:
+        raise FrameExtractionError("network fail: HTTPStatusError 403")
+
+    monkeypatch.setattr(extractor, "extract_reel_frames", _boom)
+    caplog.set_level(logging.WARNING, logger="planazo.agents.extractor")
     hook = extractor._build_multimodal_hook(_TEST_URL)
     record = StepRecord(
         step=1,
@@ -285,13 +666,43 @@ def test_multimodal_hook_falls_back_to_thumbnail_when_no_image() -> None:
 
     injected = hook(record)
 
-    assert injected is not None
-    content = injected[0]["content"]
-    image_parts = [part for part in content if part["type"] == "input_image"]
-    assert image_parts == [{"type": "input_image", "image_url": "https://cdn/thumb.jpg"}]
+    assert injected == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (
+                        f"Image content from the fetched post — {_TEST_URL} (kind=thumbnail):"
+                    ),
+                },
+                {"type": "input_image", "image_url": "https://cdn/thumb.jpg"},
+            ],
+        }
+    ]
+    warnings = [
+        rec
+        for rec in caplog.records
+        if rec.name == "planazo.agents.extractor" and rec.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "https://cdn/video.mp4" in message
+    assert "network fail" in message
 
 
-def test_multimodal_hook_returns_no_visual_asset_when_only_video_present() -> None:
+def test_multimodal_hook_reel_frame_extraction_error_no_thumbnail_falls_back_to_no_visual_asset(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`FrameExtractionError` with no thumbnail → the "no visual asset"
+    text-only fallback (M3 text-only path), plus a WARNING record naming
+    the URL + cause on `planazo.agents.extractor`."""
+
+    def _boom(video_url: str, *, frame_count: int = 3) -> list[tuple[float, bytes]]:
+        raise FrameExtractionError("ffmpeg binary not found")
+
+    monkeypatch.setattr(extractor, "extract_reel_frames", _boom)
+    caplog.set_level(logging.WARNING, logger="planazo.agents.extractor")
     hook = extractor._build_multimodal_hook(_TEST_URL)
     record = StepRecord(
         step=1,
@@ -302,9 +713,68 @@ def test_multimodal_hook_returns_no_visual_asset_when_only_video_present() -> No
 
     injected = hook(record)
 
-    assert injected is not None
-    content = injected[0]["content"]
-    assert all(part["type"] == "input_text" for part in content)
+    assert injected == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "no visual asset available for this post",
+                }
+            ],
+        }
+    ]
+    warnings = [
+        rec
+        for rec in caplog.records
+        if rec.name == "planazo.agents.extractor" and rec.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "https://cdn/video.mp4" in message
+    assert "ffmpeg binary not found" in message
+
+
+def test_multimodal_hook_multi_video_sidecar_does_not_call_extract_reel_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`n_videos >= 2` — the multi-video sidecar gate keeps the reel-frame
+    helper unreachable; the fallback is byte-identical to the M3
+    thumbnail-only shape."""
+    mock_extract = MagicMock()
+    monkeypatch.setattr(extractor, "extract_reel_frames", mock_extract)
+    hook = extractor._build_multimodal_hook(_TEST_URL)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [
+                {"kind": "video", "url": "https://cdn/v1.mp4"},
+                {"kind": "thumbnail", "url": "https://cdn/t1.jpg"},
+                {"kind": "video", "url": "https://cdn/v2.mp4"},
+                {"kind": "thumbnail", "url": "https://cdn/t2.jpg"},
+            ]
+        },
+    )
+
+    injected = hook(record)
+
+    mock_extract.assert_not_called()
+    assert injected == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (
+                        f"Image content from the fetched post — {_TEST_URL} (kind=thumbnail):"
+                    ),
+                },
+                {"type": "input_image", "image_url": "https://cdn/t1.jpg"},
+            ],
+        }
+    ]
 
 
 # ---------------------------
@@ -428,9 +898,12 @@ def test_extract_once_happy_path_parses_event_from_save_event_saved(
     result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
     assert result.status == "ok"
-    assert result.event is not None
-    assert result.event.source_url == _TEST_URL
-    assert result.event.title == "Barcelona Techno Night"
+    assert len(result.events) == 1
+    assert result.events[0].source_url == _TEST_URL
+    assert result.events[0].title == "Barcelona Techno Night"
+    # The single-event happy path does not supply `event_index_in_post`; the
+    # tool defaults to 0 and the persisted row carries slot 0.
+    assert result.events[0].event_index_in_post == 0
     assert result.error_type is None
     assert search_events_spy.call_count == 0
 
@@ -534,7 +1007,7 @@ def test_extract_once_maps_report_extraction_status_error_type(
 
     assert result.error_type == error_type
     assert result.status == status
-    assert result.event is None
+    assert result.events == []
 
 
 def test_extract_once_surfaces_source_adapter_typed_error(
@@ -565,7 +1038,7 @@ def test_extract_once_surfaces_source_adapter_typed_error(
 
     assert result.status == "error"
     assert result.error_type == "rate_limited"
-    assert result.event is None
+    assert result.events == []
 
 
 def test_extract_once_returns_source_error_when_llm_never_terminates_after_error(
@@ -623,7 +1096,7 @@ def test_extract_once_marks_save_event_typed_error_as_save_event_failed(
 
     assert result.status == "error"
     assert result.error_type == "save_event_failed"
-    assert result.event is None
+    assert result.events == []
 
 
 # ------------------------------
@@ -869,7 +1342,7 @@ def test_extract_once_returns_ok_when_retry_after_failed_save_succeeds(
     assert result.status == "ok", (
         f"expected ok after retry-success, got {result.status!r} error_type={result.error_type!r}"
     )
-    assert result.event is not None
+    assert len(result.events) == 1
     assert result.error_type is None
     assert call_count["n"] == 2
 
@@ -950,3 +1423,336 @@ def test_extract_once_degrades_unknown_source_error_to_low_confidence(
     assert result.status == "error"
     assert result.error_type == "low_confidence_extraction"
     assert "network_timeout" in result.notes
+
+
+# ------------------------------
+# Multi-event carousels — the M3.5 surface
+# ------------------------------
+
+
+def _save_event_call_multi(
+    *,
+    event_index_in_post: int,
+    title: str = "Barcelona Techno Night",
+    start_utc: str = "2026-08-15T22:00:00+00:00",
+    end_utc: str = "2026-08-16T04:00:00+00:00",
+    call_id: str = "call_save",
+) -> dict[str, Any]:
+    """`save_event` tool call with an explicit slot index and per-test overrides."""
+    return {
+        "name": "save_event",
+        "arguments": {
+            "title": title,
+            "category": "music",
+            "source": "instagram",
+            "source_url": _TEST_URL,
+            "start_utc": start_utc,
+            "end_utc": end_utc,
+            "city": "Barcelona",
+            "confidence": 0.85,
+            "event_index_in_post": event_index_in_post,
+        },
+        "call_id": call_id,
+    }
+
+
+def test_extract_once_multi_event_happy_path_persists_all_slots(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A curator carousel becomes N events — two `save_event` calls with
+    slots 0 and 1 land as two rows, in trace order, and the hand-off carries
+    both."""
+    _seed_user()
+    source = _build_source(caption="Two events happening this weekend!")
+
+    fake_call = MagicMock(
+        side_effect=[
+            _turn("", [_fetch_call()]),
+            _turn(
+                "",
+                [
+                    _save_event_call_multi(
+                        event_index_in_post=0,
+                        title="Barcelona Techno Night",
+                        call_id="call_save_0",
+                    )
+                ],
+            ),
+            _turn(
+                "",
+                [
+                    _save_event_call_multi(
+                        event_index_in_post=1,
+                        title="Sunday Afterparty",
+                        start_utc="2026-08-16T14:00:00+00:00",
+                        end_utc="2026-08-16T20:00:00+00:00",
+                        call_id="call_save_1",
+                    )
+                ],
+            ),
+            _turn(""),  # brief forbids free-form text after the final save
+        ]
+    )
+    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
+
+    result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    assert result.status == "ok"
+    assert len(result.events) == 2
+    assert result.events[0].event_index_in_post == 0
+    assert result.events[1].event_index_in_post == 1
+    assert result.events[0].title == "Barcelona Techno Night"
+    assert result.events[1].title == "Sunday Afterparty"
+    assert result.error_type is None
+
+    # DB read-back: both rows persisted under the composite natural key.
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            "SELECT event_index_in_post, title FROM events WHERE source_url = ?"
+            " ORDER BY event_index_in_post ASC",
+            (_TEST_URL,),
+        ).fetchall()
+    finally:
+        conn.close()
+    assert [(int(r["event_index_in_post"]), r["title"]) for r in rows] == [
+        (0, "Barcelona Techno Night"),
+        (1, "Sunday Afterparty"),
+    ]
+
+
+def test_extract_once_multi_event_duplicate_slot_keeps_first_and_notes_error_type(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two `save_event` calls with the same slot on the same URL: the first
+    persists, the second returns `duplicate_event`; the hand-off is
+    `status="ok"` with one event and the redacted `[error_type: duplicate_event]`
+    token in `notes`."""
+    _seed_user()
+    source = _build_source(caption="A single event, LLM mistakenly retries")
+
+    fake_call = MagicMock(
+        side_effect=[
+            _turn("", [_fetch_call()]),
+            _turn("", [_save_event_call_multi(event_index_in_post=0, call_id="call_save_0")]),
+            _turn("", [_save_event_call_multi(event_index_in_post=0, call_id="call_save_0_dup")]),
+            _turn(""),
+        ]
+    )
+    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
+
+    result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    assert result.status == "ok"
+    assert len(result.events) == 1
+    assert result.events[0].event_index_in_post == 0
+    assert "duplicate_event" in result.notes
+    assert "1 saved; 1 save_event failure(s)" in result.notes
+
+
+def test_extract_once_multi_event_mixed_success_and_failure_uses_redacted_notes(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One slot saves cleanly; a sibling slot fails validation. The hand-off is
+    `status="ok"` with the successful subset, `notes` names the failure's
+    `error_type` token and never leaks caption bytes into notes even when the
+    failing call carried a caption-derived `title`."""
+    _seed_user()
+    caption = (
+        "MEGA CAROUSEL: three back-to-back nights at Nitsa, Nina Kraviz headlines"
+        " Friday, Amelie Lens headlines Saturday, and a Sunday afterparty seals it"
+        " — this description is deliberately at least five hundred characters long"
+        " so that we can slice a forty-character window out of it and drop that"
+        " slice into the failing save_event's `title` field, ready to be echoed by"
+        " a Pydantic ValidationError. If any 40-char window of this caption ends"
+        " up in ExtractionResult.notes, the Rule 2 leak channel is open. The"
+        " redacted `[error_type: <token>]` construction keeps notes clean."
+    )
+    assert len(caption) >= 500, "test setup requires a caption of at least 500 chars"
+    source = _build_source(caption=caption)
+
+    # A 40-char slice of the caption, used as the failing save_event's `title`.
+    caption_title_slice = caption[80:120]
+    assert len(caption_title_slice) == 40
+
+    fake_call = MagicMock(
+        side_effect=[
+            _turn("", [_fetch_call()]),
+            _turn(
+                "",
+                [
+                    _save_event_call_multi(
+                        event_index_in_post=0,
+                        title="Nitsa Friday",
+                        call_id="call_save_0",
+                    )
+                ],
+            ),
+            _turn(
+                "",
+                [
+                    _save_event_call_multi(
+                        event_index_in_post=1,
+                        title=caption_title_slice,
+                        start_utc="not-iso",  # triggers `invalid_event_data`
+                        call_id="call_save_1_bad",
+                    )
+                ],
+            ),
+            _turn(""),
+        ]
+    )
+    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
+
+    result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    assert result.status == "ok"
+    assert len(result.events) == 1
+    assert result.events[0].event_index_in_post == 0
+    assert "invalid_event_data" in result.notes
+    assert "1 saved; 1 save_event failure(s)" in result.notes
+    # Rule 2 regression — no 40-char substring of the caption reaches `notes`.
+    _assert_no_40_char_substring(result.notes, caption)
+
+
+def test_extract_once_multi_event_success_then_report_extraction_status(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One `save_event` succeeds, then the LLM fires
+    `report_extraction_status(status="error", ...)`. The successful save wins;
+    the hand-off is `status="ok"` with one event and `notes` records that the
+    LLM also flagged the unhappy branch."""
+    _seed_user()
+    source = _build_source(caption="One event, LLM flags second as ambiguous")
+
+    fake_call = MagicMock(
+        side_effect=[
+            _turn("", [_fetch_call()]),
+            _turn("", [_save_event_call_multi(event_index_in_post=0, call_id="call_save_0")]),
+            _turn(
+                "",
+                [
+                    _report_call(
+                        "ambiguous_content",
+                        status="error",
+                        notes="couldn't identify a second event",
+                    )
+                ],
+            ),
+            _turn(""),
+        ]
+    )
+    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
+
+    result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    assert result.status == "ok"
+    assert len(result.events) == 1
+    assert result.events[0].event_index_in_post == 0
+    assert result.error_type is None
+    assert "ambiguous_content" in result.notes
+
+
+# ------------------------------
+# Multi-event idempotency — end-to-end contract
+# ------------------------------
+
+
+def test_extract_once_multi_event_idempotency_contract_end_to_end(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three slots persist under one URL; the pre-check primitive returns
+    `[0, 1, 2]`; a fourth `save_event(event_index_in_post=0)` on the same URL
+    returns `duplicate_event`.
+
+    Locks the M3.5 idempotency contract end-to-end: composite
+    `UNIQUE(source_url, event_index_in_post)` on the DB side + the
+    `events_exist_for_source_url` primitive the scheduler pre-checks against.
+    Driven through the real Extractor loop (fake LLM, real DB) so the whole
+    stack — tool wire, repository, primitive, and composite key — is under
+    test in one place.
+    """
+    _seed_user()
+    source = _build_source(caption="Three back-to-back nights at Nitsa this weekend!")
+
+    fake_call = MagicMock(
+        side_effect=[
+            _turn("", [_fetch_call()]),
+            _turn(
+                "",
+                [
+                    _save_event_call_multi(
+                        event_index_in_post=0,
+                        title="Nitsa Friday",
+                        call_id="call_save_0",
+                    )
+                ],
+            ),
+            _turn(
+                "",
+                [
+                    _save_event_call_multi(
+                        event_index_in_post=1,
+                        title="Nitsa Saturday",
+                        start_utc="2026-08-16T22:00:00+00:00",
+                        end_utc="2026-08-17T04:00:00+00:00",
+                        call_id="call_save_1",
+                    )
+                ],
+            ),
+            _turn(
+                "",
+                [
+                    _save_event_call_multi(
+                        event_index_in_post=2,
+                        title="Nitsa Sunday",
+                        start_utc="2026-08-17T20:00:00+00:00",
+                        end_utc="2026-08-18T02:00:00+00:00",
+                        call_id="call_save_2",
+                    )
+                ],
+            ),
+            _turn(""),  # brief forbids free-form text after the final save
+        ]
+    )
+    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
+
+    result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    assert result.status == "ok"
+    assert len(result.events) == 3
+    assert [event.event_index_in_post for event in result.events] == [0, 1, 2]
+
+    # Pre-check primitive: the scheduler uses this to skip URLs that are
+    # already fully processed.
+    conn = db.connect()
+    try:
+        persisted_slots = events_exist_for_source_url(conn, _TEST_URL)
+    finally:
+        conn.close()
+    assert persisted_slots == [0, 1, 2]
+
+    # Composite UNIQUE fires end-to-end: a re-save of slot 0 on the same URL
+    # comes back as `duplicate_event` with the existing row's id, not a
+    # silently-persisted duplicate row.
+    dup_response = save_event(
+        title="Nitsa Friday retry",
+        category="music",
+        source="instagram",
+        source_url=_TEST_URL,
+        start_utc="2026-08-15T22:00:00+00:00",
+        end_utc="2026-08-16T04:00:00+00:00",
+        city="Barcelona",
+        confidence=0.85,
+        event_index_in_post=0,
+    )
+    assert dup_response["error_type"] == "duplicate_event"
+    assert isinstance(dup_response.get("event_db_id"), int)
+
+    # Row count under the URL is still 3 — no ghost row from the retry.
+    conn = db.connect()
+    try:
+        slots_after_retry = events_exist_for_source_url(conn, _TEST_URL)
+    finally:
+        conn.close()
+    assert slots_after_retry == [0, 1, 2]

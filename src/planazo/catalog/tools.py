@@ -31,19 +31,30 @@ def save_event(
     price_cents: int = 0,
     geo_lat: float = 0.0,
     geo_lng: float = 0.0,
+    event_index_in_post: int = 0,
 ) -> dict[str, object]:
     """Persist one normalized event to the shared event store.
 
     Call this AFTER an extraction or source step has produced an event with a
     resolved title, category, city, and ISO-8601 `start_utc`/`end_utc`, so it
-    becomes searchable through `search_events`. `source_url` is the event's
-    natural key: it must be the real page the event came from, and each URL can
-    be saved once — a second save of the same URL comes back as
+    becomes searchable through `search_events`. The natural key is the
+    composite `(source_url, event_index_in_post)`: `source_url` must be the
+    real page the event came from, and each `(source_url, event_index_in_post)`
+    pair can be saved once — a second save with the same pair comes back as
     `duplicate_event` with the id of the row that already exists, so read that
-    branch instead of retrying. Do NOT call this with raw, unnormalized scraped
-    text as `title` or `city`, and do NOT call it to look up events (it has no
+    branch instead of retrying. For a single post that announces multiple
+    distinct events, call this once per event with `event_index_in_post` =
+    `0`, `1`, `2`, ...; the composite `(source_url, event_index_in_post)` is
+    the natural key. Do NOT call this with raw, unnormalized scraped text as
+    `title` or `city`, and do NOT call it to look up events (it has no
     read-back behaviour).
     """
+    if event_index_in_post < 0:
+        return {
+            "error_type": "invalid_event_data",
+            "message": (f"event_index_in_post must be non-negative, got {event_index_in_post}"),
+        }
+
     try:
         parsed_start = datetime.fromisoformat(start_utc)
         parsed_end = datetime.fromisoformat(end_utc)
@@ -64,6 +75,7 @@ def save_event(
             geo_lat=None if coordinates_are_default else geo_lat,
             geo_lng=None if coordinates_are_default else geo_lng,
             confidence=confidence,
+            event_index_in_post=event_index_in_post,
         )
     except ValidationError as exc:
         return {"error_type": "invalid_event_data", "message": str(exc)}
@@ -74,13 +86,17 @@ def save_event(
             event_db_id = insert_event(conn, event)
         except sqlite3.IntegrityError as exc:
             duplicate = conn.execute(
-                "SELECT id FROM events WHERE source_url = ?", (event.source_url,)
+                "SELECT id FROM events WHERE source_url = ? AND event_index_in_post = ?",
+                (event.source_url, event.event_index_in_post),
             ).fetchone()
             if duplicate is None:
                 return {"error_type": "invalid_event_data", "message": str(exc)}
             return {
                 "error_type": "duplicate_event",
-                "message": f"source_url {event.source_url!r} already has a row",
+                "message": (
+                    f"(source_url={event.source_url!r},"
+                    f" event_index_in_post={event.event_index_in_post}) already has a row"
+                ),
                 "event_db_id": int(duplicate["id"]),
             }
         # VERIFY: read the row back rather than trust the write just made.

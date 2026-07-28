@@ -5,7 +5,20 @@ Peer of `event_agent.py` (the Recommender). Composition root of the
 (`fetch_instagram_post`, `save_event`, `report_extraction_status`), a
 byte-verbatim delegation brief read at import time from
 `docs/MVP-ARCHITECTURE.md`, and a multimodal `on_tool_output` hook that
-feeds one visual asset per fetch to the LLM as an `input_image` message.
+feeds visual context to the LLM as `input_image` messages. Selection per
+media shape:
+
+- ``GraphImage`` — one ``input_image`` for the sole image asset.
+- ``GraphSidecar`` (carousel) — up to ``MAX_CAROUSEL_IMAGES`` slides, each
+  prefixed by a ``"Slide i/K"`` text part.
+- ``GraphVideo`` (reel) — the hook downloads the reel ``video_url``,
+  extracts ``MAX_REEL_FRAMES`` evenly-spaced JPEG frames via ``ffmpeg``,
+  and sends them as base64 ``input_image`` data-URLs alongside the
+  thumbnail cover frame. Silently degrades to the thumbnail-only cover
+  frame on :class:`FrameExtractionError`; one ``logger.warning`` line is
+  the operator-facing signal for the degrade branch. Multi-video sidecars
+  (``n_videos >= 2``) route to the thumbnail-only arm without invoking
+  the frame helper — they are slideshows, not single reels.
 
 The single fixed user prompt is `USER_MESSAGE`: extractors take no user-
 composed message. The URL rides the system prompt (delegation brief + rules
@@ -24,6 +37,8 @@ is not in `IRREVERSIBLE_TOOLS` (ADR 0002 + ADR 0005 decision 4).
 
 from __future__ import annotations
 
+import base64
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final, cast, get_args
@@ -36,6 +51,7 @@ from planazo.agents.loop import LoopResult, StepRecord, run_loop
 from planazo.catalog import ExtractionRunIndexEntry, record_extraction_run, save_event
 from planazo.catalog.models import Event
 from planazo.extraction.audit import ExtractionRunLogger
+from planazo.extraction.frames import MAX_REEL_FRAMES, FrameExtractionError, extract_reel_frames
 from planazo.extraction.models import (
     ExtractionErrorType,
     ExtractionResult,
@@ -48,6 +64,8 @@ from planazo.sources.instagram.client import InstagramClient
 from planazo.sources.instagram.tools import build_fetch_instagram_post
 from planazo.storage import db
 from tools.schema import schema_for
+
+logger = logging.getLogger(__name__)
 
 
 def _read_delegation_brief() -> str:
@@ -70,9 +88,10 @@ def _read_delegation_brief() -> str:
 
 DELEGATION_BRIEF: Final[str] = _read_delegation_brief()
 
-USER_MESSAGE: Final[str] = "Extract the primary event announced by the Instagram post above."
-MAX_STEPS: Final[int] = 4
+USER_MESSAGE: Final[str] = "Extract every distinct event announced by the Instagram post above."
+MAX_STEPS: Final[int] = 8
 MAX_OUTPUT_TOKENS: Final[int] = 2000
+MAX_CAROUSEL_IMAGES: Final[int] = 3
 
 
 class _ReportedStatus(BaseModel):
@@ -122,9 +141,38 @@ def _build_multimodal_hook(
 ) -> Callable[[StepRecord], list[dict[str, Any]] | None]:
     """Return the `on_tool_output` hook closured over the extraction target `url`.
 
-    Selects exactly one visual asset per `fetch_instagram_post` return
-    (image → thumbnail → none) and injects it as an `input_image` content
-    part on the next LLM turn. See ADR 0005 decision 7.
+    Selection is driven by the counts of ``kind == "image"`` and
+    ``kind == "video"`` assets in ``record.result["media"]``, keeping the
+    hook domain-model-free:
+
+    - ``n_images >= 2`` — carousel branch. Emits one user message with
+      interleaved ``input_text`` + ``input_image`` parts for the first
+      ``MAX_CAROUSEL_IMAGES`` image assets (in media-list order), each
+      slide prefixed by ``"Slide {i}/{k} from the fetched post — {url}:"``.
+    - ``n_images == 1`` — single-image branch. One ``input_text`` + one
+      ``input_image`` for the sole image asset.
+    - ``n_images == 0`` and ``n_videos == 1`` — reel branch. Downloads the
+      video URL, extracts ``MAX_REEL_FRAMES`` evenly-spaced JPEG frames
+      via :func:`planazo.extraction.frames.extract_reel_frames`, and emits
+      one user message with an envelope ``input_text`` prefix, one
+      ``(text, input_image)`` pair per frame (frames sent as base64
+      ``data:image/jpeg;base64,...`` data-URLs), and a trailing
+      ``(text, input_image)`` pair for the thumbnail cover frame when
+      present. On :class:`FrameExtractionError` the hook logs one
+      ``WARNING`` record and falls through to the thumbnail-only arm
+      below.
+    - ``n_images == 0`` and any other video count (0 or ``>= 2``) — a
+      ``kind == "thumbnail"`` asset present drives the thumbnail-only
+      fallback (byte-identical to the M3 shape). Multi-video sidecars
+      (``n_videos >= 2``) route through this arm — they are slideshows,
+      not single reels; the frame helper is not invoked.
+    - Otherwise — an ``input_text``-only "no visual asset available for
+      this post" fallback.
+
+    Video assets are never sent as ``input_image`` parts inside the
+    carousel branch — the image-count branches fire first. See ADR 0005
+    §D7 (partially superseded by M3.5 #65 for carousels) and ADR 0013 for
+    the reel-frame boundary shift.
     """
 
     def _multimodal_hook(record: StepRecord) -> list[dict[str, Any]] | None:
@@ -152,25 +200,98 @@ def _build_multimodal_hook(
                     ],
                 }
             ]
-        selected: dict[str, Any] | None = None
-        for asset in media:
-            if isinstance(asset, dict) and asset.get("kind") == "image":
-                selected = asset
-                break
-        if selected is None:
-            for asset in media:
-                if isinstance(asset, dict) and asset.get("kind") == "thumbnail":
-                    selected = asset
-                    break
-        if selected is None:
+        image_assets: list[dict[str, Any]] = [
+            asset for asset in media if isinstance(asset, dict) and asset.get("kind") == "image"
+        ]
+        if len(image_assets) >= 2:
+            k = min(len(image_assets), MAX_CAROUSEL_IMAGES)
+            content: list[dict[str, Any]] = []
+            for i, asset in enumerate(image_assets[:k], start=1):
+                content.append(
+                    {
+                        "type": "input_text",
+                        "text": f"Slide {i}/{k} from the fetched post — {url}:",
+                    }
+                )
+                content.append({"type": "input_image", "image_url": asset.get("url", "")})
+            return [{"role": "user", "content": content}]
+        if len(image_assets) == 1:
+            selected = image_assets[0]
             return [
                 {
                     "role": "user",
                     "content": [
                         {
                             "type": "input_text",
-                            "text": "no visual asset available for this post",
+                            "text": (f"Image content from the fetched post — {url} (kind=image):"),
+                        },
+                        {"type": "input_image", "image_url": selected.get("url", "")},
+                    ],
+                }
+            ]
+        thumbnail: dict[str, Any] | None = None
+        for asset in media:
+            if isinstance(asset, dict) and asset.get("kind") == "thumbnail":
+                thumbnail = asset
+                break
+        video_assets: list[dict[str, Any]] = [
+            asset for asset in media if isinstance(asset, dict) and asset.get("kind") == "video"
+        ]
+        # Reel branch — exactly one video asset (n_images == 0 already
+        # implied by falling through the image-count branches above). Multi-
+        # video sidecars fall through unchanged to the thumbnail arm below,
+        # preserving the M3 fallback shape.
+        if len(video_assets) == 1:
+            video_asset = video_assets[0]
+            video_url = str(video_asset.get("url", ""))
+            try:
+                frames = extract_reel_frames(video_url, frame_count=MAX_REEL_FRAMES)
+            except FrameExtractionError as exc:
+                logger.warning("reel frame extraction failed for url=%s: %s", video_url, exc)
+            else:
+                n = len(frames)
+                thumb_clause = (
+                    ", followed by the thumbnail cover frame" if thumbnail is not None else ""
+                )
+                envelope = (
+                    f"Reel content from the fetched post — {url}. "
+                    f"{n} evenly-spaced frames extracted from the video{thumb_clause}:"
+                )
+                content = [{"type": "input_text", "text": envelope}]
+                for i, (timestamp, jpeg_bytes) in enumerate(frames, start=1):
+                    b64 = base64.b64encode(jpeg_bytes).decode("ascii")
+                    content.append(
+                        {
+                            "type": "input_text",
+                            "text": f"Frame {i}/{n} at t≈{timestamp:.1f}s:",
                         }
+                    )
+                    content.append(
+                        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"}
+                    )
+                if thumbnail is not None:
+                    content.append(
+                        {
+                            "type": "input_text",
+                            "text": f"Thumbnail cover frame from the fetched post — {url}:",
+                        }
+                    )
+                    content.append(
+                        {"type": "input_image", "image_url": str(thumbnail.get("url", ""))}
+                    )
+                return [{"role": "user", "content": content}]
+        if thumbnail is not None:
+            return [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                f"Image content from the fetched post — {url} (kind=thumbnail):"
+                            ),
+                        },
+                        {"type": "input_image", "image_url": thumbnail.get("url", "")},
                     ],
                 }
             ]
@@ -180,12 +301,8 @@ def _build_multimodal_hook(
                 "content": [
                     {
                         "type": "input_text",
-                        "text": (
-                            f"Image content from the fetched post — {url} "
-                            f"(kind={selected.get('kind')}):"
-                        ),
-                    },
-                    {"type": "input_image", "image_url": selected.get("url", "")},
+                        "text": "no visual asset available for this post",
+                    }
                 ],
             }
         ]
@@ -282,37 +399,85 @@ def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> Extractio
     report_records = [rec for rec in trace if rec.tool == "report_extraction_status"]
     fetch_records = [rec for rec in trace if rec.tool == "fetch_instagram_post"]
 
-    # Happy path — the LLM called `save_event` and the tool persisted the row.
-    # Two-pass: any successful save wins over any failed save, so a retry
-    # after a `duplicate_event`/`invalid_event_data` failure still yields an
-    # `ok` hand-off. Single-pass (first-record-wins) would report failure
-    # even though the DB persisted the event on a subsequent attempt.
+    # Partition `save_event` returns into (successes → Event) and (failures →
+    # error-dict). Preserve trace order for both — carousel slot indices ride
+    # in the `Event` payload, so the returned `events` list mirrors the LLM's
+    # call sequence.
+    events: list[Event] = []
+    failures: list[dict[str, object]] = []
     for record in save_event_records:
         result = record.result
         if not isinstance(result, dict):
             continue
         saved = result.get("saved")
         if isinstance(saved, dict):
-            event = Event.model_validate(saved)
-            answer = loop_result.answer or ""
-            return ExtractionResult(
-                status="ok",
-                event=event,
-                error_type=None,
-                notes=_truncate_notes(answer),
+            events.append(Event.model_validate(saved))
+        elif "error_type" in result:
+            failures.append(result)
+
+    # Happy path — at least one `save_event` persisted an `Event`. Any success
+    # wins over any failure (the M3 "get any event you can" bias, now
+    # generalised to N events). `notes` uses a redacted `[error_type: <token>]`
+    # construction on the mixed-success-plus-failure branch to close the Rule 2
+    # leak channel (a Pydantic `ValidationError.__str__` echoes submitted field
+    # values, and `title` may carry caption bytes).
+    if events:
+        first_reported: dict[str, object] | None = None
+        for record in reversed(report_records):
+            result = record.result
+            if not isinstance(result, dict):
+                continue
+            if "error_type" in result and not result.get("reported"):
+                # `_ReportedStatus` rejected the args — the LLM saw an
+                # `invalid_reported_status` typed error and the run continued.
+                continue
+            reported_status = result.get("status")
+            reported_error_type = result.get("error_type")
+            if isinstance(reported_status, str) and isinstance(reported_error_type, str):
+                if reported_status == "ok":
+                    # `report_extraction_status(status="ok")` is a caller bug;
+                    # ignore it and keep looking for a real unhappy report.
+                    continue
+                first_reported = result
+                break
+
+        if failures:
+            first_failure_type = str(failures[0].get("error_type", ""))
+            notes = _truncate_notes(
+                f"{len(events)} saved; {len(failures)} save_event failure(s)"
+                f" [error_type: {first_failure_type}]"
             )
-    for record in save_event_records:
-        result = record.result
-        if not isinstance(result, dict):
-            continue
-        if "error_type" in result:
-            message = str(result.get("message", ""))
-            return ExtractionResult(
-                status="error",
-                event=None,
-                error_type="save_event_failed",
-                notes=_truncate_notes(message),
+        elif first_reported is not None:
+            reported_error_type = str(first_reported.get("error_type", ""))
+            reported_notes = str(first_reported.get("notes", ""))
+            notes = _truncate_notes(
+                f"{len(events)} saved; LLM also reported {reported_error_type}: {reported_notes}"
             )
+        else:
+            notes = _truncate_notes(loop_result.answer or "")
+
+        return ExtractionResult(
+            status="ok",
+            events=events,
+            error_type=None,
+            notes=notes,
+        )
+
+    # All-failed with no successes — the same redacted `[error_type: <token>]`
+    # construction as the mixed branch above. M3 shipped raw ValidationError
+    # strings here; this stage closes that pre-existing Rule 2 leak channel in
+    # the same commit that would otherwise widen it to the partial-success
+    # path.
+    if failures:
+        first_failure_type = str(failures[0].get("error_type", ""))
+        notes = _truncate_notes(
+            f"{len(failures)} save_event failure(s) [error_type: {first_failure_type}]"
+        )
+        return ExtractionResult(
+            status="error",
+            error_type="save_event_failed",
+            notes=notes,
+        )
 
     # Unhappy terminal call — `report_extraction_status`.
     for record in reversed(report_records):
@@ -337,7 +502,6 @@ def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> Extractio
                 continue
             return ExtractionResult(
                 status=status_cast,
-                event=None,
                 error_type=error_type_cast,
                 notes=notes_cast,
             )
@@ -359,14 +523,12 @@ def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> Extractio
                 error_type_cast = cast(ExtractionErrorType, error_type_str)
                 return ExtractionResult(
                     status="error",
-                    event=None,
                     error_type=error_type_cast,
                     notes=_truncate_notes(message),
                 )
             degraded_notes = _truncate_notes(f"unknown source error {error_type_str!r}: {message}")
             return ExtractionResult(
                 status="error",
-                event=None,
                 error_type="low_confidence_extraction",
                 notes=degraded_notes,
             )
@@ -374,7 +536,6 @@ def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> Extractio
     # Budget cap or unexplained stop — the loop ended without a terminal call.
     return ExtractionResult(
         status="error",
-        event=None,
         error_type="low_confidence_extraction",
         notes="ran out of steps without a terminal call",
     )
@@ -382,6 +543,7 @@ def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> Extractio
 
 __all__ = [
     "DELEGATION_BRIEF",
+    "MAX_CAROUSEL_IMAGES",
     "MAX_OUTPUT_TOKENS",
     "MAX_STEPS",
     "USER_MESSAGE",

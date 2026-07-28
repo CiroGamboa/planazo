@@ -93,6 +93,88 @@ def test_save_event_reports_a_duplicate_source_url_with_the_existing_row_id(
     assert events[0]["title"] == "AI Meetup"
 
 
+def test_save_event_persists_two_slots_for_the_same_source_url(db_file: Path) -> None:
+    first = save_event(
+        title="Carousel — night 1",
+        category="music",
+        source="instagram",
+        source_url="https://www.instagram.com/p/carousel/",
+        start_utc="2026-08-01T21:00:00+00:00",
+        end_utc="2026-08-01T23:00:00+00:00",
+        city="Barcelona",
+        confidence=0.9,
+        event_index_in_post=0,
+    )
+    second = save_event(
+        title="Carousel — night 2",
+        category="music",
+        source="instagram",
+        source_url="https://www.instagram.com/p/carousel/",
+        start_utc="2026-08-02T21:00:00+00:00",
+        end_utc="2026-08-02T23:00:00+00:00",
+        city="Barcelona",
+        confidence=0.9,
+        event_index_in_post=1,
+    )
+
+    assert isinstance(first["event_db_id"], int)
+    assert isinstance(second["event_db_id"], int)
+    assert first["event_db_id"] != second["event_db_id"]
+
+    found = search_events(category="music")
+    assert found["total"] == 2
+
+
+def test_save_event_reports_duplicate_when_source_url_and_slot_both_repeat(
+    db_file: Path,
+) -> None:
+    first = save_event(
+        title="Carousel — night 2",
+        category="music",
+        source="instagram",
+        source_url="https://www.instagram.com/p/carousel/",
+        start_utc="2026-08-02T21:00:00+00:00",
+        end_utc="2026-08-02T23:00:00+00:00",
+        city="Barcelona",
+        confidence=0.9,
+        event_index_in_post=1,
+    )
+    duplicate = save_event(
+        title="Carousel — night 2 (retry)",
+        category="music",
+        source="instagram",
+        source_url="https://www.instagram.com/p/carousel/",
+        start_utc="2026-08-02T21:00:00+00:00",
+        end_utc="2026-08-02T23:00:00+00:00",
+        city="Barcelona",
+        confidence=0.6,
+        event_index_in_post=1,
+    )
+
+    assert duplicate["error_type"] == "duplicate_event"
+    assert duplicate["event_db_id"] == first["event_db_id"]
+
+
+def test_save_event_rejects_negative_event_index_in_post(db_file: Path) -> None:
+    result = save_event(
+        title="Bad slot",
+        category="tech",
+        source="meetup",
+        source_url="https://meetup.example/e/1",
+        start_utc="2026-08-01T19:00:00+00:00",
+        end_utc="2026-08-01T21:00:00+00:00",
+        city="Barcelona",
+        confidence=0.9,
+        event_index_in_post=-1,
+    )
+
+    assert result["error_type"] == "invalid_event_data"
+    message = result["message"]
+    assert isinstance(message, str)
+    assert "event_index_in_post" in message
+    assert not db_file.exists()
+
+
 def test_search_events_finds_a_row_saved_by_a_separate_call(db_file: Path) -> None:
     save_event(
         title="AI Meetup",

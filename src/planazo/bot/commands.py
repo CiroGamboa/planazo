@@ -1,17 +1,19 @@
-"""The four commands, and every word the bot says.
+"""The four commands — CRUD against SQLite; no reply text lives here.
 
 Each command is a coroutine with the same signature — `(surface: UserSurface,
-conn: sqlite3.Connection, message: IncomingMessage) -> None` — and this module
-imports no transport (ADR 0011). What follows is therefore CRUD against real
-SQLite that any surface can drive: the transport shell converts one update
-into an `IncomingMessage`, binds a reply channel, and calls one of these.
+conn: sqlite3.Connection, message: IncomingMessage, config: BotConfig) ->
+None` — and this module imports no transport (ADR 0011). What follows is
+therefore CRUD against real SQLite that any surface can drive: the transport
+shell converts one update into an `IncomingMessage`, binds a reply channel,
+and calls one of these.
 
-`COMMANDS` and `MESSAGES` are the complete user-facing copy. No reply text is
-spelled anywhere else in the package, so the whole set moves in one piece when
-it is externalized — including the one line the transport shell says on its
-own behalf, when it refuses to re-run an edited command. `COMMANDS` is also
-the single command list that `/start` and `/help` both render, so the two
-cannot drift.
+`COMMANDS` maps each command to a message id in `data/bot.yaml` — a
+structural identifier, not copy, the same status `_HANDLERS`'s keys already
+have in `app.py` — so `/start` and `/help` can render the same list without
+drifting. Every reply is produced by `planazo.bot.config.resolve` against
+`config`, which is also what the transport shell calls on its own behalf when
+it refuses to re-run an edited command. Every reply resolves at
+`config.default_locale`; no per-user locale exists until #56.
 
 Replies are plain text — see `planazo.bot.surface` — which is why a preference
 value is echoed back verbatim rather than escaped.
@@ -25,48 +27,17 @@ from typing import Final
 
 from pydantic import ValidationError
 
+from planazo.bot.config import BotConfig, resolve
 from planazo.bot.models import IncomingMessage
 from planazo.bot.session import resolve_user
 from planazo.identity import UserRecord, delete_preference, get_preferences, set_preference
 from planazo.interfaces.surface import UserSurface
 
 COMMANDS: Final[Mapping[str, str]] = {
-    "/start": "sign you up and show this list",
-    "/help": "show this list",
-    "/me": "show your account and how many preferences you have stored",
-    "/prefs": "view, set, or remove your preferences",
-}
-
-MESSAGES: Final[Mapping[str, str]] = {
-    "command_line": "{command} — {description}",
-    "start": "Hi {display_name}! You are all set. Here is what I can do:\n\n{commands}",
-    "help": "Here is what I can do:\n\n{commands}",
-    "me": "Your Planazo id: {user_id}\nTelegram: {handle}\nPreferences stored: {count}",
-    "me_preferences_unavailable": (
-        "Your Planazo id: {user_id}\nTelegram: {handle}\nPreferences stored: unavailable"
-    ),
-    "me_handle": "@{handle}",
-    "me_no_handle": "no handle set",
-    "prefs_usage": (
-        "Use one of:\n"
-        "/prefs — list your preferences\n"
-        "/prefs set <key> <value> — store or replace one\n"
-        "/prefs remove <key> — delete one"
-    ),
-    "prefs_empty": "You have no preferences stored.\n\n{usage}",
-    "prefs_list": "Your preferences:\n\n{lines}",
-    "prefs_line": "{key}: {value}",
-    "prefs_unavailable": "I cannot safely read your preferences right now. Please try again later.",
-    "prefs_saved": "Saved {key}: {value}",
-    "prefs_removed": "Removed {key}.",
-    "prefs_absent": "You have no preference named {key}.",
-    "prefs_rejected": "I did not save that:\n{reasons}",
-    "prefs_violation": "{field}: {problem}",
-    "edited_command": (
-        "I do not re-run an edited command: it would replay the old command "
-        "against what is stored now, which can undo a later change. Send it "
-        "again as a new message."
-    ),
+    "/start": "cmd_start",
+    "/help": "cmd_help",
+    "/me": "cmd_me",
+    "/prefs": "cmd_prefs",
 }
 
 
@@ -83,15 +54,22 @@ def _stored_id(user: UserRecord) -> int:
     return user.id
 
 
-def _command_list() -> str:
+def _command_list(config: BotConfig) -> str:
     """`COMMANDS`, rendered once for whichever command is listing them."""
+    locale = config.default_locale
     return "\n".join(
-        MESSAGES["command_line"].format(command=command, description=description)
-        for command, description in COMMANDS.items()
+        resolve(
+            config,
+            "command_line",
+            locale,
+            command=command,
+            description=resolve(config, description_id, locale),
+        )
+        for command, description_id in COMMANDS.items()
     )
 
 
-def _violations(error: ValidationError) -> str:
+def _violations(config: BotConfig, error: ValidationError) -> str:
     """The refused constraints, in the words the user needs to read.
 
     `PreferenceRecord` is what bounds a key and a value and keeps both on one
@@ -100,8 +78,12 @@ def _violations(error: ValidationError) -> str:
     4). The pydantic `Value error, ` prefix is dropped because it labels which
     layer raised, which is not the user's problem.
     """
+    locale = config.default_locale
     return "\n".join(
-        MESSAGES["prefs_violation"].format(
+        resolve(
+            config,
+            "prefs_violation",
+            locale,
             field=".".join(str(part) for part in item["loc"]),
             problem=item["msg"].removeprefix("Value error, "),
         )
@@ -109,62 +91,84 @@ def _violations(error: ValidationError) -> str:
     )
 
 
-def _list_preferences(conn: sqlite3.Connection, user_id: int) -> str:
-    stored = get_preferences(conn, user_id)
-    if stored.error_type is not None:
-        return MESSAGES["prefs_unavailable"]
-    if not stored.rows:
-        return MESSAGES["prefs_empty"].format(usage=MESSAGES["prefs_usage"])
+def _list_preferences(conn: sqlite3.Connection, user_id: int, config: BotConfig) -> str:
+    locale = config.default_locale
+    result = get_preferences(conn, user_id)
+    if result.error_type is not None:
+        return resolve(config, "prefs_read_error", locale)
+    if not result.rows:
+        return resolve(config, "prefs_empty", locale, usage=resolve(config, "prefs_usage", locale))
     lines = "\n".join(
-        MESSAGES["prefs_line"].format(key=row.key, value=row.value) for row in stored.rows
+        resolve(config, "prefs_line", locale, key=row.key, value=row.value) for row in result.rows
     )
-    return MESSAGES["prefs_list"].format(lines=lines)
+    return resolve(config, "prefs_list", locale, lines=lines)
 
 
-def _store_preference(conn: sqlite3.Connection, user_id: int, key: str, value: str) -> str:
+def _store_preference(
+    conn: sqlite3.Connection, user_id: int, key: str, value: str, config: BotConfig
+) -> str:
+    locale = config.default_locale
     try:
         stored = set_preference(conn, user_id, key, value)
     except ValidationError as error:
-        return MESSAGES["prefs_rejected"].format(reasons=_violations(error))
-    return MESSAGES["prefs_saved"].format(key=stored.key, value=stored.value)
+        return resolve(config, "prefs_rejected", locale, reasons=_violations(config, error))
+    return resolve(config, "prefs_saved", locale, key=stored.key, value=stored.value)
 
 
-def _drop_preference(conn: sqlite3.Connection, user_id: int, key: str) -> str:
+def _drop_preference(conn: sqlite3.Connection, user_id: int, key: str, config: BotConfig) -> str:
+    locale = config.default_locale
     if delete_preference(conn, user_id, key):
-        return MESSAGES["prefs_removed"].format(key=key)
-    return MESSAGES["prefs_absent"].format(key=key)
+        return resolve(config, "prefs_removed", locale, key=key)
+    return resolve(config, "prefs_absent", locale, key=key)
 
 
 async def handle_start(
-    surface: UserSurface, conn: sqlite3.Connection, message: IncomingMessage
+    surface: UserSurface, conn: sqlite3.Connection, message: IncomingMessage, config: BotConfig
 ) -> None:
     """Register the sender if they are new, then greet them and list the commands."""
     user = resolve_user(conn, message)
     await surface.reply(
-        MESSAGES["start"].format(display_name=user.display_name, commands=_command_list())
+        resolve(
+            config,
+            "start",
+            config.default_locale,
+            display_name=user.display_name,
+            commands=_command_list(config),
+        )
     )
 
 
 async def handle_help(
-    surface: UserSurface, conn: sqlite3.Connection, message: IncomingMessage
+    surface: UserSurface, conn: sqlite3.Connection, message: IncomingMessage, config: BotConfig
 ) -> None:
     """List the commands. The one command that reads and writes nothing."""
-    await surface.reply(MESSAGES["help"].format(commands=_command_list()))
+    await surface.reply(
+        resolve(config, "help", config.default_locale, commands=_command_list(config))
+    )
 
 
 async def handle_me(
-    surface: UserSurface, conn: sqlite3.Connection, message: IncomingMessage
+    surface: UserSurface, conn: sqlite3.Connection, message: IncomingMessage, config: BotConfig
 ) -> None:
     """Report the sender's internal id, their Telegram handle, and how much is stored.
 
     A sender with no handle — Telegram does not require one — gets a phrase
-    saying so, never a rendered `None`.
+    saying so, never a rendered `None`. A stored row that fails to validate on
+    read (`PreferenceReadResult.error_type`) replaces the whole reply with
+    `prefs_read_error` rather than reporting a count of zero, which would be a
+    coerced "you have nothing stored" over a data-corruption failure (AGENTS.md
+    rule 4).
     """
+    locale = config.default_locale
     user_id = _stored_id(resolve_user(conn, message))
+    result = get_preferences(conn, user_id)
+    if result.error_type is not None:
+        await surface.reply(resolve(config, "prefs_read_error", locale))
+        return
     handle = (
-        MESSAGES["me_no_handle"]
+        resolve(config, "me_no_handle", locale)
         if message.telegram_handle is None
-        else MESSAGES["me_handle"].format(handle=message.telegram_handle)
+        else resolve(config, "me_handle", locale, handle=message.telegram_handle)
     )
     preferences = get_preferences(conn, user_id)
     if preferences.error_type is not None:
@@ -173,16 +177,12 @@ async def handle_me(
         )
         return
     await surface.reply(
-        MESSAGES["me"].format(
-            user_id=user_id,
-            handle=handle,
-            count=len(preferences.rows),
-        )
+        resolve(config, "me", locale, user_id=user_id, handle=handle, count=len(result.rows))
     )
 
 
 async def handle_prefs(
-    surface: UserSurface, conn: sqlite3.Connection, message: IncomingMessage
+    surface: UserSurface, conn: sqlite3.Connection, message: IncomingMessage, config: BotConfig
 ) -> None:
     """List, store, or delete the sender's preferences.
 
@@ -195,17 +195,18 @@ async def handle_prefs(
     the bare one.
 
     Every outcome is its own reply: stored, removed, no such preference,
-    refused by a constraint, or the usage text for anything unparseable.
+    refused by a constraint, unreadable on a corrupt stored row, or the usage
+    text for anything unparseable.
     """
     parts = message.text.split(None, 3)
     subcommand = parts[1] if len(parts) > 1 else None
     user_id = _stored_id(resolve_user(conn, message))
 
     if subcommand is None:
-        await surface.reply(_list_preferences(conn, user_id))
+        await surface.reply(_list_preferences(conn, user_id, config))
     elif subcommand == "set" and len(parts) == 4:
-        await surface.reply(_store_preference(conn, user_id, parts[2], parts[3]))
+        await surface.reply(_store_preference(conn, user_id, parts[2], parts[3], config))
     elif subcommand == "remove" and len(parts) > 2:
-        await surface.reply(_drop_preference(conn, user_id, parts[2]))
+        await surface.reply(_drop_preference(conn, user_id, parts[2], config))
     else:
-        await surface.reply(MESSAGES["prefs_usage"])
+        await surface.reply(resolve(config, "prefs_usage", config.default_locale))

@@ -346,6 +346,180 @@ def test_search_observation_maps_strict_envelopes(
 def test_search_failure_wins_over_success_and_clarification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Rule 2 by code shape: caption text never crosses the Recommender's messages.
+
+    Stubbed extractor holds the caption as a local variable (mirroring the
+    real Extractor's scope) but returns an `ExtractionResult` whose only
+    strings are the LLM's short summary — never the raw caption. The
+    Recommender's `dispatch_extraction` tool return, plus every other
+    message the LLM ever sees, is asserted free of any 40-character caption
+    substring across five random seeds.
+    """
+    seed_events: list[str] = []
+
+    for seed in (1, 7, 42, 100, 2026):
+        rng = random.Random(seed)
+        caption = "".join(rng.choices("abcdefghijklmnopqrstuvwxyz .,!?", k=500))
+
+        # The stub takes the caption in its enclosing scope only — never returns
+        # it. This mirrors the real Extractor: caption sits inside its scope,
+        # the returned ExtractionResult carries only structured fields.
+        def stub_extract_once(
+            url: str, *, delegator_user_id: int, _caption: str = caption
+        ) -> ExtractionResult:
+            _ = _caption  # captured, deliberately unused
+            return ExtractionResult(
+                status="ok",
+                events=[
+                    Event(
+                        source="instagram",
+                        source_url=url,
+                        title="Barcelona show",
+                        start_utc=datetime(2026, 8, 15, 22, 0, tzinfo=UTC),
+                        end_utc=datetime(2026, 8, 16, 4, 0, tzinfo=UTC),
+                        category="music",
+                        city="Barcelona",
+                        confidence=0.9,
+                    )
+                ],
+                error_type=None,
+                notes="short paraphrase",
+            )
+
+        monkeypatch.setattr("planazo.extraction.tools.extract_once", stub_extract_once)
+
+        arguments = {"url": "https://www.instagram.com/p/ABC/"}
+        tool_call = {
+            "name": "dispatch_extraction",
+            "arguments": arguments,
+            "call_id": "call_1",
+        }
+        output_item = {
+            "type": "function_call",
+            "name": "dispatch_extraction",
+            "arguments": json.dumps(arguments),
+            "call_id": "call_1",
+        }
+        turn_1 = make_result(text="", tool_calls=[tool_call], output_items=[output_item])
+        turn_2 = make_result(text="Sounds interesting.", tool_calls=[], output_items=[])
+        mock_call = MagicMock(side_effect=[turn_1, turn_2])
+        monkeypatch.setattr(loop, "call", mock_call)
+
+        observed_records: list[StepRecord] = []
+        event_agent.run_once(
+            "summarize this post please",
+            user_id=1,
+            on_step=observed_records.append,
+        )
+
+        # Sanity: the delegation actually happened.
+        assert any(record.tool == "dispatch_extraction" for record in observed_records)
+
+        # Assemble everything the LLM ever saw across both turns.
+        haystacks: list[str] = []
+        for invocation in mock_call.call_args_list:
+            for message in invocation.kwargs["messages"]:
+                haystacks.append(json.dumps(message))
+        # Plus the tool results the observer saw (belt-and-braces).
+        for record in observed_records:
+            haystacks.append(json.dumps(record.result))
+        haystack = "\n".join(haystacks)
+
+        _assert_no_40_char_substring(caption, haystack)
+        seed_events.append(f"seed={seed} clean")
+
+    assert len(seed_events) == 5
+
+
+# --------------------------------------------------------------------------
+# Bounded preference push and pre-run corrupt-data outcome (#8).
+# --------------------------------------------------------------------------
+
+
+def _preference(key: str, value: str) -> PreferenceRecord:
+    return PreferenceRecord(user_id=1, key=key, value=value)
+
+
+def test_preferences_text_is_ascending_whole_rows_and_marks_omissions() -> None:
+    result = PreferenceReadResult(
+        rows=(
+            _preference("a", "x" * 200),
+            _preference("b", "y" * 200),
+            _preference("c", "z" * 200),
+            _preference("d", "w" * 200),
+            _preference("e", "v" * 200),
+            _preference("f", "u" * 200),
+        )
+    )
+
+    rendered = event_agent._preferences_text(result)
+
+    assert isinstance(rendered, str)
+    assert len(rendered) <= event_agent.PREFERENCE_PUSH_CAP
+    assert rendered.endswith("\n- [additional preferences omitted]")
+    assert rendered.count("- [additional preferences omitted]") == 1
+    assert "- 'a':" in rendered
+    assert "- 'f':" not in rendered
+    lines = rendered.splitlines()
+    assert lines[-1] == "- [additional preferences omitted]"
+    assert lines[1:-1] == sorted(lines[1:-1])
+
+
+def test_preferences_text_removes_the_reserve_when_all_rows_exactly_fit() -> None:
+    heading = "User preferences:"
+    marker = "\n- [additional preferences omitted]"
+    first_rows = tuple(_preference(key, "x" * 200) for key in "abcd")
+    provisional = heading + "".join(f"\n- {row.key!r}: {row.value!r}" for row in first_rows)
+    fifth_value = "y" * 200
+    fifth_line_with_one_char_key = f"\n- {'e'!r}: {fifth_value!r}"
+    fifth_key_length = (
+        event_agent.PREFERENCE_PUSH_CAP
+        - len(marker)
+        - len(provisional)
+        - len(fifth_line_with_one_char_key)
+        + 1
+    )
+    fifth_key = "e" * fifth_key_length
+    rows = (*first_rows, _preference(fifth_key, fifth_value))
+
+    rendered = event_agent._preferences_text(PreferenceReadResult(rows=rows))
+
+    assert isinstance(rendered, str)
+    assert len(rendered) == event_agent.PREFERENCE_PUSH_CAP - len(marker)
+    assert marker not in rendered
+    assert rendered.endswith(repr(fifth_value))
+
+
+def test_preferences_text_marks_an_extra_row_after_an_exact_fit_sequence() -> None:
+    heading = "User preferences:"
+    marker = "\n- [additional preferences omitted]"
+    first_rows = tuple(_preference(key, "x" * 200) for key in "abcd")
+    provisional = heading + "".join(f"\n- {row.key!r}: {row.value!r}" for row in first_rows)
+    final_value = "y" * 200
+    final_line = f"\n- {'e'!r}: {final_value!r}"
+    final_key = "e" * (
+        event_agent.PREFERENCE_PUSH_CAP - len(marker) - len(provisional) - len(final_line) + 1
+    )
+    rows = (*first_rows, _preference(final_key, final_value), _preference("z-extra", "z"))
+    rendered = event_agent._preferences_text(PreferenceReadResult(rows=rows))
+    assert isinstance(rendered, str)
+    expected_fifth_line = f"\n- {final_key!r}: {final_value!r}"
+    assert rendered == provisional + expected_fifth_line + marker
+    assert len(rendered) == event_agent.PREFERENCE_PUSH_CAP
+    assert final_key in rendered
+    assert "z-extra" not in rendered
+
+
+def test_preferences_text_omits_an_oversized_first_row() -> None:
+    row = _preference("k" * event_agent.PREFERENCE_PUSH_CAP, "x")
+
+    rendered = event_agent._preferences_text(PreferenceReadResult(rows=(row,)))
+
+    assert rendered == "User preferences:\n- [additional preferences omitted]"
+
+
+def test_run_once_fails_closed_before_loop_observer_or_trace_for_corrupt_preferences(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     def loop(**kwargs: object) -> LoopResult:
         observer = kwargs["on_step"]
         ask = kwargs["registry"]["ask_user"]  # type: ignore[index]
