@@ -1,6 +1,6 @@
 # 0013 — Extractor-side reel frame extraction via ffmpeg
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-28
 - **Deciders:** cirogam22
 - **Relates to:** [`0005-multi-agent-shape.md`](0005-multi-agent-shape.md) (multi-agent shape and the Extractor's tool boundary), [`0006-instagram-extraction-approach.md`](0006-instagram-extraction-approach.md) (partially supersedes §Decision 4 — the ADAPTER still emits URL-only `MediaAsset` entries; the boundary shift is that the EXTRACTOR now downloads binary reel content and materializes JPEG frames), [`0012-multi-event-extraction.md`](0012-multi-event-extraction.md) (multi-event carousels; reels are the other half of M3.5's target content), scheduled-ingestion pipeline (issue #68, ADR pending).
