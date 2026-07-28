@@ -132,7 +132,8 @@ Under `src/planazo/`, each domain concept lives in a self-contained folder that 
 | `approval/` | Approval-gate audit | `ApprovalDecision`, `ApprovalGate` protocol |
 | `calendar/` | Reference calendar tools (v0.2 real Google Calendar replaces this) | `EventCandidateInput`, `CalendarConfirmationInput`, `CandidateStore` (JSON), `save_event_candidate`/`confirm_and_create_calendar_event` tools |
 | `query/` | Free-text → structured intent | `SearchIntent`, `interpret()` |
-| `sources/` | Source adapters (Instagram first; TikTok / YouTube / news to follow) | `RawPost`, `MediaAsset`, `SourcesConfig`, `InstagramSource` |
+| `sources/` | Source adapters (Instagram first; TikTok / YouTube / news to follow) | `RawPost`, `MediaAsset`, `SourcesConfig`, `PostConfig`, `AccountConfig` (with `backend` discriminator), `InstagramSource`, `InstagramDiscoveryProtocol`, `AnonInstagramClient`, `HikerClient` |
+| `scheduler/` | Periodic ingestion clock — routes account URLs to a discovery backend, pre-checks idempotency, drives `extract_once` under a seeded system user | `ScanState`, `SchedulerRunRecord`, `TickReport`, `run_tick`, `planazo-scheduler` CLI |
 | `memory/` | Facts + notes + rules (private/shared) | `Fact`, `Note`, `MemoryScopeRequest`, closured memory tools |
 | `recommendation/` | Deterministic ranker (LLM re-ranker deferred) | `RankedEventList` — landed by M4 |
 | `monitor/` | Out-of-band LLM-as-judge grader | `RunStep`, `RunSession`, `Verdict`, `GradedRun` |
@@ -187,12 +188,13 @@ Push-context (attached before the loop starts): `load_rules()` output, the user'
   ```python
   ExtractionResult = {
       "status": "ok" | "error" | "needs_clarification",
-      "event": Event | None,
+      "events": list[Event],  # one entry per event the post announces (0..N)
       "needs_approval": False,  # extraction is reversible
       "notes": str,  # short summary for the recommender
       "error_type": str | None,  # typed branch, per AGENTS.md rule 4
   }
   ```
+  `status == "ok"` ⇔ `len(events) >= 1`; `status in {"error", "needs_clarification"}` ⇔ `events == []`. A curator carousel that announces N distinct events becomes N entries under the composite `(source_url, event_index_in_post)` natural key.
 - `dispatch_extraction` on the Recommender side calls `extract_once` and returns the structured object only. The caption text never enters the Recommender's messages — see §Trust boundaries below.
 
 Governed by [**ADR 0005 — Multi-agent shape**](adr/0005-multi-agent-shape.md) (Recommender/Extractor split, delegation brief, `ExtractionResult` hand-off, audit-log schema) and [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-extraction-approach.md) (source-adapter error taxonomy the Extractor surfaces).
@@ -201,17 +203,23 @@ Governed by [**ADR 0005 — Multi-agent shape**](adr/0005-multi-agent-shape.md) 
 
 - **`sources/base.py`** — `EventSource` protocol. Generalized enough that Instagram, TikTok, YouTube, news pages, Meetup, and Eventbrite all drop into the same slot without a signature change — the design goal is a swap seam, not one Instagram-specific interface.
 - **`sources/models.py`** — `RawPost` + `MediaAsset` (Pydantic v2). Media-type-agnostic: `RawPost` carries `title`, `caption`, `posted_at`, `author_handle`, `permalink`, and a `media: list[MediaAsset]` where each asset has a `kind` (`image` / `video` / `thumbnail`) plus its URL and metadata (duration for videos, dimensions for images). Reels and carousels return the same shape as static posts; the Extractor (M3) branches on `media[*].kind` when it decides how to probe the multimodal LLM.
-- **`sources/config.py`** — Pydantic-validated config loader. Reads `data/sources.yaml` at startup: target accounts (URLs) per source, per-source or per-account scrape cadence (`every: 6h`), and per-account media-type flags (`static_posts`, `reels`, `carousels`, `video_posts`). Malformed config is a boot-time failure, not a per-scrape surprise.
+- **`sources/config.py`** — Pydantic-validated config loader. Reads `data/sources.yaml` at startup: `default_cadence` + `default_media_types` per source, an `accounts:` list of target account URLs (with optional per-account cadence and media-type overrides), and a `posts:` list of explicit post URLs (with optional per-entry failure-retry cadence). Both work-lists default to empty; either or both may be populated. `PostConfig.url` is validated against `instagram.com/{p|reel}/<shortcode>/` at load time. Malformed config is a boot-time failure, not a per-scrape surprise.
 - **`sources/instagram/`** — the real adapter, running inside a Docker service (see below). Reads the config, respects per-source cadence, attempts static posts (must work) + reels / carousels / video posts (exploratory — the ticket's acceptance bar is "each type either produces a validated `RawPost` or a typed `unsupported_media` error"). Returns `RawPost` to the Extractor's `fetch_instagram_post` tool only; never to the Recommender's tools.
-- **`sources/meetup/`** — future adapter against public GraphQL (ADR 0012, conditional).
-- **`sources/eventbrite/`** — future adapter (ADR 0012, conditional).
+- **`sources/meetup/`** — future adapter against public GraphQL (conditional on Meetup shipping past POC).
+- **`sources/eventbrite/`** — future adapter (conditional on Eventbrite shipping past POC).
 - Registration is config-driven via `SOURCES: dict[str, EventSource]` (module constant), monkeypatched in tests.
 
 **Docker isolation.** Instagram scraping is fragile — the runtime lives in a container (`docker/sources.Dockerfile` + `compose.yaml`'s `sources-instagram` service) so it's isolated from the local machine's Python version, cookie state, and IP hygiene. Dev flow: `docker compose up sources-instagram` runs the adapter against the mounted `data/sources.yaml`. CI runs the same image against a stubbed network fixture — no real Instagram calls in the test suite.
 
+**Extractor-host prerequisite.** The Extractor (§4) needs `ffmpeg` on `PATH` for the reel frame-extraction pipeline — `brew install ffmpeg` (macOS) or `apt-get install ffmpeg` (Linux) on the host that runs `planazo-agent`. Not required inside the `sources-instagram` container, which does not run the extractor.
+
+**Scheduled ingestion.** A host-cron `planazo-scheduler --tick` invocation is the clock that drives the adapter on a real schedule. The scheduler lives in its own bounded context (`src/planazo/scheduler/`) — models (`ScanState`, `SchedulerRunRecord`, `TickReport`), the `scan_state` repository, the `run_tick` composition root, and the `planazo-scheduler` CLI. For each configured entry in `data/sources.yaml`, the scheduler consults `scan_state` + `next_run_after` for the cadence gate; account entries route through `AccountConfig.backend` to one of two `InstagramDiscoveryProtocol` implementations (`AnonInstagramClient` — `curl_cffi` + Meta's `web_profile_info`; `HikerClient` — paid multi-key HikerAPI pool) for discovery, post entries skip discovery entirely; every survivor pre-checks against `catalog/repository.py::events_exist_for_source_url` to skip already-persisted URLs before spending STRONG-tier LLM budget, and the rest dispatch into `extract_once` under a seeded system user (`telegram_user_id="system"`). One `SchedulerRunRecord` line per source URL processed lands in `var/scheduler_runs.jsonl` for post-hoc observability. Governed by [**ADR 0011 — Scheduled Instagram ingestion**](adr/0011-scheduled-ingestion.md) and [**ADR 0014 — Instagram discovery backends**](adr/0014-instagram-discovery-backends.md).
+
+**Config layer — two work-lists.** `sources.instagram` in `data/sources.yaml` carries two independently-populated blocks the scheduler processes on every tick. `accounts:` names accounts to scan for recent posts — the discovery path routed via `AccountConfig.backend` to one of the two discovery backends the scheduler composes (`anonymous` via `curl_cffi` + Meta's `web_profile_info`; `hikerapi` via a paid multi-key pool). `posts:` names explicit post URLs the scheduler sends straight into `extract_once` — no discovery, always works from anonymous `Post.from_shortcode`. Both blocks are optional (an empty config is a valid empty tick); successful extractions from `posts:` are naturally idempotent via the composite `UNIQUE(source_url, event_index_in_post)` in `events`, so the per-entry `cadence` on a post gates only the failure-retry path. `PostConfig.url` is validated against `instagram.com/{p|reel}/<shortcode>/` at load time — an account URL pasted into `posts:` surfaces as a Pydantic `ValidationError`, not a runtime `not_found`. `sources.enumerate_configured_posts(source_config)` returns the flat URL list in config order, and `sources.is_instagram_post_url(url)` exposes the same shape check for callers (the `planazo-scheduler --once <url>` CLI branch) that need to discriminate a loose URL.
+
 **Typed error branches** (rule 4): `unsupported_source`, `rate_limited`, `auth_failed`, `not_found`, `unsupported_media`. The adapter never raises on the happy path.
 
-Governed by [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-extraction-approach.md) (scraper choice, container base, rate-limit envelope, cookie/session policy, per-media-type fallback rules, plus the generalized-protocol argument that TikTok/YouTube/news adapters drop into the same slot). Meetup and Eventbrite ADR 0012, conditional.
+Governed by [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-extraction-approach.md) (scraper choice, container base, rate-limit envelope, cookie/session policy, per-media-type fallback rules, plus the generalized-protocol argument that TikTok/YouTube/news adapters drop into the same slot).
 
 ### 6. Ranking — `src/planazo/rank/scorer.py`
 
@@ -231,11 +239,12 @@ Schema (v1):
 
 | Table | Purpose |
 | --- | --- |
-| `events(id, source, source_url UNIQUE, title, start_utc, end_utc, category, city, price_cents, geo_lat, geo_lng, confidence, extra JSON, ingested_at)` | The shared domain surface. `extra JSON` absorbs source-specific fields without altering the table. |
+| `events(id, source, source_url, title, start_utc, end_utc, category, city, price_cents, geo_lat, geo_lng, confidence, extra JSON, ingested_at, event_index_in_post, UNIQUE(source_url, event_index_in_post))` | The shared domain surface. `extra JSON` absorbs source-specific fields without altering the table. Composite `(source_url, event_index_in_post)` UNIQUE lets one Instagram post persist N distinct events (multi-event carousels) — see ADR 0012. |
 | `users(id, telegram_user_id UNIQUE, display_name, created_at)` | Multi-user seam. |
 | `preferences(user_id FK, key, value, updated_at)` | Structured filter prefs used by the ranker and pushed into the agent context. |
 | `approvals(id, user_id FK, artifact_kind, artifact_id, decision, decided_at)` | Audit trail for future calendar wiring. |
 | `extraction_runs_index(id, run_id, user_id, url, started_at)` | Thin index; the full run payload lives in the JSONL log (§9). |
+| `scan_state(source_url PK, last_scanned_at, last_success_at, consecutive_failures)` | Per-source-URL scheduler bookkeeping — post entries and account entries share the table (`source_url` is the honest name for both). `next_run_after(cadence, last_scanned_at)` drives the cadence gate; `consecutive_failures` drives the failure-skip gate (ADR 0011 §D9). Read + upserted every `planazo-scheduler --tick`. |
 
 ```mermaid
 erDiagram
@@ -253,7 +262,7 @@ erDiagram
     events {
         int id PK
         string source
-        string source_url UK
+        string source_url
         string title
         datetime start_utc
         datetime end_utc
@@ -265,6 +274,8 @@ erDiagram
         float confidence
         json extra
         datetime ingested_at
+        int event_index_in_post
+        composite UK "UNIQUE(source_url, event_index_in_post)"
     }
     preferences {
         int user_id FK
@@ -286,6 +297,12 @@ erDiagram
         int user_id FK
         string url
         datetime started_at
+    }
+    scan_state {
+        string source_url PK
+        datetime last_scanned_at
+        datetime last_success_at
+        int consecutive_failures
     }
 ```
 
@@ -370,11 +387,11 @@ Copied verbatim into the Extractor's system prompt (also lives as `DELEGATION_BR
 - **Acts alone when:** URL matches a known Instagram post pattern and the post has both an image and a caption.
 - **Asks (returns `status: "needs_clarification"`) when:** the post is ambiguous, the date/time cannot be extracted, or the location is not in Barcelona metro.
 - **Escalates (returns `status: "error"` + `error_type` and halts) when:** rate-limited, auth failure, image unavailable, or extraction confidence < 0.3.
-- **Effort budget:** `max_steps=4`, `max_output_tokens=2000`, one image per call. Enforced by `run_loop` parameters, not by prompt text.
+- **Effort budget:** `max_steps=8`, `max_output_tokens=2000`, one image for single-image posts; up to 3 images for carousels; 3 evenly-spaced frames + thumbnail for reels. Enforced by `run_loop` parameters, not by prompt text.
 
 #### Terminal calls
 
-- **Success ends with `save_event`.** When a valid `Event` has been parsed, call `save_event` with its fields; the catalog persists the row and returns `{"saved": ..., "event_db_id": ...}`. Do not answer in free-form text after a successful `save_event` — the tool call is the terminal signal.
+- **Success ends with one or more `save_event` calls.** When a valid `Event` has been parsed, call `save_event` with its fields; the catalog persists the row and returns `{"saved": ..., "event_db_id": ...}`. When a single post announces multiple distinct events (curator carousels), call `save_event` once per event with `event_index_in_post` = `0`, `1`, `2`, ... — one call per slot, in order. Do not answer in free-form text after the final `save_event` — the tool call is the terminal signal.
 - **Unhappy ends with `report_extraction_status(status, error_type, notes)`.** Every non-success branch terminates with exactly one `report_extraction_status` call. Map from this brief's branches to `error_type` literals as follows.
   - "Asks (returns `status: "needs_clarification"`)": `status="needs_clarification"`, `error_type` ∈ `{"ambiguous_content", "missing_date", "location_out_of_metro", "multiple_events_in_post"}`.
   - "Escalates (returns `status: "error"`)": `status="error"`, `error_type` ∈ `{"rate_limited", "auth_failed", "not_found", "unsupported_source", "unsupported_media", "no_visual_asset", "low_confidence_extraction", "save_event_failed"}`.
@@ -386,7 +403,7 @@ Copied verbatim into the Extractor's system prompt (also lives as `DELEGATION_BR
 Both agents branch on the field, not on prose. The hand-off from `dispatch_extraction`:
 
 ```python
-{"status": "ok" | "error" | "needs_clarification", "result": Event | None, "needs_approval": False}
+{"status": "ok" | "error" | "needs_clarification", "events": list[Event], "needs_approval": False}
 ```
 
 ### Flow — extraction delegation
@@ -404,7 +421,7 @@ sequenceDiagram
 
     R->>E: dispatch_extraction(url, user_id, run_id)
 
-    Note over E: system prompt =<br/>rules + delegation brief<br/>max_steps=4, 1 image/call
+    Note over E: system prompt =<br/>rules + delegation brief<br/>max_steps=8, ≤3 images/call plus optional reel frames
 
     E->>IG: fetch_instagram_post(url)
     IG-->>E: RawPost{image, caption, meta}
@@ -412,16 +429,16 @@ sequenceDiagram
     Note over E: multimodal LLM parses<br/>image + caption + meta
 
     alt confidence ≥ 0.3
-        E->>DB: save_event(Event)
+        E->>DB: save_event(Event, event_index_in_post) × N
         DB-->>E: ok
         E->>L: log run_id + turns + timing
-        E-->>R: {status:"ok", event, needs_approval:false}
+        E-->>R: {status:"ok", events, needs_approval:false}
     else confidence < 0.3
         E->>L: log run_id + error_type
         E-->>R: {status:"error", error_type:"low_confidence_extraction"}
     end
 
-    Note right of R: R never sees raw caption text
+    Note right of R: R never sees raw caption text;<br/>0..N events per post
 ```
 
 The trust boundary is the return type: `E` returns a validated `Event` object (or a typed error state), never the raw caption. `sources/instagram/` is imported only by `E`, never by `R` — enforced by module layout, verified by a static check.
@@ -549,7 +566,7 @@ Accepted ADRs describe current state; planned ADRs are reserved for their own ti
 | --- | --- | --- |
 | 0003 | [`sqlite-domain-store`](adr/0003-sqlite-domain-store.md) | SQLite + JSON columns for `events`/`users`/`preferences`/`approvals`. Supersedes 0002's JSON persistence for the domain surface only. |
 | 0004 | [`three-store-memory-model`](adr/0004-three-store-memory-model.md) | Relational (SQLite), non-relational (JSON docstore), rules (markdown). Facts vs rules; private vs shared. |
-| 0005 | [`multi-agent-shape`](adr/0005-multi-agent-shape.md) | Recommender + Extractor split; `DELEGATION_BRIEF` byte-verbatim with this doc; `ExtractionResult` hand-off (`status`, `event`, `needs_approval=False`, `notes`, `error_type`); Extractor audit log = `RunStep(agent="extractor", ...)` lines joined by `run_id`. |
+| 0005 | [`multi-agent-shape`](adr/0005-multi-agent-shape.md) | Recommender + Extractor split; `DELEGATION_BRIEF` byte-verbatim with this doc; `ExtractionResult` hand-off (`status`, `events` (list), `needs_approval=False`, `notes`, `error_type`); Extractor audit log = `RunStep(agent="extractor", ...)` lines joined by `run_id`. — §Decision 10 superseded and §Decision 11's invariant clause partially superseded by ADR 0012 (#64) |
 | 0006 | [`instagram-extraction-approach`](adr/0006-instagram-extraction-approach.md) | Scraper: `instaloader` on `python:3.12-slim`; session via `INSTAGRAM_SESSION_ID` env var (anonymous fallback); per-media-type strategy (static, reel, carousel, video) with `unsupported_media` typed branch; rate-limit envelope surfaced to the caller, never retried inside the adapter; URL-only `MediaAsset` — the adapter never downloads binaries. |
 | 0007 | [`monitor-scheduling-and-grades`](adr/0007-monitor-scheduling-and-grades.md) | Categorical axes, rationale requirement, cron/GHA plan. |
 | 0008 | [`domain-driven-module-layout`](adr/0008-domain-driven-module-layout.md) | Bounded-context folder layout under `planazo/`; per-aggregate `models.py` + `repository.py` (+ `tools.py`); preserves ADR 0003/0004 API contracts. |
@@ -560,7 +577,11 @@ Accepted ADRs describe current state; planned ADRs are reserved for their own ti
 | 0013 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
 | 0010 | [`extensibility-interfaces`](adr/0010-extensibility-interfaces.md) | `Protocol` classes at the four swap seams — `UserSurface`, `EventSource`, `Repository[T]`, `AgentLoop` — in `src/planazo/interfaces/`. |
 | 0011 | [`telegram-bot-interface`](adr/0011-telegram-bot-interface.md) | Bot layer, no-LLM-in-bot invariant, PTB-free command signature, session mapping, the `UserSurface` shape, and the approval seam's threading contract. Supersedes ADR 0010's `UserSurface` declaration only. |
+| 0011 | [`scheduled-ingestion`](adr/0011-scheduled-ingestion.md) | Host-cron `planazo-scheduler --tick`; `events_exist_for_source_url` pre-check as the idempotency source of truth; dedicated `scan_state` table; seeded system user identity; per-shape extraction discipline (multi-event carousels, multi-slide LLM turn, extractor-side reel frame extraction). Partially supersedes ADR 0005 §D7 (via #65) and ADR 0006 §D4 (via ADR 0013); supersedes ADR 0005 §D10 outright (via ADR 0012). |
 | 0012 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
+| 0012 | [`multi-event-extraction`](adr/0012-multi-event-extraction.md) | Lift extraction cardinality to 0..N events per post: `ExtractionResult.events: list[Event]`, `save_event(event_index_in_post)`, composite `UNIQUE(source_url, event_index_in_post)`, `events_exist_for_source_url` primitive. Supersedes ADR 0005 §Decision 10; partially supersedes §Decision 11's invariant clause. |
+| 0013 | [`extractor-side-frame-extraction`](adr/0013-extractor-side-frame-extraction.md) | Reel multimodal input: the extractor downloads the reel `video_url` to a temp file, extracts `MAX_REEL_FRAMES=3` evenly-spaced JPEG frames via `ffmpeg`, and sends them as base64 `input_image` parts alongside the thumbnail; silent degrade to thumbnail-only on `FrameExtractionError`. Extends ADR 0005's delegation-brief effort budget with the reel-frame arm; partially supersedes ADR 0006 §Decision 4 (extractor now downloads binaries; the adapter still emits URL-only `MediaAsset` entries). |
+| 0014 | [`instagram-discovery-backends`](adr/0014-instagram-discovery-backends.md) | Two-backend discovery split routed by `AccountConfig.backend`: `anonymous` (`curl_cffi` + Meta `web_profile_info`) and `hikerapi` (paid HikerAPI, multi-key pool with uniform random selection + 5-minute retirement window). Discovery lives in the `scheduler/` bounded context, not on `InstagramSource`. Partially supersedes ADR 0011's Context claim of an adapter-side `list_recent_posts`, ADR 0011 §Decision 3 (`scan_state` primary key renamed `account_url` → `source_url`), and ADR 0011 §Decision 8 (audit-log field set extended with `source_kind`, `backend`, `started_at`, `ended_at`; grain changed to per source URL). |
 
 Until each ADR lands, its section here reads as "planned — ADR NNNN"; when it lands, the entry is edited in place to link the accepted ADR.
 
@@ -577,6 +598,7 @@ Every capability the MVP claims maps to a module, an evidence trace, and an ADR.
 | Shared content is untrusted | Extractor trust boundary + `save_note` quoting | `untrusted-content.md` | 0005 (invariant), 0006 (source) |
 | Executor + specialist agent with delegation brief + shared memory | `event_agent.py` + `extractor.py` + `events` table + `extraction_runs.jsonl` | (integrated across bot flows) | [0005](adr/0005-multi-agent-shape.md) |
 | Monitor on its own clock, categorical grades + rationale | `monitor/` | `data/monitor/YYYY-MM-DD.md` | 0007 |
+| Scheduled ingestion pipeline | `scheduler/` (`run_tick`, `planazo-scheduler` CLI) + `sources/instagram/` (`AnonInstagramClient`, `HikerClient`) + `events` table + `scan_state` table | `var/scheduler_runs.jsonl` (one `SchedulerRunRecord` line per source URL processed) | [0011](adr/0011-scheduled-ingestion.md), [0014](adr/0014-instagram-discovery-backends.md) |
 
 ## Verification
 
@@ -594,7 +616,7 @@ Post-doc, code verification happens in each follow-up ticket:
 ## Risks / open questions
 
 - **Instagram scraping fragility.** Any scraper breaks when Meta changes markup or throttles. Mitigation: the Extractor treats `sources/instagram/` as a swappable adapter behind `fetch_instagram_post`. If scraping proves too fragile, we swap to a manual "paste this URL + I'll paste the caption" flow without touching the Extractor agent. ADR 0006 will name the choice.
-- **Multimodal cost.** `STRONG` + image = material per-call cost. The delegation brief's effort budget (`max_steps=4`, one image per call) is the primary lever. Add a per-user daily cap in v0.2 if needed.
+- **Multimodal cost.** `STRONG` + image = material per-call cost. The delegation brief's effort budget (`max_steps=8`, ≤3 images per call for carousels) is the primary lever. Reels pay 3× image-token cost (~$0.015 per reel on STRONG) plus a ~10 MB video download + ~1s ffmpeg CPU on the extractor host. Add a per-user daily cap in v0.2 if needed.
 - **Cue-match precision.** Token-overlap cue matching will over-surface (a fact cued "music" appearing on any query with the word). MVP acceptance bar: manual review shows no obviously-wrong surfacing across the three memory scenarios. Embeddings + cosine is a follow-up ADR.
 - **Monitor bootstrapping.** The monitor needs run logs to grade. v1 accepts a one-run bootstrap: seed with a canned session, then have the monitor grade it as the demo. Real automated cadence lands with ADR 0007.
 

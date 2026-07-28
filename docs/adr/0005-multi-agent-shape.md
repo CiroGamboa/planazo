@@ -72,6 +72,8 @@ Signature: `on_tool_output: Callable[[StepRecord], list[dict[str, Any]] | None] 
 
 #### 7. "One image per call" enforced by the hook picking exactly one visual asset
 
+**§Decision 7 partially superseded by M3.5 (#65) — the hook now sends up to 3 image assets for `GraphSidecar` (carousel) posts. `GraphImage` and `GraphVideo` behaviour unchanged.**
+
 Selection rule, in order: (a) first `MediaAsset` with `kind == "image"`; (b) else first `MediaAsset` with `kind == "thumbnail"`; (c) else no visual asset — the hook appends only an `input_text` note ("no visual asset available for this post") and the LLM falls back to caption-only extraction. Deterministic; matches how M2's adapter maps `GraphImage` (image), `GraphSidecar` (image nodes first), and `GraphVideo` (video + thumbnail).
 
 *Alternative rejected — attach every image asset.* Blows the cost envelope (multiple STRONG-tier image calls per run) and violates the delegation-brief bullet "one image per call".
@@ -92,11 +94,15 @@ Every `extract_once` call inserts one `ExtractionRunIndexEntry(run_id, user_id=d
 
 #### 10. Extraction result cardinality: one post → at most one `Event`
 
+**§Decision 10 superseded by ADR 0012 (#64) — M3.5 lifts this cardinality to 0..N events per post.**
+
 The LLM is instructed (in the delegation brief) to pick the primary event a post announces; carousels announcing multiple distinct events return `report_extraction_status(status="needs_clarification", error_type="multiple_events_in_post", ...)`. Multi-event support is filed as a follow-up.
 
 *Alternative rejected — return `list[Event]`.* Complicates the Recommender's downstream consumer (which currently branches on a single `Event | None`) for a case the MVP does not yet need to handle.
 
 #### 11. Error taxonomy — `ExtractionResult.error_type` typed literal
+
+**§Decision 11's invariant clause partially superseded by ADR 0012 (#64) — the new invariant is `status == 'ok' ⇔ len(events) >= 1`. Error taxonomy body is unchanged.**
 
 Branches: `unsupported_source`, `rate_limited`, `auth_failed`, `not_found`, `unsupported_media` (verbatim from `InstagramSource.fetch_post` — ADR 0006 taxonomy), `low_confidence_extraction`, `missing_date`, `location_out_of_metro`, `multiple_events_in_post`, `ambiguous_content`, `no_visual_asset`, `save_event_failed`. Enforced by `Literal[...]` on `ExtractionResult.error_type`. `status == "ok"` requires `error_type is None` and `event is not None`; `status in {"error", "needs_clarification"}` requires `error_type is not None` and `event is None`. Enforced by a Pydantic `model_validator(mode="after")`.
 

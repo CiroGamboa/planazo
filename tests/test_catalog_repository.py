@@ -8,6 +8,7 @@ from planazo import identity
 from planazo.catalog import (
     Event,
     ExtractionRunIndexEntry,
+    events_exist_for_source_url,
     insert_event,
     list_extraction_runs,
     query_events,
@@ -79,11 +80,45 @@ def test_query_events_applies_every_supplied_filter(conn: sqlite3.Connection) ->
     assert len(query_events(conn, max_results=2)) == 2
 
 
-def test_insert_event_rejects_a_duplicate_source_url(conn: sqlite3.Connection) -> None:
+def test_insert_event_rejects_a_duplicate_source_url_and_slot(conn: sqlite3.Connection) -> None:
     insert_event(conn, make_event())
 
     with pytest.raises(sqlite3.IntegrityError):
         insert_event(conn, make_event(title="A Different Title"))
+
+
+def test_insert_event_allows_two_slots_on_the_same_source_url(conn: sqlite3.Connection) -> None:
+    first_id = insert_event(conn, make_event(event_index_in_post=0))
+    second_id = insert_event(conn, make_event(title="Second night", event_index_in_post=1))
+
+    assert first_id != second_id
+    found = query_events(conn)
+    assert {event.event_index_in_post for event in found} == {0, 1}
+
+
+def test_events_exist_for_source_url_returns_empty_for_unknown_url(
+    conn: sqlite3.Connection,
+) -> None:
+    assert events_exist_for_source_url(conn, "https://unknown/") == []
+
+
+def test_events_exist_for_source_url_returns_the_default_slot_after_one_insert(
+    conn: sqlite3.Connection,
+) -> None:
+    insert_event(conn, make_event())
+
+    assert events_exist_for_source_url(conn, "https://meetup.example/e/1") == [0]
+
+
+def test_events_exist_for_source_url_returns_every_slot_sorted_ascending(
+    conn: sqlite3.Connection,
+) -> None:
+    # Insert out of order to prove the ORDER BY, not the insert sequence.
+    insert_event(conn, make_event(title="Slot 2", event_index_in_post=2))
+    insert_event(conn, make_event(title="Slot 0", event_index_in_post=0))
+    insert_event(conn, make_event(title="Slot 1", event_index_in_post=1))
+
+    assert events_exist_for_source_url(conn, "https://meetup.example/e/1") == [0, 1, 2]
 
 
 def test_record_extraction_run_round_trips_through_list_extraction_runs(

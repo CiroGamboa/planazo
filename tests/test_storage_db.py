@@ -5,7 +5,14 @@ import pytest
 
 from planazo.storage import db
 
-_V1_TABLES = {"events", "users", "preferences", "approvals", "extraction_runs_index"}
+_V1_TABLES = {
+    "events",
+    "users",
+    "preferences",
+    "approvals",
+    "extraction_runs_index",
+    "scan_state",
+}
 
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
