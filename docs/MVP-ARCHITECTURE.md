@@ -137,7 +137,7 @@ Under `src/planazo/`, each domain concept lives in a self-contained folder that 
 | `memory/` | Facts + notes + rules (private/shared) | `Fact`, `Note`, `MemoryScopeRequest`, closured memory tools |
 | `recommendation/` | Deterministic ranker (LLM re-ranker deferred) | `RankedEventList` — landed by M4 |
 | `monitor/` | Out-of-band LLM-as-judge grader | `RunStep`, `RunSession`, `Verdict`, `GradedRun` |
-| `observability/` | Per-loop SQLite audit rows in `agent_runs` — write-side only, wired best-effort at composition roots alongside the JSONL sidecars | `AgentRunRecord`, `format_stored_text`, `record_agent_run`/`query_agent_runs`, `AgentRunLogger` |
+| `observability/` | Per-loop SQLite audit rows in `agent_runs` + per-decision rationale rows in `llm_decisions` — write-side only, wired best-effort at composition roots alongside the JSONL sidecars | `AgentRunRecord`, `LLMDecision`, `format_stored_text`, `record_agent_run`/`query_agent_runs`, `record_llm_decision`/`query_llm_decisions`, `AgentRunLogger`, `LLMDecisionLogger` |
 
 **Shared kernel** — `agentlib/` (LLM wrapper) and `tools/schema.py` (function-signature reflection). Product-agnostic; imported by every context; may not import any context.
 
@@ -247,6 +247,7 @@ Schema:
 | `extraction_runs_index(id, run_id, user_id, url, started_at)` | Thin index; the full run payload lives in the JSONL log (§9). |
 | `scan_state(source_url PK, last_scanned_at, last_success_at, consecutive_failures)` | Per-source-URL scheduler bookkeeping — post entries and account entries share the table (`source_url` is the honest name for both). `next_run_after(cadence, last_scanned_at)` drives the cadence gate; `consecutive_failures` drives the failure-skip gate (ADR 0011 §D9). Read + upserted every `planazo-scheduler --tick`. |
 | `agent_runs(id, run_id UNIQUE, agent_kind CHECK IN ('recommender', 'extractor'), user_id FK, user_query, final_answer, stopped, steps_count, started_at, ended_at)` | One row per completed Recommender or Extractor loop, written best-effort at the composition roots alongside the JSONL sidecars. `user_query` and `final_answer` are sanitized via `observability/models.py::format_stored_text`. Backs future per-user history reads (`/find` history, #23) via the composite index `idx_agent_runs_user_started(user_id, started_at)`. |
+| `llm_decisions(id, run_id FK -> agent_runs.run_id, decision_kind CHECK IN ('save_event', 'needs_clarification', 'error', 'answered'), event_db_id FK -> events.id ON DELETE SET NULL, error_type, rationale, recorded_at)` | Zero-to-N rows per `agent_runs` — one per terminal LLM decision. The Extractor emits `save_event` / `needs_clarification` / `error` rows from its tool-call trace; the Recommender emits one `answered` row (or an `error` row on `truncated` / `max_steps`). `rationale` is DB-inside per Rule 2 (full LLM reasoning allowed subject to `RATIONALE_CAP=500` + `format_stored_text` sanitization). Written best-effort via `observability/logging.py::LLMDecisionLogger` alongside `AgentRunLogger`; disabled together by the Recommender's `record_runs=False` seam. Indexed on `run_id` (per-run join) and `decision_kind` (corpus-analysis shape M4's ranker will read). |
 
 ```mermaid
 erDiagram
@@ -318,7 +319,18 @@ erDiagram
         datetime started_at
         datetime ended_at
     }
+    llm_decisions {
+        int id PK
+        string run_id FK
+        string decision_kind
+        int event_db_id FK
+        string error_type
+        string rationale
+        datetime recorded_at
+    }
     users ||--o{ agent_runs : owns
+    agent_runs ||--o{ llm_decisions : produces
+    events ||--o{ llm_decisions : referenced_by
 ```
 
 Unit tests run against real SQLite in two tiers, matching how the two dao tiers open connections: the connection-parameterized primitives share one `:memory:` connection held across every call in a test, and the self-contained `save_event`/`search_events` wrappers — which open and close their own connection per call — run against a `tmp_path` file so state carries between calls.

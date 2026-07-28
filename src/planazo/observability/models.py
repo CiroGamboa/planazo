@@ -28,9 +28,9 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Final, Literal
+from typing import Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from planazo.monitor.models import AgentName
 
@@ -45,6 +45,18 @@ free-form composer without allowing a runaway model or scraped payload
 to bloat the table.
 """
 
+RATIONALE_CAP: Final[int] = 500
+"""Maximum length of the sanitized `LLMDecision.rationale` field.
+
+Set at 500 rather than the 2000 used for the two `agent_runs` free-form
+columns because a decision rationale is the LLM's terse per-decision
+reasoning (`report_extraction_status.notes` is already capped at 200; a
+`save_event` synthetic rationale is bounded by `Event.title` length),
+not a whole conversation transcript. 500 leaves headroom above the
+`notes` cap while still keeping the corpus M4's ranker will read against
+compact enough to store many thousands of rows without bloating the DB.
+"""
+
 FINAL_ANSWER_CAP: Final[int] = 2000
 """Maximum length of the sanitized `AgentRunRecord.final_answer` field.
 
@@ -52,6 +64,25 @@ The Recommender's `max_output_tokens` cap already keeps `LoopResult.answer`
 bounded well below 2000 characters. This is the DB-side belt-and-braces
 in case a downstream loop composition ships without an output cap, or a
 future agent produces longer answers.
+"""
+
+DecisionKind = Literal["save_event", "needs_clarification", "error", "answered"]
+"""The four terminal LLM decisions `llm_decisions.decision_kind` records.
+
+- `save_event` — the Extractor's LLM issued a successful `save_event`
+  call. One `LLMDecision` row per persisted `Event`; `event_db_id`
+  points at the row.
+- `needs_clarification` — the Extractor's LLM issued
+  `report_extraction_status(status="needs_clarification", ...)`. Ambiguous
+  post (missing date, out-of-metro venue, multi-event carousel).
+  `error_type` names the branch.
+- `error` — a typed failure branch. Emitted by the Extractor for a
+  `report_extraction_status(status="error", ...)` call, and by both
+  composition roots on a loop terminated by `truncated` / `max_steps`.
+- `answered` — the Recommender's LLM produced a final text answer with
+  no tool calls. Both `event_db_id` and `error_type` are `None`; the
+  Recommender does not project structured decisions into this table
+  today (per-item reasoning is deferred to M4 #20).
 """
 
 AgentRunStopped = Literal["answered", "truncated", "max_steps"]
@@ -175,4 +206,89 @@ class AgentRunRecord(BaseModel):
                 "AgentRunRecord.final_answer must be sanitized — build it "
                 "with observability.models.format_stored_text"
             )
+        return self
+
+
+class LLMDecision(BaseModel):
+    """One `llm_decisions` row — one terminal decision the LLM produced.
+
+    Field-for-field mirror of the SQL schema in
+    `planazo/storage/migrations/004_llm_decisions.sql`. The four
+    `decision_kind` branches have different required-field shapes:
+
+    - `save_event` — `event_db_id` required (the row the LLM's tool call
+      persisted); `error_type` must be `None`.
+    - `needs_clarification` / `error` — `error_type` required (the typed
+      branch the LLM signalled); `event_db_id` must be `None`.
+    - `answered` — both `event_db_id` and `error_type` must be `None`
+      (a Recommender loop that produced a final text answer; per-item
+      reasoning is deferred to M4 #20).
+
+    The `rationale` field is DB-inside per AGENTS.md Rule 2's rationale
+    hook: full LLM reasoning is allowed, subject to length cap
+    (`RATIONALE_CAP`) + `format_stored_text` sanitization. Callers build
+    the field through the helper; the after-validator's regex re-check
+    is defense-in-depth against a caller that bypassed the sanitizer,
+    same shape as `AgentRunRecord.user_query` / `final_answer`.
+
+    Redaction from the audit surface out to any model-visible or
+    operator-facing projection is the reader's responsibility, matching
+    the discipline already established for `agent_runs` free-form text.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = Field(min_length=1)
+    decision_kind: DecisionKind
+    event_db_id: int | None = None
+    error_type: str | None = None
+    rationale: str = Field(max_length=RATIONALE_CAP)
+    recorded_at: datetime
+
+    @field_validator("rationale")
+    @classmethod
+    def _validate_sanitized_rationale(cls, value: str) -> str:
+        """Reject an unsanitized rationale at the field boundary.
+
+        The regex bans every C0/C1 control character and DEL — a caller
+        who forgets `format_stored_text` fails here rather than pushing
+        raw caption bytes into the DB. Length is separately field-capped
+        so the two invariants stay independently readable.
+        """
+        if not _SANITIZED_TEXT_PATTERN.fullmatch(value):
+            raise ValueError(
+                "LLMDecision.rationale must be sanitized — build it "
+                "with observability.models.format_stored_text"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _validate_consistency(self) -> Self:
+        """Enforce the four `decision_kind` → required-field shapes.
+
+        The four branches encode a state machine the DB CHECK cannot
+        express in one clause: `save_event` writes a pointer to an
+        `events` row, `needs_clarification`/`error` name a typed failure
+        branch, and `answered` carries a Recommender text-answer
+        terminal with neither structured artifact. A mismatch is a
+        caller bug (a hand-composed test fixture, a raw-SQL write path
+        that skipped this aggregate) — surface it loudly at the model
+        boundary rather than persisting a row whose shape violates the
+        four-way invariant.
+        """
+        if self.decision_kind == "save_event":
+            if self.event_db_id is None:
+                raise ValueError("decision_kind='save_event' requires event_db_id")
+            if self.error_type is not None:
+                raise ValueError("decision_kind='save_event' requires error_type=None")
+        elif self.decision_kind in ("needs_clarification", "error"):
+            if self.error_type is None:
+                raise ValueError(f"decision_kind={self.decision_kind!r} requires error_type")
+            if self.event_db_id is not None:
+                raise ValueError(f"decision_kind={self.decision_kind!r} requires event_db_id=None")
+        else:  # "answered"
+            if self.event_db_id is not None:
+                raise ValueError("decision_kind='answered' requires event_db_id=None")
+            if self.error_type is not None:
+                raise ValueError("decision_kind='answered' requires error_type=None")
         return self
