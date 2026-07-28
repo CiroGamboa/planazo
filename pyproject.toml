@@ -11,11 +11,13 @@ dependencies = [
     "python-dotenv>=1.0",
     "pyyaml>=6",
     "instaloader>=4.14,<5",
+    "python-telegram-bot>=22.8,<23",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
+    "pytest-asyncio>=1.4,<2",
     "ruff>=0.7",
     "mypy>=1.13",
     "types-PyYAML>=6",
@@ -53,6 +55,7 @@ files = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-m 'not live'"
+asyncio_default_fixture_loop_scope = "function"
 markers = [
     "live: hits real external services (LLM providers, Instagram); opt-in via `pytest -m live`",
 ]

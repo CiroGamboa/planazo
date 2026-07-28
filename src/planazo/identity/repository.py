@@ -107,3 +107,18 @@ def set_preference(
     )
     conn.commit()
     return record
+
+
+def delete_preference(conn: sqlite3.Connection, user_id: int, key: str) -> bool:
+    """Delete one preference for `user_id`, reporting whether a row went away.
+
+    `True` means a `(user_id, key)` row existed and is gone; `False` means
+    there was nothing to delete. An unknown `key` and a `user_id` with no
+    `users` row are both `False` rather than a raise — unlike the INSERT in
+    `set_preference`, a DELETE has no foreign key to violate, and the caller
+    needs the two outcomes distinguishable to answer "removed" versus "no
+    preference by that name" instead of reporting a silent success (rule 4).
+    """
+    cursor = conn.execute("DELETE FROM preferences WHERE user_id = ? AND key = ?", (user_id, key))
+    conn.commit()
+    return cursor.rowcount > 0

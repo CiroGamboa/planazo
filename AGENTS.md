@@ -50,13 +50,11 @@ uv run ruff format                               # format
 uv run mypy src                                  # types
 uv run planazo-agent "<prompt>"                  # run the agent loop once
 uv run planazo-agent                             # interactive REPL
+uv run python -m planazo.bot                     # start the Telegram bot
 docker compose up sources-instagram              # run the Instagram source adapter one-shot
 ```
 
-<!--
-Add the Telegram bot entry command once it exists, e.g.:
-    uv run python -m planazo.bot                 # start the Telegram bot
--->
+Environment variables live in a `.env` at the repo root — copy [`.env.example`](.env.example). `OPENCODE_API_KEY` is required by `agentlib` for anything that calls the LLM; `TELEGRAM_BOT_TOKEN` is required to start the Telegram bot, which prints one line and exits 1 without it.
 
 ## Development Workflow
 
