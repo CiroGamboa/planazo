@@ -37,6 +37,8 @@ messages:
   chat_truncated: {en: "Here is what I have so far (the reply was cut short):\n\n{answer}", es: "Esto es lo que tengo hasta ahora (la respuesta se ha cortado):\n\n{answer}"}
   chat_max_steps: {en: "I couldn't finish that within my step limit. Try rephrasing, or ask something more specific.", es: "No he podido terminar eso dentro de mi límite de pasos. Intenta reformularlo o pregunta algo más concreto."}
   chat_provider_error: {en: "Something went wrong while answering that. Please try again in a moment.", es: "Algo ha fallado al responder eso. Inténtalo de nuevo en un momento."}
+  queue_ack: {en: "Still working on your last message — I'll get to this one right after.", es: "Todavía estoy con tu último mensaje — atenderé este justo después."}
+  queue_overflow: {en: "You're sending messages faster than I can answer them. Please wait for my replies before sending more.", es: "Me estás enviando mensajes más rápido de lo que puedo responder. Espera mis respuestas antes de enviar más."}
 registration:
   steps:
     - profile_field: display_name
@@ -54,3 +56,7 @@ registration:
     - profile_field: nationality
       prompt: register_nationality
       validation: {kind: text, min_length: 1, max_length: 80}
+queue:
+  bound: 20
+  ack_message: queue_ack
+  overflow_message: queue_overflow

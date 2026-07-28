@@ -114,6 +114,25 @@ class RegistrationConfig(BaseModel):
         return self
 
 
+class QueueConfig(BaseModel):
+    """The per-sender FIFO gate's backlog bound and its two dispatch replies."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    bound: int = Field(gt=0)
+    """The number of *waiting* messages admitted per sender, not counting the
+    one already running: a bound of 20 admits 1 in-flight message plus up to
+    20 queued behind it before the 22nd arrival for that sender overflows."""
+
+    ack_message: str = Field(min_length=1)
+    """A key of `BotConfig.messages` — the immediate reply sent when a message
+    is queued behind another still in flight for the same sender."""
+
+    overflow_message: str = Field(min_length=1)
+    """A key of `BotConfig.messages` — the reply sent, instead of queuing,
+    once the sender's backlog has already reached `bound`."""
+
+
 class BotConfig(BaseModel):
     """Root of `data/bot.yaml` — the message catalog and registration steps."""
 
@@ -123,6 +142,7 @@ class BotConfig(BaseModel):
     locales: list[str] = Field(min_length=2)
     messages: dict[str, dict[str, str]]
     registration: RegistrationConfig = Field(default_factory=RegistrationConfig)
+    queue: QueueConfig
 
     @model_validator(mode="after")
     def _default_locale_is_declared(self) -> BotConfig:
@@ -154,6 +174,17 @@ class BotConfig(BaseModel):
                 raise ValueError(
                     f"registration step {step.profile_field!r} references prompt "
                     f"{step.prompt!r}, which is not a key of messages"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _queue_messages_exist_in_messages(self) -> BotConfig:
+        for field_name in ("ack_message", "overflow_message"):
+            message_id = getattr(self.queue, field_name)
+            if message_id not in self.messages:
+                raise ValueError(
+                    f"queue.{field_name} references message {message_id!r}, "
+                    f"which is not a key of messages"
                 )
         return self
 
