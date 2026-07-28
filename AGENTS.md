@@ -54,7 +54,7 @@ uv run python -m planazo.bot                     # start the Telegram bot
 docker compose up sources-instagram              # run the Instagram source adapter one-shot
 ```
 
-Environment variables live in a `.env` at the repo root — copy [`.env.example`](.env.example). `OPENCODE_API_KEY` is required by `agentlib` for anything that calls the LLM; `TELEGRAM_BOT_TOKEN` is required to start the Telegram bot, which prints one line and exits 1 without it.
+Environment variables live in a `.env` at the repo root — copy [`.env.example`](.env.example). `OPENCODE_API_KEY` is required by `agentlib` for anything that calls the LLM; `TELEGRAM_BOT_TOKEN` is required to start the Telegram bot, which prints one line and exits 1 without it. `data/bot.yaml` is the bot's committed, Pydantic-validated copy and config source — a malformed file stops the process before it opens a Telegram connection.
 
 ## Development Workflow
 

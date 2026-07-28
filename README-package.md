@@ -56,6 +56,10 @@ The first message from a Telegram account creates its `users` row, so there is n
 
 Replies are plain text with no `parse_mode`, so a preference value containing `*`, `_`, or `<` is echoed back verbatim instead of being read as formatting. An edited command is answered with a notice rather than re-run: replaying an old command against newer state can undo a later change. No LLM call originates in the bot layer — the commands are CRUD against the same SQLite store — and [ADR 0011](docs/adr/0011-telegram-bot-interface.md) records the layering, the `UserSurface` contract, and the threading rule any future handler that runs the agent loop must follow.
 
+## Bot copy and config
+
+`data/bot.yaml` is the single source of every bot reply string, in every supported locale, plus the ordered registration-step declarations #56 will execute — no user-facing text lives in `commands.py` itself. `planazo.bot.config.load_config` validates it with Pydantic v2 at startup, mirroring `data/sources.yaml`'s loader: a message missing a locale, a registration step naming an unknown prompt, or fewer than two declared locales all raise an uncaught `ValidationError` before `uv run python -m planazo.bot` ever polls Telegram, not on the first reply.
+
 ## Tools
 
 `search_events` is the one tool on every run, whatever the flags. It queries the SQLite domain store at `var/planazo.db` for stored events, filtered by `category`, `city`, and `start_after` (an empty string means "no filter on that field"), and returns `{"events": [...], "total": N}` or a typed `invalid_search_filter` error. Its writing counterpart, `save_event`, lives beside it in `planazo.storage.dao` for the extraction path; the domain store's shape and its two dao tiers are [ADR 0003](../docs/adr/0003-sqlite-domain-store.md).
@@ -137,6 +141,7 @@ Each script redirects both store roots (`memory.facts.MEMORY_ROOT`, `storage.db.
 ```
 .                                (repo root)
 ├── pyproject.toml
+├── data/bot.yaml          bot reply catalog (locales + registration steps); bot/config.py validates it at startup
 ├── data/rules/            committed markdown rules; memory/rules.py re-reads them on every call
 ├── scripts/demo/          the three memory-model demos; traces land in docs/evidence/
 ├── src/planazo/           the domain package (one folder per bounded context)

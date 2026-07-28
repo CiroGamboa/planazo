@@ -151,7 +151,8 @@ The layers below each map to one bounded context (annotated per layer). Numberin
 - **`bot/surface.py`** — `TelegramSurface`, the reply channel bound to a `Bot` and a `chat_id`; the implementation of `planazo.interfaces.surface.UserSurface`. Plain text, no `parse_mode`.
 - **`bot/models.py`** — `IncomingMessage`, the Pydantic v2 projection of one update that the command layer consumes.
 - **`bot/session.py`** — resolves the Telegram `user_id` to the internal `users.id` (create-on-first-contact). This is the multi-user seam.
-- **`bot/commands.py`** — `/start`, `/help`, `/me`, `/prefs` (view / set / remove), plus every user-facing literal. Pure CRUD on SQLite. `/find <query>` lands with #23 and is the one command that calls the LLM, via the Interpreter.
+- **`bot/commands.py`** — `/start`, `/help`, `/me`, `/prefs` (view / set / remove). Pure CRUD on SQLite. `/find <query>` lands with #23 and is the one command that calls the LLM, via the Interpreter.
+- **`bot/config.py`** — Pydantic-validated config loader, mirroring `sources/config.py`. Reads `data/bot.yaml` at startup: the locale-keyed message catalog every reply resolves against, and the ordered registration-step declarations #56 will execute. Loaded once at startup; a malformed file stops the process before Telegram polling starts.
 - **`bot/approve.py`** — supplies `ApprovalGate.approve` via an inline keyboard `[Approve] [Decline]`, mirrors `_terminal_approve` in `src/planazo/agents/cli.py`. Lands with #22.
 
 Only `app.py` and `surface.py` import `telegram`; `models.py`, `session.py`, and `commands.py` are transport-neutral, which is what lets every command be exercised offline against real SQLite and a recording surface.
