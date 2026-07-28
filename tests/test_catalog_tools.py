@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -160,6 +161,18 @@ def test_search_events_rejects_a_non_positive_max_results(db_file: Path, max_res
     result = search_events(max_results=max_results)
 
     assert result["error_type"] == "invalid_search_filter"
+
+
+def test_search_events_maps_connect_failure_to_typed_store_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        db, "connect", lambda: (_ for _ in ()).throw(sqlite3.OperationalError("down"))
+    )
+
+    result = search_events()
+
+    assert result["error_type"] == "search_store_unavailable"
 
 
 def test_schema_for_covers_both_catalog_tools() -> None:

@@ -8,8 +8,8 @@ No agent framework, no API server, no frontend here (see `AGENTS.md` rule 5 and 
 
 ```bash
 uv sync                                                                  # install
-uv run planazo-agent --calendar "save a tech event evt-1 called AI Meetup at 2026-08-01T19:00:00 in Barcelona, confidence 0.9"  # one-shot
-uv run planazo-agent                                                     # interactive REPL
+uv run planazo-agent --user-id 1 --calendar "find tech events this weekend"  # one-shot
+uv run planazo-agent --user-id 1                                          # interactive REPL
 uv run planazo-monitor --since 24h                                       # grade recent runs
 uv run planazo-monitor --dry-run                                         # grade canned seed runs
 uv run planazo-monitor --dry-run --run-id seed-injection-near-miss       # one-call monitor smoke test
@@ -24,9 +24,9 @@ Options:
 - `--strong` and `--model {cheap,strong}` select the model role and are mutually exclusive; passing both is a usage error. The default is the cheap role.
 - `--max-steps N` caps the loop's steps (`N` must be >= 1).
 - `--calendar` adds the two calendar reference tools to the run's tool set.
-- `--user-id N` binds the run to one user (`N` must be >= 1): it adds the four memory tools bound to that id and pushes that user's stored preferences into the system message. It is unauthenticated — whatever id the shell supplies is used — so this CLI is an operator's surface, not a user-facing one ([ADR 0004](../docs/adr/0004-three-store-memory-model.md)).
+- `--user-id N` is required and binds the run to one user (`N` must be >= 1): it adds the four memory tools bound to that id and pushes that user's stored preferences into the system message. It is unauthenticated — whatever id the shell supplies is used — so this CLI is an operator's surface, not a user-facing one ([ADR 0004](../docs/adr/0004-three-store-memory-model.md)).
 
-Output shape: a per-step tool trace (`step N: tool(args) -> result`), then a separated final block with the answer (or a `(no final answer — hit max steps)` notice), the step count, and the stop reason.
+Output shape: a per-step tool trace (`step N: tool(args) -> result`), then a typed Recommender result with its answer or clarification, step count, stop reason, status, and candidate count. Preflight and search failures return a named nonzero result; incomplete runs never expose candidates.
 
 For a low-cost live monitor check, use `--dry-run --run-id <id>` to grade exactly one deterministic trace. The available ids are `seed-clean`, `seed-adherence-violation`, and `seed-injection-near-miss`; repeat `--run-id` to select more than one. A full `--dry-run` grades all three.
 
@@ -60,13 +60,17 @@ Replies are plain text with no `parse_mode`, so a preference value containing `*
 
 `search_events` is the one tool on every run, whatever the flags. It queries the SQLite domain store at `var/planazo.db` for stored events, filtered by `category`, `city`, and `start_after` (an empty string means "no filter on that field"), and returns `{"events": [...], "total": N}` or a typed `invalid_search_filter` error. Its writing counterpart, `save_event`, lives beside it in `planazo.storage.dao` for the extraction path; the domain store's shape and its two dao tiers are [ADR 0003](../docs/adr/0003-sqlite-domain-store.md).
 
-The other two groups are opt-in: the memory tools with `--user-id N`, the calendar reference tools with `--calendar`.
+The calendar reference tools remain opt-in with `--calendar`. Recommender runs
+also expose identity-bound `save_preference(key, value)` and non-blocking
+`ask_user(question)` tools: neither accepts a user id, preference values use
+the same trimmed one-line bounds as persisted rows, and only the first valid
+clarification question is returned to the calling surface.
 
 Every tool returns a typed `error_type` on bad input rather than persisting something partial. A tool that raises anyway (bug, disk error) is caught one layer up, inside `planazo.agents.loop.run_loop`'s dispatch, and fed back to the model as a `tool_failed` marker rather than crashing the run or looking like valid data.
 
 ### The memory tools
 
-`--user-id N` (or `run_once(user_id=N)`) adds four tools over the JSON docstore at `var/memory/`, built by `planazo.memory.api.build_memory_tools`:
+`run_once(user_id, intent)` always receives a validated identity and `SearchIntent`; `--user-id N` is the CLI's required developer identity boundary. It adds four tools over the JSON docstore at `var/memory/`, built by `planazo.memory.api.build_memory_tools`:
 
 - **`retrieve_memory(query, scope)`** — facts about the user whose cue overlaps `query`, as `{"facts": [...], "total": N}`.
 - **`save_memory(cue, content, scope)`** — one durable fact, filed under `cue` for later recall.

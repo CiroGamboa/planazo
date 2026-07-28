@@ -111,7 +111,7 @@ sequenceDiagram
     M-->>R: [fact: "prefers small venues"]
     R->>S: search_events(filter)
     S-->>R: [candidate events]
-    R-->>B: LoopResult{answer, candidates}
+    R-->>B: RecommenderResult{status, candidates, clarification?, error_type?}
 
     B->>K: rank(candidates, intent, prefs, memory)
     K-->>B: [top-N + reason per row]
@@ -170,12 +170,12 @@ Governed by [**ADR 0011 — Telegram bot interface abstraction**](adr/0011-teleg
 
 ### 3. Recommender executor — extends `src/planazo/agents/event_agent.py`
 
-- Same `run_once`-shaped front door (`src/planazo/agents/event_agent.py`); signature grows to accept `user_id: int` and `intent: SearchIntent`.
+- Front door: `run_once(user_id: int, intent: SearchIntent) -> RecommenderResult`. It fails closed with typed preflight and search outcomes, returns only validated catalog events, and never exposes candidates on incomplete or error results.
 - Bound tool registry (Recommender-side): `search_events`, `retrieve_memory`, `save_memory`, `save_preference`, `dispatch_extraction`, `ask_user`. Rank is called deterministically *after* the loop returns candidates — it is not a tool.
 - The existing `save_event_candidate` and `confirm_and_create_calendar_event` (ADR 0002) stay wired in-tree but disabled by default (`calendar_enabled=False`) — kept as the calendar reference implementation, not exposed to the bot until v0.2.
 - Runs on `CHEAP` unless the caller overrides.
 
-Push-context (attached before the loop starts): `load_rules()` output, the user's `preferences` row, the parsed `SearchIntent`.
+Push-context (attached before the loop starts): `load_rules()` output, the user's validated preference rows, and the parsed `SearchIntent` without application-owned origin coordinates. A radius request without a trusted origin fails before preferences, rules, traces, or a model call.
 
 ### 4. Extraction Agent — `src/planazo/agents/extractor.py` (new peer of `event_agent.py`)
 
@@ -534,6 +534,13 @@ Three canonical scenarios covered by the model. Each produces a trace under `doc
 - Trace: `docs/evidence/untrusted-content.md`.
 
 ## Push vs pull context
+
+The Recommender also has two bounded interaction tools. `save_preference(key, value)` is
+closed over the application-selected user identity and validates the same trimmed,
+single-line preference shape used on reread. `ask_user(question)` records one
+non-blocking clarification for the calling surface; it never waits for or fabricates
+a reply. Calendar remains an explicit opt-in. These boundaries are accepted in
+[ADR 0013](adr/0013-recommender-mutation-and-clarification-boundaries.md).
 
 | Direction | What | Where in code |
 | --- | --- | --- |

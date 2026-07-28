@@ -35,10 +35,11 @@ from typing import Any
 import openai
 
 from agentlib.core import MODELS
-from planazo.agents.event_agent import run_once
-from planazo.agents.loop import LoopResult, StepRecord
+from planazo.agents.event_agent import RecommenderResult, run_once
+from planazo.agents.loop import StepRecord
 from planazo.approval import ApprovalGate
 from planazo.config import check_api_key
+from planazo.query.interpreter import interpret
 from tools.tools import IRREVERSIBLE_TOOLS
 
 
@@ -92,8 +93,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--user-id",
         type=_positive_int,
-        default=None,
-        help="bind the run to this user id: adds the memory tools, pushes their preferences",
+        required=True,
+        help="bind the run to this user id: adds memory tools and preferences",
     )
     return parser
 
@@ -103,27 +104,51 @@ def _format_step(record: StepRecord) -> str:
     return f"  step {record.step}: {record.tool}({record.arguments}) -> {record.result}"
 
 
-def _render_result(result: LoopResult) -> str:
+def _render_result(result: RecommenderResult) -> str:
     """The final block: the answer (or a truncation/max-steps notice) and the tally.
 
     A truncated stop carries a non-None partial `answer`, so it is labelled
     before the plain-answer branch — otherwise a cut-off answer would render as
     a trustworthy complete one.
     """
-    if result.stopped == "preference_read_error":
-        body = "configuration/data-safe failure: preferences could not be loaded safely"
-    elif result.stopped == "missing_search_origin":
-        body = (
-            "configuration/data-safe failure: a trusted search origin is required "
-            "for radius filtering"
-        )
-    elif result.stopped == "truncated":
-        body = f"partial answer (truncated by output cap): {result.answer}"
-    elif result.answer is not None:
-        body = f"answer: {result.answer}"
+    if result.status == "error":
+        if result.error_type == "invalid_preference_data":
+            body = "configuration/data-safe failure: preferences could not be loaded safely"
+        elif result.error_type == "preference_store_unavailable":
+            body = "configuration/data-safe failure: preference store unavailable"
+        elif result.error_type == "missing_search_origin":
+            body = (
+                "configuration/data-safe failure: a trusted search origin is required "
+                "for radius filtering"
+            )
+        elif result.error_type in (
+            "search_store_unavailable",
+            "search_invalid_filter",
+            "search_tool_failure",
+            "invalid_search_output",
+            "search_not_completed",
+        ):
+            body = f"search error ({result.error_type}): {result.answer or 'no details'}"
+        else:
+            body = f"error ({result.error_type}): {result.answer or 'no details'}"
+    elif result.status == "needs_clarification":
+        question = result.clarification.question if result.clarification else "no question"
+        body = f"clarification needed: {question}"
+    elif result.status == "incomplete":
+        body = f"incomplete ({result.stopped}): {result.answer or 'no answer'}"
+    elif result.status == "no_results":
+        body = f"no matching events found: {result.answer or ''}"
+    elif result.status == "ok":
+        body = f"answer: {result.answer}" if result.answer else "answer: (empty)"
     else:
-        body = "(no final answer — hit max steps)"
-    return f"\n{body}\nsteps: {result.steps} | stop reason: {result.stopped}"
+        body = f"unknown status {result.status}: {result.answer or ''}"
+
+    fallback_note = " [interpreter fallback]" if result.interpreter_fallback else ""
+    tally = (
+        f"steps: {result.steps} | stop reason: {result.stopped} | "
+        f"status: {result.status} | candidates: {len(result.candidates)}"
+    )
+    return f"\n{body}{fallback_note}\n{tally}"
 
 
 def _print_step(record: StepRecord) -> None:
@@ -152,16 +177,19 @@ def _run(
     model: str,
     max_steps: int | None,
     calendar_enabled: bool,
-    user_id: int | None,
+    user_id: int,
 ) -> int:
     """Run one prompt, printing the live trace then the result block.
 
-    Returns 0 on success, 1 if the provider raised. Only `openai.OpenAIError`
-    is caught here — an unexpected error propagates as a real traceback.
+    Returns 0 on success, 1 if the provider raised or on preflight error.
+    Only `openai.OpenAIError` is caught here — an unexpected error propagates
+    as a real traceback.
     """
     gate = ApprovalGate(tool_names=frozenset(IRREVERSIBLE_TOOLS), approve=_terminal_approve)
-    # Any: run_once's **run_context accepts a heterogeneous option set (model
-    # id, step cap, bool flag, callables) — no single value type covers it.
+
+    # Interpret the raw prompt into a structured SearchIntent
+    intent = interpret(prompt)
+
     run_context: dict[str, Any] = {
         "model": model,
         "on_step": _print_step,
@@ -170,18 +198,16 @@ def _run(
     }
     if max_steps is not None:
         run_context["max_steps"] = max_steps
-    if user_id is not None:
-        run_context["user_id"] = user_id
     try:
-        result = run_once(prompt, **run_context)
+        result = run_once(user_id, intent, **run_context)
     except openai.OpenAIError as exc:
         print(str(exc))
         return 1
     print(_render_result(result))
-    return 1 if result.stopped in {"preference_read_error", "missing_search_origin"} else 0
+    return 1 if result.status == "error" else 0
 
 
-def _repl(*, model: str, max_steps: int | None, calendar_enabled: bool, user_id: int | None) -> int:
+def _repl(*, model: str, max_steps: int | None, calendar_enabled: bool, user_id: int) -> int:
     """Read prompts until exit/quit, EOF, or Ctrl-C; one run_once per line."""
     while True:
         try:

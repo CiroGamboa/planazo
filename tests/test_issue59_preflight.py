@@ -6,8 +6,8 @@ import pytest
 from pydantic import ValidationError
 
 from planazo.agents import cli, event_agent
-from planazo.agents.loop import LoopResult
-from planazo.interfaces.runtime import LoopResult as RuntimeLoopResult
+from planazo.agents.event_agent import RecommenderResult
+from planazo.interfaces.runtime import RecommenderResult as RuntimeRecommenderResult
 from planazo.monitor.models import RunStep
 from planazo.query import SearchIntent
 
@@ -31,28 +31,48 @@ def test_missing_origin_stops_before_any_composition_or_trace(
     monkeypatch.setattr(event_agent, "RunStepLogger", blocked)
 
     result = event_agent.run_once(
-        "events near me",
-        intent=_radius_intent(),
-        user_id=1,
+        1,
+        _radius_intent(),
         run_id="missing-origin",
         run_log_dir=tmp_path,
     )
 
-    assert result == LoopResult(
+    assert result == RecommenderResult(
+        status="error",
         answer=event_agent.MISSING_SEARCH_ORIGIN_ANSWER,
+        error_type="missing_search_origin",
         steps=0,
-        stopped="missing_search_origin",
+        stopped="not_started",
     )
     blocked.assert_not_called()
     assert not (tmp_path / "missing-origin.jsonl").exists()
 
 
 def test_missing_origin_is_a_runtime_and_cli_safe_error() -> None:
-    runtime = RuntimeLoopResult(answer=None, steps=0, stopped="missing_search_origin")
-    rendered = cli._render_result(LoopResult(answer=None, steps=0, stopped="missing_search_origin"))
+    runtime = RuntimeRecommenderResult(
+        status="error", stopped="not_started", steps=0, error_type="missing_search_origin"
+    )
+    rendered = cli._render_result(
+        RecommenderResult(
+            status="error", stopped="not_started", steps=0, error_type="missing_search_origin"
+        )
+    )
 
-    assert runtime.stopped == "missing_search_origin"
+    assert runtime.stopped == "not_started"
+    assert runtime.error_type == "missing_search_origin"
     assert "trusted search origin" in rendered
+
+
+@pytest.mark.parametrize("result_type", [RecommenderResult, RuntimeRecommenderResult])
+def test_recommender_result_mirrors_reject_incompatible_outcomes(result_type: type[object]) -> None:
+    with pytest.raises(ValidationError):
+        result_type(  # type: ignore[operator]
+            status="incomplete",
+            stopped="truncated",
+            steps=1,
+            candidates=(),
+            error_type="search_not_completed",
+        )
 
 
 def test_monitor_trace_rejects_missing_search_origin() -> None:

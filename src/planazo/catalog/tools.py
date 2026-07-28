@@ -126,7 +126,10 @@ def search_events(
             "message": f"max_results must be at least 1, got {max_results}",
         }
 
-    conn = db.connect()
+    try:
+        conn = db.connect()
+    except (OSError, sqlite3.Error) as exc:
+        return {"error_type": "search_store_unavailable", "message": type(exc).__name__}
     try:
         try:
             found = query_events(
@@ -138,6 +141,8 @@ def search_events(
             )
         except ValidationError as exc:
             return {"error_type": "invalid_event_data", "message": str(exc)}
+        except (OSError, sqlite3.Error) as exc:
+            return {"error_type": "search_store_unavailable", "message": type(exc).__name__}
     finally:
         conn.close()
 

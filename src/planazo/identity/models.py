@@ -28,7 +28,8 @@ class PreferenceRecord(BaseModel):
     `key` and `value` are rendered together onto one line of an agent run's
     system message (`planazo.agents.event_agent` assembles the push context),
     so both are bounded on the two axes that matter there: length, and staying
-    on the single line they are rendered onto. A line break is rejected, not
+    on the single line they are rendered onto. Outer whitespace is trimmed and
+    a line break is rejected, not
     stripped — a field that opens a second line can read as a fresh instruction
     line in the pushed text, and silently rewriting it to fit would be the
     coerced success rule 4 forbids. 64 characters holds a filter name like
@@ -42,15 +43,18 @@ class PreferenceRecord(BaseModel):
     value: str = Field(max_length=200)
     updated_at: datetime | None = None
 
-    @field_validator("key", "value")
+    @field_validator("key", "value", mode="before")
     @classmethod
-    def _stays_on_one_line(cls, value: str, info: ValidationInfo) -> str:
+    def _normalizes_and_stays_on_one_line(cls, value: object, info: ValidationInfo) -> str:
         # `splitlines` is the widest available definition of a line break — it
         # covers U+2028/U+2029 and the C1 separators as well as \n and \r, all
         # of which start a new line in the rendered system message.
-        if value and value.splitlines() != [value]:
+        if not isinstance(value, str):
+            raise ValueError(f"preference {info.field_name} must be a string")
+        trimmed = value.strip()
+        if trimmed and trimmed.splitlines() != [trimmed]:
             raise ValueError(f"preference {info.field_name} must be a single line: {value!r}")
-        return value
+        return trimmed
 
 
 class PreferenceReadResult(BaseModel):
@@ -61,7 +65,7 @@ class PreferenceReadResult(BaseModel):
     """
 
     rows: tuple[PreferenceRecord, ...] = ()
-    error_type: Literal["invalid_preference_data"] | None = None
+    error_type: Literal["invalid_preference_data", "preference_store_unavailable"] | None = None
     message: str = ""
 
     @model_validator(mode="after")
@@ -69,7 +73,7 @@ class PreferenceReadResult(BaseModel):
         if self.error_type is None:
             return self
         if self.rows:
-            raise ValueError("invalid preference data cannot include rows")
+            raise ValueError("preference read failure cannot include rows")
         if not self.message:
-            raise ValueError("invalid preference data needs a safe message")
+            raise ValueError("preference read failure needs a safe message")
         return self

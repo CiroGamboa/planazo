@@ -316,7 +316,7 @@ def test_tool_schema_is_derived_via_schema_for_not_hand_rolled() -> None:
     ]
 
 
-def test_no_source_module_outside_planazo_query_imports_the_interpreter() -> None:
+def test_only_the_cli_surface_imports_the_interpreter_outside_planazo_query() -> None:
     # The invariant this locks is tighter than "no `from planazo.query`":
     # `planazo.query.models` is a *data* module (SearchIntent, EventCategory)
     # that other bounded contexts legitimately import — the Recommender for
@@ -335,7 +335,9 @@ def test_no_source_module_outside_planazo_query_imports_the_interpreter() -> Non
         for pattern in ("planazo.query.interpreter", "from planazo.query import"):
             if pattern in text:
                 offenders.append((py, pattern))
-    assert offenders == [], f"interpreter runtime is imported outside its own module: {offenders}"
+    assert offenders == [
+        (Path(event_agent.__file__).parent / "cli.py", "planazo.query.interpreter")
+    ], f"unexpected interpreter-runtime import: {offenders}"
 
 
 def test_run_once_never_composes_the_interpreter_into_the_agent_registry(
@@ -347,7 +349,15 @@ def test_run_once_never_composes_the_interpreter_into_the_agent_registry(
     mock_run_loop = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))
     monkeypatch.setattr(event_agent, "run_loop", mock_run_loop)
 
-    event_agent.run_once("hi", user_id=1, calendar_enabled=True)
+    event_agent.run_once(
+        1,
+        SearchIntent(
+            start_utc=FROZEN_NOW,
+            end_utc=FROZEN_NOW + timedelta(hours=1),
+            city="Barcelona",
+        ),
+        calendar_enabled=True,
+    )
 
     registry = mock_run_loop.call_args.kwargs["registry"]
     assert "interpret" not in registry

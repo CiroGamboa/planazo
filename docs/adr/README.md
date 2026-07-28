@@ -24,3 +24,8 @@ Do **not** write an ADR for:
 2. Fill in Status / Context / Decision / Consequences.
 3. Reference the ADR from `AGENTS.md` or the relevant PR if it's load-bearing there.
 4. ADRs are immutable once accepted. To change a decision, write a new ADR that supersedes the old one and mark the old one `Status: Superseded by NNNN`.
+
+## Current accepted decisions
+
+- [0013 — Recommender mutation and clarification boundaries](0013-recommender-mutation-and-clarification-boundaries.md)
+  defines the identity-bound preference writer and non-blocking clarification tool.
