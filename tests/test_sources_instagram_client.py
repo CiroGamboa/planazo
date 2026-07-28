@@ -68,12 +68,21 @@ def test_instaloader_post_view_rejects_missing_typename() -> None:
         InstaloaderPostView.model_validate(payload)
 
 
-def test_instaloader_post_view_rejects_unknown_typename() -> None:
+def test_instaloader_post_view_accepts_unknown_typename() -> None:
+    """`typename` validates as an open string — unknown values pass the boundary.
+
+    Value-space routing lives in the adapter (`_route` returns
+    `unsupported_media` for anything outside the three handled shapes); the
+    Pydantic view only checks structure. A schema drift on Meta's side (a
+    new post kind) surfaces as a typed adapter error at fetch time, not as
+    a `ValidationError` in the client.
+    """
     payload = dict(_STATIC_PAYLOAD)
     payload["typename"] = "GraphSomethingNew"
 
-    with pytest.raises(ValidationError):
-        InstaloaderPostView.model_validate(payload)
+    view = InstaloaderPostView.model_validate(payload)
+
+    assert view.typename == "GraphSomethingNew"
 
 
 def test_instaloader_sidecar_node_view_accepts_image_node() -> None:
@@ -106,9 +115,7 @@ def test_client_load_session_from_env_plants_cookie_when_env_var_set(
     client.load_session_from_env()
 
     assert client.session_loaded is True
-    cookie_value = loader.context._session.cookies.get(  # type: ignore[no-untyped-call]
-        "sessionid", domain=".instagram.com"
-    )
+    cookie_value = loader.context._session.cookies.get("sessionid", domain=".instagram.com")
     assert cookie_value == "test-session-id"
 
 

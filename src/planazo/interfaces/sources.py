@@ -30,7 +30,7 @@ class MediaAsset(Protocol):
 
     `kind` is the discriminator the Extractor branches on. Adapters produce
     `MediaAsset`-shaped objects; concrete Pydantic implementations live in
-    `planazo.sources.models` (added by M2).
+    `planazo.sources.models`.
     """
 
     kind: Literal["image", "video", "thumbnail"]
@@ -68,7 +68,9 @@ class EventSource(Protocol):
 
     Return values on failure are typed dicts (`{"error_type": "rate_limited",
     ...}` etc.), not exceptions — the adapter never raises on the happy path.
-    M2 spells out the full error-branch taxonomy.
+    The error-branch taxonomy is `unsupported_source`, `not_found`,
+    `rate_limited`, `auth_failed`, `unsupported_media` — see
+    [ADR 0006](../../../docs/adr/0006-instagram-extraction-approach.md).
     """
 
     name: str  # `"instagram"`, `"tiktok"`, ...

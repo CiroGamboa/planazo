@@ -1,10 +1,16 @@
 """`planazo-sources-instagram` — run the Instagram adapter from a container.
 
-The CLI loads `data/sources.yaml`, resolves the per-account fetch plan (one
-line per `(account, media_type)` pair that the account has enabled), and
-either prints the plan (`--dry-run`) or exercises `InstagramSource.fetch_post`
-against each configured account URL and prints the JSON payload — either
-`RawPost.model_dump_json()` or the typed error dict — one line per fetch.
+The CLI loads `data/sources.yaml` and runs in one of two modes:
+
+- `--dry-run` — resolve the per-account fetch plan and print one line per
+  `(account, media_type)` pair the account has enabled, without any network
+  calls.
+- `--url <post_url>` — fetch one specific post via `InstagramSource.fetch_post`
+  and print the JSON payload — either `RawPost.model_dump_json()` or the
+  typed error dict — on stdout, one line, then exit 0.
+
+Exactly one of the two mode flags is required; the two are mutually exclusive.
+Neither given → the CLI exits with a usage error (exit code 2).
 
 The CLI is the entrypoint the Docker service invokes; `docker compose up
 sources-instagram` runs `planazo-sources-instagram` inside the container.
@@ -20,7 +26,6 @@ import sys
 from pathlib import Path
 
 from planazo.sources.config import (
-    AccountConfig,
     MediaTypeFlags,
     SourceConfig,
     load_config,
@@ -39,10 +44,16 @@ def _parser() -> argparse.ArgumentParser:
         default="data/sources.yaml",
         help="path to the sources config (default: data/sources.yaml)",
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--dry-run",
         action="store_true",
         help="print the resolved fetch plan without any network calls",
+    )
+    mode.add_argument(
+        "--url",
+        default=None,
+        help="fetch one Instagram post by URL and print the JSON payload",
     )
     return parser
 
@@ -63,17 +74,32 @@ def _plan_lines(source: SourceConfig) -> list[str]:
     return lines
 
 
-def _emit_fetch(account: AccountConfig, adapter: InstagramSource) -> str:
-    """Fetch one account URL and return the JSON line to print."""
-    result = adapter.fetch_post(account.url)
+def _emit_fetch(url: str, adapter: InstagramSource) -> str:
+    """Fetch one URL and return the JSON line to print."""
+    result = adapter.fetch_post(url)
     if isinstance(result, RawPost):
         return result.model_dump_json()
     return json.dumps(result)
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Entrypoint for `planazo-sources-instagram`."""
+def main(
+    argv: list[str] | None = None,
+    *,
+    client_factory: type[InstagramClient] = InstagramClient,
+) -> int:
+    """Entrypoint for `planazo-sources-instagram`.
+
+    `client_factory` lets tests inject a fake `InstagramClient` subclass with
+    the same shape; production callers accept the default.
+    """
     args = _parser().parse_args(argv)
+    if not args.dry_run and args.url is None:
+        print(
+            "planazo-sources-instagram: one of --dry-run or --url is required",
+            file=sys.stderr,
+        )
+        return 2
+
     config = load_config(Path(args.config))
     instagram = config.sources.get("instagram")
     if instagram is None:
@@ -85,11 +111,10 @@ def main(argv: list[str] | None = None) -> int:
             print(line)
         return 0
 
-    client = InstagramClient()
+    client = client_factory()
     client.load_session_from_env()
     adapter = InstagramSource(instagram, client)
-    for account in instagram.accounts:
-        print(_emit_fetch(account, adapter))
+    print(_emit_fetch(args.url, adapter))
     return 0
 
 

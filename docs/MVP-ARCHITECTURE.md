@@ -190,7 +190,7 @@ Push-context (attached before the loop starts): `load_rules()` output, the user'
   ```
 - `dispatch_extraction` on the Recommender side calls `extract_once` and returns the structured object only. The caption text never enters the Recommender's messages — see §Trust boundaries below.
 
-Governed by planned **ADR 0005 — Multi-agent shape** and [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-extraction-approach.md).
+Governed by [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-extraction-approach.md) and planned **ADR 0005 — Multi-agent shape**.
 
 ### 5. Sources / connectors — `src/planazo/sources/`
 

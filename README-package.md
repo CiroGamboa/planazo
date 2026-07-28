@@ -94,13 +94,13 @@ Each source runs in its own Docker container so a Meta break (Instagram) does no
 Instagram is the first landed adapter:
 
 ```bash
-docker compose up sources-instagram                          # build + run one-shot
+docker compose up sources-instagram                                  # build + run one-shot
 INSTAGRAM_SESSION_ID=<value> docker compose up sources-instagram
-uv run planazo-sources-instagram --dry-run                   # print the fetch plan without any network calls
-uv run planazo-sources-instagram                             # fetch each configured account URL, print RawPost JSON per line
+uv run planazo-sources-instagram --dry-run                           # print the fetch plan without any network calls
+uv run planazo-sources-instagram --url https://instagram.com/p/ABC/  # fetch one post and print RawPost JSON
 ```
 
-`INSTAGRAM_SESSION_ID` is optional — copy the `sessionid` cookie from a logged-in Instagram browser session into `.env` when a public-account fetch returns `auth_failed`, otherwise leave it unset. The CLI never writes anywhere; every fetch prints `RawPost.model_dump_json()` (happy path) or the typed error dict — `{"error_type": "…", "message": "…", "url": "…"}` — to stdout, one line per fetch. See [ADR 0006 — Instagram extraction approach](docs/adr/0006-instagram-extraction-approach.md).
+Exactly one of `--dry-run` or `--url` is required; running the CLI with neither exits with a usage error. `INSTAGRAM_SESSION_ID` is optional — copy the `sessionid` cookie from a logged-in Instagram browser session into `.env` when a public-account fetch returns `auth_failed`, otherwise leave it unset. The CLI never writes anywhere; `--url` prints one line of `RawPost.model_dump_json()` (happy path) or the typed error dict — `{"error_type": "…", "message": "…", "url": "…"}` — to stdout. See [ADR 0006 — Instagram extraction approach](docs/adr/0006-instagram-extraction-approach.md).
 
 ## Memory model demos
 
@@ -130,6 +130,7 @@ Each script redirects both store roots (`memory.facts.MEMORY_ROOT`, `storage.db.
 │   ├── monitor/           out-of-band LLM-as-judge over run logs
 │   ├── storage/           db.py (connection + schema_v1.sql only)
 │   ├── config.py          shared env-check helper
+│   ├── sources/           RawPost + MediaAsset + config; Instagram adapter (Dockerized)
 │   └── agents/            loop.py (generic runtime), event_agent.py (composition root), cli.py
 ├── src/tools/
 │   ├── schema.py           schema_for() — derives a tool's JSON schema from its signature/docstring

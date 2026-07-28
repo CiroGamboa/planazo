@@ -1,18 +1,21 @@
 """Unit tests for the `planazo-sources-instagram` CLI.
 
-Only `--dry-run` is exercised — the live fetch path is covered by the
-opt-in live test. The dry-run mode prints one line per `(account,
-media_type)` pair the config resolves to, so the scheduler ticket can
-diff the planned fetches without any network activity.
+Two exercised modes: `--dry-run` (no network — prints one line per
+`(account, media_type)` pair the config resolves to) and `--url` (fetches
+one post through an injected fake client and prints its JSON). The
+live fetch path (real Instagram) is covered by the opt-in live test.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from planazo.sources.instagram.cli import main
+from planazo.sources.instagram.client import InstagramClient
+from planazo.sources.instagram.model_view import InstaloaderPostView
 
 
 def _write_config(tmp_path: Path) -> Path:
@@ -76,3 +79,78 @@ def test_dry_run_exits_nonzero_when_instagram_source_missing(
     captured = capsys.readouterr()
     assert exit_code == 1
     assert "instagram" in captured.err
+
+
+class _CannedClient(InstagramClient):
+    """`InstagramClient` subclass that skips network calls.
+
+    Instantiated by the CLI via its `client_factory` injection point;
+    `fetch_metadata` returns a canned static-post view regardless of the
+    requested shortcode, and `load_session_from_env` is a no-op so the test
+    does not touch env vars.
+    """
+
+    _CANNED_VIEW = InstaloaderPostView.model_validate(
+        {
+            "shortcode": "CANNED",
+            "typename": "GraphImage",
+            "caption": "a canned post",
+            "date_utc": datetime(2026, 7, 20, 14, 30, tzinfo=UTC),
+            "owner_username": "test_venue",
+            "url": "https://scontent.cdninstagram.com/canned.jpg",
+            "video_url": None,
+            "video_duration": None,
+            "mediacount": 1,
+            "sidecar_nodes": [],
+        }
+    )
+
+    def __init__(self) -> None:
+        # Deliberate no-super: the real `InstagramClient.__init__` would
+        # instantiate `instaloader.Instaloader()`, which we skip so tests
+        # do not touch the third-party surface.
+        pass
+
+    def load_session_from_env(self) -> None:
+        return None
+
+    def fetch_metadata(self, shortcode: str) -> InstaloaderPostView:
+        return self._CANNED_VIEW
+
+
+def test_url_flag_fetches_and_prints_one_json_line(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import json
+
+    config_path = _write_config(tmp_path)
+
+    exit_code = main(
+        ["--config", str(config_path), "--url", "https://instagram.com/p/CANNED/"],
+        client_factory=_CannedClient,
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    lines = [line for line in captured.out.splitlines() if line]
+    assert len(lines) == 1
+    parsed = json.loads(lines[0])
+    assert parsed["source"] == "instagram"
+    assert parsed["permalink"] == "https://instagram.com/p/CANNED/"
+    assert parsed["caption"] == "a canned post"
+    assert parsed["media"][0]["kind"] == "image"
+
+
+def test_no_mode_flag_exits_with_usage_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = _write_config(tmp_path)
+
+    exit_code = main(["--config", str(config_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "--dry-run" in captured.err
+    assert "--url" in captured.err

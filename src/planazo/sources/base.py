@@ -1,9 +1,10 @@
 """Shared registry, error taxonomy, and scheduling helper for source adapters.
 
-`SOURCES` is the module-level registry the composition root will consult once
-adapters exist — a name-keyed `dict[str, EventSource]` that tests monkeypatch to
-inject fakes. Stage 1 leaves it empty; Stage 2 populates it with the concrete
-`InstagramSource`.
+`SOURCES` is the module-level registry the composition root consults to look
+up an `EventSource` by name — a name-keyed `dict[str, EventSource]` that
+tests monkeypatch to inject fakes. Whichever caller wires an adapter (today
+the container entrypoint under `planazo.sources.instagram.cli`; later the
+Extraction Agent composition root) is the one that populates the dict.
 
 `ErrorType` names the five typed error branches every `EventSource.fetch_post`
 call may return (AGENTS.md rule 4: errors are typed branches, not silent

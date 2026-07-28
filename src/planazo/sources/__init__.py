@@ -14,7 +14,7 @@ every source adapter shares:
 - `SourcesConfig`, `load_config` — Pydantic-validated `data/sources.yaml`
   loader; fails at boot on a malformed config.
 
-Concrete adapters (`sources/instagram/`, future `sources/tiktok/`) land in
+Concrete adapters (`sources/instagram/`, future `sources/tiktok/`) live in
 their own subpackages; each conforms structurally to
 `planazo.interfaces.sources.EventSource`.
 """

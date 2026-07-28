@@ -25,11 +25,10 @@ Reconciled against `instaloader==4.15.3`:
 | `QueryReturnedNotFoundException`      | `not_found`           |
 | `TooManyRequestsException`            | `rate_limited`        |
 | `LoginRequiredException`              | `auth_failed`         |
-| `typename` outside GraphImage         | `unsupported_media`   |
+| `typename` outside the routed set     | `unsupported_media`   |
 
 The two condition branches (URL host, `typename`) are decided in the adapter,
-not here. Stage 3 widens the `typename` branch to route GraphSidecar and
-GraphVideo instead of returning `unsupported_media` for them.
+not here.
 
 `QueryReturnedNotFoundException` and `TooManyRequestsException` both subclass
 `instaloader.exceptions.ConnectionException`; catching them by their specific

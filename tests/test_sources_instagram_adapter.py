@@ -236,6 +236,40 @@ def test_fetch_post_video_returns_video_then_thumbnail_media() -> None:
     assert result.media[1].url == "https://scontent.cdninstagram.com/thumb.jpg"
 
 
+def test_fetch_post_returns_unsupported_media_when_typename_is_unknown() -> None:
+    """An unrecognised `typename` routes to `unsupported_media` with the value named.
+
+    The Pydantic boundary lets unknown typenames through so a schema drift
+    on Meta's side (a hypothetical `GraphAudio`, or whatever ships next)
+    surfaces as a typed adapter error at fetch time rather than a
+    `ValidationError` in the client. The message names the observed value
+    so debug output shows what Meta returned.
+    """
+    payload: dict[str, Any] = {
+        "shortcode": "AUDIO1",
+        "typename": "GraphAudio",
+        "caption": "an audio post",
+        "date_utc": datetime(2026, 7, 20, 14, 30, tzinfo=UTC),
+        "owner_username": "test_venue",
+        "url": "https://scontent.cdninstagram.com/thumb.jpg",
+        "video_url": None,
+        "video_duration": None,
+        "mediacount": 1,
+        "sidecar_nodes": [],
+    }
+    view = InstaloaderPostView.model_validate(payload)
+    client = _FakeClient(view=view)
+    adapter = InstagramSource(_source_config(), client)  # type: ignore[arg-type]
+
+    url = "https://www.instagram.com/p/AUDIO1/"
+    result = adapter.fetch_post(url)
+
+    assert isinstance(result, dict)
+    assert result["error_type"] == "unsupported_media"
+    assert "GraphAudio" in result["message"]
+    assert result["url"] == url
+
+
 def test_fetch_post_video_without_video_url_returns_unsupported_media() -> None:
     payload: dict[str, Any] = {
         "shortcode": "REEL99",
