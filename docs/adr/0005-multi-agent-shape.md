@@ -94,7 +94,7 @@ Every `extract_once` call inserts one `ExtractionRunIndexEntry(run_id, user_id=d
 
 #### 10. Extraction result cardinality: one post → at most one `Event`
 
-**Superseded by ADR 0012 (#64) — M3.5 lifts this cardinality to 0..N events per post.**
+**§Decision 10 superseded by ADR 0012 (#64) — M3.5 lifts this cardinality to 0..N events per post.**
 
 The LLM is instructed (in the delegation brief) to pick the primary event a post announces; carousels announcing multiple distinct events return `report_extraction_status(status="needs_clarification", error_type="multiple_events_in_post", ...)`. Multi-event support is filed as a follow-up.
 
