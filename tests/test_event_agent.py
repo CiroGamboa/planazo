@@ -490,16 +490,18 @@ def test_run_once_dispatch_extraction_never_leaks_caption_into_messages(
             _ = _caption  # captured, deliberately unused
             return ExtractionResult(
                 status="ok",
-                event=Event(
-                    source="instagram",
-                    source_url=url,
-                    title="Barcelona show",
-                    start_utc=datetime(2026, 8, 15, 22, 0, tzinfo=UTC),
-                    end_utc=datetime(2026, 8, 16, 4, 0, tzinfo=UTC),
-                    category="music",
-                    city="Barcelona",
-                    confidence=0.9,
-                ),
+                events=[
+                    Event(
+                        source="instagram",
+                        source_url=url,
+                        title="Barcelona show",
+                        start_utc=datetime(2026, 8, 15, 22, 0, tzinfo=UTC),
+                        end_utc=datetime(2026, 8, 16, 4, 0, tzinfo=UTC),
+                        category="music",
+                        city="Barcelona",
+                        confidence=0.9,
+                    )
+                ],
                 error_type=None,
                 notes="short paraphrase",
             )

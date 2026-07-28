@@ -51,21 +51,22 @@ def _event_from_row(row: sqlite3.Row) -> Event:
         confidence=row["confidence"],
         extra=json.loads(row["extra"]),
         ingested_at=datetime.fromisoformat(row["ingested_at"]),
+        event_index_in_post=row["event_index_in_post"],
     )
 
 
 def insert_event(conn: sqlite3.Connection, event: Event) -> int:
     """Insert `event` and return its new row id.
 
-    `events.source_url` is UNIQUE, so a second insert of the same URL raises
-    `sqlite3.IntegrityError`. `save_event` is the tier that turns that into a
-    `duplicate_event` branch.
+    The composite `(source_url, event_index_in_post)` is UNIQUE, so a second
+    insert with the same pair raises `sqlite3.IntegrityError`. `save_event` is
+    the tier that turns that into a `duplicate_event` branch.
     """
     ingested_at = event.ingested_at or datetime.now(UTC)
     cursor = conn.execute(
         "INSERT INTO events (source, source_url, title, start_utc, end_utc, category, city,"
-        " price_cents, geo_lat, geo_lng, confidence, extra, ingested_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " price_cents, geo_lat, geo_lng, confidence, extra, ingested_at, event_index_in_post)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             event.source,
             event.source_url,
@@ -80,10 +81,27 @@ def insert_event(conn: sqlite3.Connection, event: Event) -> int:
             event.confidence,
             json.dumps(event.extra),
             ingested_at.isoformat(),
+            event.event_index_in_post,
         ),
     )
     conn.commit()
     return _last_row_id(cursor)
+
+
+def events_exist_for_source_url(conn: sqlite3.Connection, url: str) -> list[int]:
+    """Return the persisted `event_index_in_post` slots for `url`, ascending.
+
+    Empty list ⇒ URL has never been persisted; non-empty ⇒ at least one slot
+    filled. The scheduler uses this to skip URLs that have already produced at
+    least one event, and the multi-event flow uses it to probe "is slot N
+    taken?" before issuing a `save_event` retry.
+    """
+    cursor = conn.execute(
+        "SELECT event_index_in_post FROM events WHERE source_url = ?"
+        " ORDER BY event_index_in_post ASC",
+        (url,),
+    )
+    return [int(row["event_index_in_post"]) for row in cursor.fetchall()]
 
 
 def query_events(

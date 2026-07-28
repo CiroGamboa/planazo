@@ -9,20 +9,22 @@
 -- column type.
 
 CREATE TABLE IF NOT EXISTS events (
-    id          INTEGER PRIMARY KEY,
-    source      TEXT    NOT NULL,
-    source_url  TEXT    NOT NULL UNIQUE,
-    title       TEXT    NOT NULL,
-    start_utc   TEXT    NOT NULL,
-    end_utc     TEXT    NOT NULL,
-    category    TEXT    NOT NULL,
-    city        TEXT    NOT NULL,
-    price_cents INTEGER NOT NULL DEFAULT 0,
-    geo_lat     REAL,
-    geo_lng     REAL,
-    confidence  REAL    NOT NULL,
-    extra       TEXT    NOT NULL DEFAULT '{}',
-    ingested_at TEXT    NOT NULL
+    id                  INTEGER PRIMARY KEY,
+    source              TEXT    NOT NULL,
+    source_url          TEXT    NOT NULL,
+    title               TEXT    NOT NULL,
+    start_utc           TEXT    NOT NULL,
+    end_utc             TEXT    NOT NULL,
+    category            TEXT    NOT NULL,
+    city                TEXT    NOT NULL,
+    price_cents         INTEGER NOT NULL DEFAULT 0,
+    geo_lat             REAL,
+    geo_lng             REAL,
+    confidence          REAL    NOT NULL,
+    extra               TEXT    NOT NULL DEFAULT '{}',
+    ingested_at         TEXT    NOT NULL,
+    event_index_in_post INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(source_url, event_index_in_post)
 );
 
 CREATE TABLE IF NOT EXISTS users (
