@@ -38,6 +38,7 @@ COMMANDS: Final[Mapping[str, str]] = {
     "/help": "cmd_help",
     "/me": "cmd_me",
     "/prefs": "cmd_prefs",
+    "/register": "cmd_register",
 }
 
 

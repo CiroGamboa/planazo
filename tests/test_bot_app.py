@@ -7,13 +7,15 @@ handlers rather than feeding updates through a started application.
 
 What the tiers cover, in the order they appear: that each registered command
 actually dispatches (including the `/cmd@botname` form group chats deliver),
-that the registered set is the set the bot advertises, that an `Update`
-projects into the right `IncomingMessage`, that a malformed update is ignored
-rather than crashing, that an edited command is refused before it can replay an
-old write over a newer one, and that `main()` explains a missing token instead
-of polling with one. `config` loads the real shipped `data/bot.yaml`, so
-`resolve(config, "edited_command", config.default_locale)` is the same text
-the running bot would send.
+that the registered set is the set the bot advertises, that a plain-text
+update routes to the registration continuation handler and not to any
+`CommandHandler` (and vice versa), that an `Update` projects into the right
+`IncomingMessage` for both a command and plain text, that a malformed update
+is ignored rather than crashing, that an edited command or registration
+answer is refused before it can replay an old write over a newer one, and
+that `main()` explains a missing token instead of polling with one. `config`
+loads the real shipped `data/bot.yaml`, so `resolve(config, "edited_command",
+config.default_locale)` is the same text the running bot would send.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from typing import NoReturn
 
 import pytest
 from telegram import Chat, Message, MessageEntity, Update, User
+from telegram.ext import CommandHandler, MessageHandler
 
 from planazo.bot import app
 from planazo.bot.app import adapter_for, build_application, main
@@ -87,7 +90,10 @@ def make_message(
     """One real `telegram.Message`, built offline.
 
     A command only routes when a `BOT_COMMAND` entity sits at offset 0, so the
-    entity is derived from the leading token rather than omitted.
+    entity is derived from the leading token rather than omitted — but only
+    when `text` actually starts with `/`, matching what Telegram itself would
+    attach; a plain-text answer (no leading `/`) gets no entity, which is what
+    lets it exercise the plain-text `MessageHandler` instead of a command's.
     """
     user = (
         User(id=SENDER_ID, first_name="Dani", last_name="V", is_bot=False, username=handle)
@@ -96,7 +102,7 @@ def make_message(
     )
     entities = (
         [MessageEntity(type=MessageEntity.BOT_COMMAND, offset=0, length=len(text.split()[0]))]
-        if text
+        if text and text.startswith("/")
         else []
     )
     message = Message(
@@ -169,6 +175,8 @@ def _stored_preferences() -> list[tuple[str, str]]:
         ("/prefs", "prefs"),
         ("/prefs set city Barcelona", "prefs"),
         (f"/prefs@{BOT_USERNAME} remove city", "prefs"),
+        ("/register", "register"),
+        (f"/register@{BOT_USERNAME}", "register"),
     ],
 )
 def test_each_command_routes_to_exactly_one_registered_handler(
@@ -186,17 +194,56 @@ def test_an_unknown_command_routes_nowhere(config: BotConfig) -> None:
 
 def test_the_registered_commands_are_the_ones_the_bot_advertises(config: BotConfig) -> None:
     # `/start` and `/help` read their list from `COMMANDS`; this is what keeps
-    # what the bot offers and what it answers from drifting apart.
-    registered = {name for handler in _registered_handlers(config) for name in handler.commands}
+    # what the bot offers and what it answers from drifting apart. Filtered to
+    # `CommandHandler`: the plain-text `MessageHandler` has no `.commands`.
+    registered = {
+        name
+        for handler in _registered_handlers(config)
+        if isinstance(handler, CommandHandler)
+        for name in handler.commands
+    }
 
     assert registered == {command.removeprefix("/") for command in COMMANDS}
 
 
-def test_build_application_registers_one_group_of_four_handlers(config: BotConfig) -> None:
+def test_build_application_registers_five_commands_and_one_message_handler(
+    config: BotConfig,
+) -> None:
     application = build_application("1:A", config)
+    handlers = application.handlers[0]
 
     assert list(application.handlers) == [0]
-    assert len(application.handlers[0]) == 4
+    assert len(handlers) == 6
+    assert sum(isinstance(handler, CommandHandler) for handler in handlers) == 5
+    assert sum(isinstance(handler, MessageHandler) for handler in handlers) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_plain_text_update_routes_only_to_the_message_handler_and_adapts(
+    config: BotConfig,
+) -> None:
+    """No-shadowing in the direction the command-routing tests above cannot
+    reach, plus adaptation for that same non-command tier.
+
+    `test_each_command_routes_to_exactly_one_registered_handler` already
+    proves a command matches exactly its own `CommandHandler` and never this
+    one; this proves the reverse — a plain-text update (no `BOT_COMMAND`
+    entity) matches the `MessageHandler` and no `CommandHandler` — then
+    projects into an `IncomingMessage` through the same `adapter_for` path
+    already proven for commands.
+    """
+    bot = StubBot()
+    update = Update(update_id=1, message=make_message("Barcelona", bot=bot))
+
+    matched = [handler for handler in _registered_handlers(config) if handler.check_update(update)]
+    assert [type(handler) for handler in matched] == [MessageHandler]
+
+    command = RecordingCommand()
+    await adapter_for(command, config)(update, StubContext(bot))
+
+    (message,) = command.calls
+    assert message.text == "Barcelona"
+    assert message.telegram_user_id == str(SENDER_ID)
 
 
 @pytest.mark.asyncio
@@ -282,6 +329,31 @@ async def test_an_edited_command_is_refused_and_never_reaches_the_command(
     ]
     # The refusal returns before the database is opened, so "writes nothing" is
     # a fact about the control flow rather than a claim about the rows.
+    assert not database.exists()
+
+
+@pytest.mark.asyncio
+async def test_an_edited_registration_answer_is_refused_and_never_reaches_the_handler(
+    database: Path, config: BotConfig
+) -> None:
+    """The same refusal, reached through a plain-text registration answer.
+
+    `adapter_for` itself is unchanged — this is what proves the refusal
+    generalizes to the new route rather than having only ever been exercised
+    through a `CommandHandler`-shaped update.
+    """
+    command = RecordingCommand()
+    bot = StubBot()
+    update = Update(update_id=1, edited_message=make_message("Barcelona", bot=bot))
+
+    assert update.message is None
+
+    await adapter_for(command, config)(update, StubContext(bot))
+
+    assert command.calls == []
+    assert [call["text"] for call in bot.sent] == [
+        resolve(config, "edited_command", config.default_locale)
+    ]
     assert not database.exists()
 
 

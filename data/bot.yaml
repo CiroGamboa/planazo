@@ -5,6 +5,7 @@ messages:
   cmd_help: {en: "show this list", es: "muestra esta lista"}
   cmd_me: {en: "show your account and how many preferences you have stored", es: "muestra tu cuenta y cuántas preferencias tienes guardadas"}
   cmd_prefs: {en: "view, set, or remove your preferences", es: "consulta, guarda o elimina tus preferencias"}
+  cmd_register: {en: "start or continue your registration", es: "empieza o continúa tu registro"}
   command_line: {en: "{command} — {description}", es: "{command} — {description}"}
   start: {en: "Hi {display_name}! You are all set. Here is what I can do:\n\n{commands}", es: "¡Hola {display_name}! Ya estás listo. Esto es lo que puedo hacer:\n\n{commands}"}
   help: {en: "Here is what I can do:\n\n{commands}", es: "Esto es lo que puedo hacer:\n\n{commands}"}
