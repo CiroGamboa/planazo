@@ -27,6 +27,7 @@ the replacement.
 import json
 import sqlite3
 from collections.abc import Callable
+from datetime import UTC, datetime
 from functools import wraps
 from typing import Annotated, Any, Literal
 
@@ -40,6 +41,13 @@ from planazo.identity import PreferenceReadResult, PreferenceRecord, get_prefere
 from planazo.memory.api import build_memory_tools
 from planazo.memory.rules import load_rules
 from planazo.monitor.logging import RunStepLogger
+from planazo.observability import (
+    FINAL_ANSWER_CAP,
+    USER_QUERY_CAP,
+    AgentRunLogger,
+    AgentRunRecord,
+    format_stored_text,
+)
 from planazo.query.models import SearchIntent
 from planazo.storage import db
 from tools import tools as calendar_tools
@@ -437,8 +445,9 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
 
     model = run_context.get("model", CHEAP)
     supplied_observer = run_context.get("on_step")
+    record_runs = run_context.get("record_runs", True)
     logger: RunStepLogger | None = None
-    if run_context.get("record_runs", True):
+    if record_runs:
         logger = RunStepLogger(
             user_message=RECOMMENDER_WORK_MESSAGE,
             model=model,
@@ -454,6 +463,10 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
         if supplied_observer is not None:
             supplied_observer(record)
 
+    # Capture the loop's wall-clock boundaries around `run_loop` so the
+    # `agent_runs` row's `started_at` / `ended_at` cover the full loop —
+    # including tool dispatches, not just the LLM turns.
+    started_at = datetime.now(UTC)
     result = run_loop(
         user_message=RECOMMENDER_WORK_MESSAGE,
         tools=tool_schemas,
@@ -467,8 +480,23 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
         # system message is worse than none at all.
         system=system_text or None,
     )
+    ended_at = datetime.now(UTC)
     if logger is not None:
         logger.complete(result)
+        # SQLite write is gated by the same `record_runs` seam as the JSONL
+        # writer above. Best-effort: `AgentRunLogger` catches every exception
+        # and logs a WARNING; the Recommender's answer is the primary flow
+        # and observability failures must not affect it (Rule 4). Runs BEFORE
+        # the `RecommenderResult` post-processing below so it fires regardless
+        # of which return branch is taken.
+        _record_agent_run_best_effort(
+            run_id=logger.run_id,
+            user_id=user_id,
+            user_message=user_message,
+            result=result,
+            started_at=started_at,
+            ended_at=ended_at,
+        )
     successful_searches: list[Event] = []
     for record in search_trace:
         error = _search_error(record.result)
@@ -514,3 +542,44 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
         candidates=candidates,
         interpreter_fallback=intent.error_type == "interpreter_fallback",
     )
+
+
+def _record_agent_run_best_effort(
+    *,
+    run_id: str,
+    user_id: int | None,
+    user_message: str,
+    result: LoopResult,
+    started_at: datetime,
+    ended_at: datetime,
+) -> None:
+    """Build the sanitized `AgentRunRecord` and hand it to `AgentRunLogger`.
+
+    The `preference_read_error` branch cannot reach here — `run_once`
+    returns early before the loop starts, before this helper is called.
+    Every other `LoopResult.stopped` value is a valid `AgentRunStopped`
+    Literal, so the aggregate constructs cleanly and the logger's own
+    best-effort swallow only catches genuine DB-side failures.
+    """
+    assert result.stopped != "preference_read_error", (
+        "agent_runs records actual loop terminals; pre-run failures must not be logged"
+    )
+    agent_logger = AgentRunLogger(conn_factory=db.connect)
+    record = AgentRunRecord(
+        run_id=run_id,
+        agent_kind="recommender",
+        user_id=user_id,
+        user_query=format_stored_text(user_message, USER_QUERY_CAP),
+        final_answer=(
+            format_stored_text(result.answer, FINAL_ANSWER_CAP)
+            if result.answer is not None
+            else None
+        ),
+        # `LoopResult.stopped` widens over the aggregate's Literal by one
+        # branch (`preference_read_error`); the assert above narrows it out.
+        stopped=result.stopped,
+        steps_count=result.steps,
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+    agent_logger.record(record)

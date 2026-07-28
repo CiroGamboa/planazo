@@ -137,6 +137,7 @@ Under `src/planazo/`, each domain concept lives in a self-contained folder that 
 | `memory/` | Facts + notes + rules (private/shared) | `Fact`, `Note`, `MemoryScopeRequest`, closured memory tools |
 | `rank/` | Deterministic ranker (LLM re-ranker deferred) | `RankingPreferences`, `RankedEvent`, `rank_events` — landed by M4 |
 | `monitor/` | Out-of-band LLM-as-judge grader | `RunStep`, `RunSession`, `Verdict`, `GradedRun` |
+| `observability/` | Per-loop SQLite audit rows in `agent_runs` — write-side only, wired best-effort at composition roots alongside the JSONL sidecars | `AgentRunRecord`, `format_stored_text`, `record_agent_run`/`query_agent_runs`, `AgentRunLogger` |
 
 **Shared kernel** — `agentlib/` (LLM wrapper) and `tools/schema.py` (function-signature reflection). Product-agnostic; imported by every context; may not import any context.
 
@@ -235,7 +236,7 @@ SQLite + JSON columns (via SQLite's JSON1). Domain-only — free-form agent memo
 - **`storage/db.py`** — `connect()`: connection + migration runner. Reads `PRAGMA user_version`, applies every pending `NNN_*.sql` file in `storage/migrations/` in lexicographic order inside a transaction that bumps `user_version` in the same commit, so a mid-migration failure leaves the database at the last successful version.
 - **`storage/dao.py`** — narrow DAO surface, no ORM. Two tiers: connection-parameterized primitives for internal composition, and the self-contained `save_event`/`search_events` wrappers that open their own connection and return a typed-error-or-success dict, so they are usable directly as LLM tools.
 
-Schema (v1):
+Schema:
 
 | Table | Purpose |
 | --- | --- |
@@ -245,6 +246,7 @@ Schema (v1):
 | `approvals(id, user_id FK, artifact_kind, artifact_id, decision, decided_at)` | Audit trail for future calendar wiring. |
 | `extraction_runs_index(id, run_id, user_id, url, started_at)` | Thin index; the full run payload lives in the JSONL log (§9). |
 | `scan_state(source_url PK, last_scanned_at, last_success_at, consecutive_failures)` | Per-source-URL scheduler bookkeeping — post entries and account entries share the table (`source_url` is the honest name for both). `next_run_after(cadence, last_scanned_at)` drives the cadence gate; `consecutive_failures` drives the failure-skip gate (ADR 0011 §D9). Read + upserted every `planazo-scheduler --tick`. |
+| `agent_runs(id, run_id UNIQUE, agent_kind CHECK IN ('recommender', 'extractor'), user_id FK, user_query, final_answer, stopped, steps_count, started_at, ended_at)` | One row per completed Recommender or Extractor loop, written best-effort at the composition roots alongside the JSONL sidecars. `user_query` and `final_answer` are sanitized via `observability/models.py::format_stored_text`. Backs future per-user history reads (`/find` history, #23) via the composite index `idx_agent_runs_user_started(user_id, started_at)`. |
 
 ```mermaid
 erDiagram
@@ -304,6 +306,19 @@ erDiagram
         datetime last_success_at
         int consecutive_failures
     }
+    agent_runs {
+        int id PK
+        string run_id UK
+        string agent_kind
+        int user_id FK
+        string user_query
+        string final_answer
+        string stopped
+        int steps_count
+        datetime started_at
+        datetime ended_at
+    }
+    users ||--o{ agent_runs : owns
 ```
 
 Unit tests run against real SQLite in two tiers, matching how the two dao tiers open connections: the connection-parameterized primitives share one `:memory:` connection held across every call in a test, and the self-contained `save_event`/`search_events` wrappers — which open and close their own connection per call — run against a `tmp_path` file so state carries between calls.
