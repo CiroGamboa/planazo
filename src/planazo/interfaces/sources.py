@@ -1,26 +1,27 @@
 """The event-source adapter contract.
 
-Swap axis: Instagram (M2, first concrete), TikTok, YouTube, news pages,
+Swap axis: Instagram (first concrete), TikTok, YouTube, news pages,
 Meetup, Eventbrite — every source drops into this slot without changing
-the interface. The concrete Instagram implementation is scoped by
-[M2 (#16)](https://github.com/CiroGamboa/planazo/issues/16) + planned
-ADR 0006; the shape here reflects what that ticket will land.
+the interface. The concrete Instagram implementation lives in
+`planazo.sources.instagram`; the shape here is what every `EventSource`
+adapter satisfies. See
+[ADR 0006 — Instagram extraction approach](../../../docs/adr/0006-instagram-extraction-approach.md)
+for the scraper choice + container + rate-limit envelope + session policy.
 
 `RawPost` + `MediaAsset` are the media-type-agnostic payload every adapter
 returns: static posts, reels, carousels, and video posts all fit the same
-Pydantic v2 model. The Extractor (M3) branches on `media[*].kind` when it
+Pydantic v2 model. The Extractor branches on `media[*].kind` when it
 probes the multimodal LLM.
 
-This module intentionally forward-declares the shapes without importing
-concrete Pydantic models — those live in `planazo.sources.models` and will
-be added when M2 lands. Downstream milestones (M2 for the concrete adapter,
-M3 for the extractor consuming it) type against these Protocols.
+This module forward-declares the shapes without importing concrete Pydantic
+models — those live in `planazo.sources.models`. Downstream milestones type
+their consumers against these Protocols so the four axes swap independently.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Literal, Protocol
 
 
@@ -29,7 +30,7 @@ class MediaAsset(Protocol):
 
     `kind` is the discriminator the Extractor branches on. Adapters produce
     `MediaAsset`-shaped objects; concrete Pydantic implementations live in
-    `planazo.sources.models` (added by M2).
+    `planazo.sources.models`.
     """
 
     kind: Literal["image", "video", "thumbnail"]
@@ -52,7 +53,8 @@ class RawPost(Protocol):
     permalink: str
     title: str | None
     caption: str | None
-    posted_at: str  # ISO-8601; a downstream field-validator parses to datetime
+    # Pydantic v2 auto-parses ISO-8601 strings into datetime at model_validate time
+    posted_at: datetime
     author_handle: str | None
     media: list[MediaAsset]
 
@@ -66,7 +68,9 @@ class EventSource(Protocol):
 
     Return values on failure are typed dicts (`{"error_type": "rate_limited",
     ...}` etc.), not exceptions — the adapter never raises on the happy path.
-    M2 spells out the full error-branch taxonomy.
+    The error-branch taxonomy is `unsupported_source`, `not_found`,
+    `rate_limited`, `auth_failed`, `unsupported_media` — see
+    [ADR 0006](../../../docs/adr/0006-instagram-extraction-approach.md).
     """
 
     name: str  # `"instagram"`, `"tiktok"`, ...

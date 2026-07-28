@@ -1,0 +1,26 @@
+# Docker Compose services for Planazo's source adapters.
+#
+# Each source runs in its own image so a Meta break (Instagram) does not
+# affect a TikTok / news / Meetup adapter. `data/sources.yaml` is bind-mounted
+# read-only so an operator edits the config on the host and the container
+# picks it up on next run (ADR 0006, decision 3).
+
+services:
+  sources-instagram:
+    image: planazo-sources-instagram:local
+    build:
+      context: .
+      dockerfile: docker/sources-instagram.Dockerfile
+    restart: "no"
+    # `docker compose up sources-instagram` prints the resolved fetch plan for
+    # every configured account and exits 0 (no network calls). To fetch one
+    # specific post, use `docker compose run --rm sources-instagram --url <URL>`
+    # — the entrypoint accepts either mode; up ⇒ plan, run --url ⇒ fetch.
+    command: ["--dry-run"]
+    environment:
+      # Session cookie for logged-in fetch; unset → anonymous mode (ADR 0006,
+      # decision 5). Copy the value from a logged-in browser session's
+      # `sessionid` cookie.
+      INSTAGRAM_SESSION_ID: "${INSTAGRAM_SESSION_ID:-}"
+    volumes:
+      - ./data/sources.yaml:/app/data/sources.yaml:ro

@@ -1,0 +1,18 @@
+# Schema example — replace PLACEHOLDER_* with real public Barcelona venue accounts.
+sources:
+  instagram:
+    default_cadence: "6h"
+    default_media_types:
+      static_posts: true
+      reels: true
+      carousels: true
+      video_posts: true
+    accounts:
+      - url: "https://instagram.com/PLACEHOLDER_ACCOUNT_1"
+        cadence: "24h"
+      - url: "https://instagram.com/PLACEHOLDER_ACCOUNT_2"
+        media_types:
+          static_posts: true
+          reels: false
+          carousels: true
+          video_posts: true
