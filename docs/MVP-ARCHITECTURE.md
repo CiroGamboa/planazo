@@ -147,14 +147,18 @@ The layers below each map to one bounded context (annotated per layer). Numberin
 
 ### 1. Telegram bot — `src/planazo/bot/`
 
-- **`bot/app.py`** — entrypoint; `python-telegram-bot` handlers, dispatch to command handlers.
+- **`bot/app.py`** — entrypoint; builds the `python-telegram-bot` `Application`, registers one `CommandHandler` per command, converts each `Update` into an `IncomingMessage`, and runs long polling.
+- **`bot/surface.py`** — `TelegramSurface`, the reply channel bound to a `Bot` and a `chat_id`; the implementation of `planazo.interfaces.surface.UserSurface`. Plain text, no `parse_mode`.
+- **`bot/models.py`** — `IncomingMessage`, the Pydantic v2 projection of one update that the command layer consumes.
 - **`bot/session.py`** — resolves the Telegram `user_id` to the internal `users.id` (create-on-first-contact). This is the multi-user seam.
-- **`bot/approve.py`** — supplies `ApprovalGate.approve` via an inline keyboard `[Approve] [Decline]`, mirrors `_terminal_approve` in `src/planazo/agents/cli.py`.
-- **`bot/commands.py`** — `/start`, `/find <query>`, `/prefs`, `/me`, `/help`. `/find` is the only command that calls the LLM (via the Interpreter); the rest are pure CRUD on SQLite.
+- **`bot/commands.py`** — `/start`, `/help`, `/me`, `/prefs` (view / set / remove), plus every user-facing literal. Pure CRUD on SQLite. `/find <query>` lands with #23 and is the one command that calls the LLM, via the Interpreter.
+- **`bot/approve.py`** — supplies `ApprovalGate.approve` via an inline keyboard `[Approve] [Decline]`, mirrors `_terminal_approve` in `src/planazo/agents/cli.py`. Lands with #22.
 
-The bot layer is deliberately dumb — no LLM inside — so swapping to an LLM-driven natural-language dispatcher later is a change to one file (`commands.py`), not a rewrite.
+Only `app.py` and `surface.py` import `telegram`; `models.py`, `session.py`, and `commands.py` are transport-neutral, which is what lets every command be exercised offline against real SQLite and a recording surface.
 
-Governed by planned **ADR 0010 — Telegram bot interface abstraction**.
+The bot layer is deliberately dumb — no LLM call originates inside it, guarded by the source-text scan in `tests/test_bot_no_llm.py` — so swapping to an LLM-driven natural-language dispatcher later is a change to one file (`commands.py`), not a rewrite.
+
+Governed by [**ADR 0011 — Telegram bot interface abstraction**](adr/0011-telegram-bot-interface.md) (no-LLM-in-bot invariant and how it is enforced, the PTB-free command signature, create-on-first-contact session mapping, the `UserSurface` shape, plain-text replies, long polling, and the threading contract for the approval seam).
 
 ### 2. Query interpreter — `src/planazo/query/interpreter.py`
 
@@ -198,15 +202,15 @@ Governed by [**ADR 0005 — Multi-agent shape**](adr/0005-multi-agent-shape.md) 
 - **`sources/models.py`** — `RawPost` + `MediaAsset` (Pydantic v2). Media-type-agnostic: `RawPost` carries `title`, `caption`, `posted_at`, `author_handle`, `permalink`, and a `media: list[MediaAsset]` where each asset has a `kind` (`image` / `video` / `thumbnail`) plus its URL and metadata (duration for videos, dimensions for images). Reels and carousels return the same shape as static posts; the Extractor (M3) branches on `media[*].kind` when it decides how to probe the multimodal LLM.
 - **`sources/config.py`** — Pydantic-validated config loader. Reads `data/sources.yaml` at startup: target accounts (URLs) per source, per-source or per-account scrape cadence (`every: 6h`), and per-account media-type flags (`static_posts`, `reels`, `carousels`, `video_posts`). Malformed config is a boot-time failure, not a per-scrape surprise.
 - **`sources/instagram/`** — the real adapter, running inside a Docker service (see below). Reads the config, respects per-source cadence, attempts static posts (must work) + reels / carousels / video posts (exploratory — the ticket's acceptance bar is "each type either produces a validated `RawPost` or a typed `unsupported_media` error"). Returns `RawPost` to the Extractor's `fetch_instagram_post` tool only; never to the Recommender's tools.
-- **`sources/meetup/`** — future adapter against public GraphQL (ADR 0011, conditional).
-- **`sources/eventbrite/`** — future adapter (ADR 0011, conditional).
+- **`sources/meetup/`** — future adapter against public GraphQL (ADR 0012, conditional).
+- **`sources/eventbrite/`** — future adapter (ADR 0012, conditional).
 - Registration is config-driven via `SOURCES: dict[str, EventSource]` (module constant), monkeypatched in tests.
 
 **Docker isolation.** Instagram scraping is fragile — the runtime lives in a container (`docker/sources.Dockerfile` + `compose.yaml`'s `sources-instagram` service) so it's isolated from the local machine's Python version, cookie state, and IP hygiene. Dev flow: `docker compose up sources-instagram` runs the adapter against the mounted `data/sources.yaml`. CI runs the same image against a stubbed network fixture — no real Instagram calls in the test suite.
 
 **Typed error branches** (rule 4): `unsupported_source`, `rate_limited`, `auth_failed`, `not_found`, `unsupported_media`. The adapter never raises on the happy path.
 
-Governed by [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-extraction-approach.md) (scraper choice, container base, rate-limit envelope, cookie/session policy, per-media-type fallback rules, plus the generalized-protocol argument that TikTok/YouTube/news adapters drop into the same slot). Meetup and Eventbrite ADR 0011, conditional.
+Governed by [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-extraction-approach.md) (scraper choice, container base, rate-limit envelope, cookie/session policy, per-media-type fallback rules, plus the generalized-protocol argument that TikTok/YouTube/news adapters drop into the same slot). Meetup and Eventbrite ADR 0012, conditional.
 
 ### 6. Ranking — `src/planazo/rank/scorer.py`
 
@@ -349,7 +353,7 @@ Governed by **[ADR 0007 — Monitor scheduling and categorical grades](adr/0007-
 
 | Rule | Enforcement site |
 | --- | --- |
-| Rule 1 — validate at boundary | Every Telegram update parsed into a `TelegramUpdate` Pydantic model in `bot/`. Every LLM tool return is a Pydantic model in its owning bounded context's `models.py`. Every extractor result is `ExtractionResult`. No `dict[str, Any]` on any public surface. |
+| Rule 1 — validate at boundary | Every Telegram update projected into an `IncomingMessage` Pydantic model (`src/planazo/bot/models.py`) before any command reads it. Every LLM tool return is a Pydantic model in its owning bounded context's `models.py`. Every extractor result is `ExtractionResult`. No `dict[str, Any]` on any public surface. |
 | Rule 2 — untrusted text ≠ instructions | The Extraction Agent is the **only** module that ever holds raw scraped text in a prompt. It returns the parsed `Event` object to the Recommender — never the caption string. `sources/instagram/` returns `RawPost` only to the Extractor's `fetch_instagram_post` tool. Enforced by code shape, not by prompt discipline. |
 | Rule 3 — approval gate | Existing `ApprovalGate` (`src/planazo/approval/gate.py`) stays; `agents/loop.py` names the structural `ApprovalGate` Protocol it accepts so the runtime kernel holds no domain imports. Telegram callback in `bot/approve.py`. Calendar wiring stays as reference; v0.2 turns it on. |
 | Rule 4 — typed error branches | Every tool returns `error_type: str \| None` following the pattern already at `src/tools/tools.py:79` and `:174`. |
@@ -549,8 +553,9 @@ Each is its own PR, blocked by its own ticket. This doc is what those PRs will p
 | 0007 | [`monitor-scheduling-and-grades`](adr/0007-monitor-scheduling-and-grades.md) | Categorical axes, rationale requirement, cron/GHA plan. |
 | 0008 | [`domain-driven-module-layout`](adr/0008-domain-driven-module-layout.md) | Bounded-context folder layout under `planazo/`; per-aggregate `models.py` + `repository.py` (+ `tools.py`); preserves ADR 0003/0004 API contracts. |
 | 0009 | [`repo-root-layout`](adr/0009-repo-root-layout.md) | Flatten the outer `agent/` directory. `src/planazo/`, `tests/`, `pyproject.toml` at repo root. Supersedes ADR 0001's layout paragraph only. |
-| 0010 | `telegram-bot-interface` | Bot layer, no-LLM-in-bot invariant, approval callback, interpreter step wiring. |
-| 0011 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
+| 0010 | [`extensibility-interfaces`](adr/0010-extensibility-interfaces.md) | `Protocol` classes at the four swap seams — `UserSurface`, `EventSource`, `Repository[T]`, `AgentLoop` — in `src/planazo/interfaces/`. |
+| 0011 | [`telegram-bot-interface`](adr/0011-telegram-bot-interface.md) | Bot layer, no-LLM-in-bot invariant, PTB-free command signature, session mapping, the `UserSurface` shape, and the approval seam's threading contract. Supersedes ADR 0010's `UserSurface` declaration only. |
+| 0012 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
 
 Until each ADR lands, its section here reads as "planned — ADR NNNN"; when it lands, the entry is edited in place to link the accepted ADR.
 

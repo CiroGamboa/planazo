@@ -2,7 +2,11 @@
 
 Each module declares the structural contract for one axis of extensibility:
 
-- `surface.py` — `UserSurface`: user-facing surfaces (CLI today, Telegram/WhatsApp/web later).
+- `surface.py` — `UserSurface` (shape per ADR 0011): user-facing surfaces.
+  `planazo.bot.surface.TelegramSurface` implements it; WhatsApp and web
+  surfaces conform the same way, and #60 gives the terminal CLI its own.
+  `ApprovalCallback` lives here too — the callable a surface hands to an
+  `ApprovalGate`.
 - `sources.py` — `EventSource`: data-source adapters (Instagram, TikTok, YouTube,
   news, Meetup, Eventbrite).
 - `persistence.py` — `Repository[T]`: per-aggregate persistence (SQLite today,
