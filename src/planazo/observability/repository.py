@@ -14,14 +14,28 @@ suppression lives one layer up in `observability.logging.AgentRunLogger`
 so the same primitive is usable from both the audit writer (best-effort,
 never crashes the primary flow) and any future reader/test that wants
 the exception at construction time.
+
+The read primitive `query_agent_runs` is graceful under row-level
+corruption: a row that fails Pydantic re-validation (someone wrote raw
+SQL and bypassed the sanitizer, an older migration left a value outside
+the current Literal, etc.) is skipped with one WARNING per bad row so
+the operator can still inspect the healthy rows around it. Loud-failure
+would let one corrupt row block the whole history view — an outcome
+worse than dropping that row's visibility until the write path is
+fixed.
 """
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+
+from pydantic import ValidationError
 
 from planazo.monitor.models import AgentName
 from planazo.observability.models import AgentRunRecord
+
+logger = logging.getLogger(__name__)
 
 
 def record_agent_run(conn: sqlite3.Connection, record: AgentRunRecord) -> int:
@@ -61,14 +75,30 @@ def record_agent_run(conn: sqlite3.Connection, record: AgentRunRecord) -> int:
     return row_id
 
 
-def _record_from_row(row: sqlite3.Row) -> AgentRunRecord:
-    """Rehydrate one `AgentRunRecord` from a `sqlite3.Row`.
+def _record_from_row(row: sqlite3.Row) -> AgentRunRecord | None:
+    """Rehydrate one `AgentRunRecord` from a `sqlite3.Row`, or `None` if unrecoverable.
 
     Passes through the Pydantic aggregate so the sanitization invariant
-    round-trips: if a caller wrote unsanitized text via raw SQL, the
-    read-side rejects it here instead of surfacing garbage.
+    round-trips. If validation fails — a corrupt row from a diagnostic
+    tool that bypassed the sanitizer, a value written before a Literal
+    was tightened — the row is skipped with one WARNING that names the
+    row's `run_id` (safe to log; run_id is a UUID, never caption
+    content) and its `ValidationError.errors()` shape. The caller
+    filters `None` results out of the list. This keeps the reader
+    usable in the face of a single bad row instead of failing the
+    whole query.
     """
-    return AgentRunRecord.model_validate(dict(row))
+    try:
+        return AgentRunRecord.model_validate(dict(row))
+    except ValidationError as exc:
+        # `_record_from_row` is private and only called from `query_agent_runs`,
+        # whose SELECT always includes `run_id` — no fallback needed.
+        logger.warning(
+            "query_agent_runs: skipping row run_id=%s that failed re-validation: %s",
+            row["run_id"],
+            exc.errors(),
+        )
+        return None
 
 
 def query_agent_runs(
@@ -107,4 +137,4 @@ def query_agent_runs(
         f" FROM agent_runs{where} ORDER BY started_at DESC LIMIT ?",
         params,
     ).fetchall()
-    return [_record_from_row(row) for row in rows]
+    return [record for row in rows if (record := _record_from_row(row)) is not None]

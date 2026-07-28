@@ -165,6 +165,9 @@ def test_extract_once_writes_one_agent_runs_row(
     assert row.user_id == user_id
     assert row.stopped == "answered"
     assert row.user_query.startswith("Extract every distinct event")
+    # The Extractor loop ran two turns (report_extraction_status → empty
+    # answer) — `steps_count` ties the row to observable loop state.
+    assert row.steps_count == 2
 
 
 def test_extract_once_agent_runs_run_id_matches_extraction_log(
@@ -242,6 +245,10 @@ def test_run_once_writes_one_agent_runs_row(
     assert row.user_query == "what can I do tonight?"
     assert row.final_answer == "done"
     assert row.stopped == "answered"
+    # Recommender terminated on the first turn (no tool calls in the
+    # mocked result) — `steps_count == 1` locks the row to observable
+    # loop state and would trip if the loop invocation drifts.
+    assert row.steps_count == 1
 
 
 def test_run_once_record_runs_false_disables_sqlite_writer(

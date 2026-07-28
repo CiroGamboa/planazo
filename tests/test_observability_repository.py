@@ -8,6 +8,7 @@ query against (via `EXPLAIN QUERY PLAN`).
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -190,3 +191,48 @@ def test_null_user_id_accepted_for_operator_run(isolated_db: sqlite3.Connection)
     rows = query_agent_runs(isolated_db)
     assert len(rows) == 1
     assert rows[0].user_id is None
+
+
+def test_query_skips_corrupt_row_with_warning_and_returns_healthy_rows(
+    isolated_db: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A row that fails Pydantic re-validation is skipped, not fatal.
+
+    A diagnostic tool or older migration could write a value that the
+    current model rejects (e.g., an `agent_kind` outside the Literal, an
+    unsanitized `user_query` with a raw control byte). The reader must
+    stay usable for the healthy rows around it — loud-failure would let
+    one bad row block the whole history view.
+    """
+    # Insert one healthy row through the normal path.
+    record_agent_run(isolated_db, _make_record(run_id="healthy-1"))
+
+    # Now inject a corrupt row via raw SQL that bypasses the Pydantic
+    # sanitizer: raw newline in `user_query` trips
+    # `_SANITIZED_TEXT_PATTERN` at read-side re-validation.
+    now_iso = datetime(2026, 7, 28, 13, 0, tzinfo=UTC).isoformat()
+    isolated_db.execute(
+        "INSERT INTO agent_runs"
+        " (run_id, agent_kind, user_id, user_query, final_answer, stopped,"
+        "  steps_count, started_at, ended_at)"
+        " VALUES ('corrupt-1', 'recommender', 1, 'raw\nnewline', NULL, 'answered', 1, ?, ?)",
+        (now_iso, now_iso),
+    )
+    isolated_db.commit()
+
+    caplog.set_level(logging.WARNING, logger="planazo.observability.repository")
+
+    rows = query_agent_runs(isolated_db, user_id=1)
+
+    # Only the healthy row comes back; the corrupt row is dropped.
+    assert [r.run_id for r in rows] == ["healthy-1"]
+
+    warnings = [
+        rec
+        for rec in caplog.records
+        if rec.name == "planazo.observability.repository" and rec.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "corrupt-1" in message
+    assert "skipping row" in message
