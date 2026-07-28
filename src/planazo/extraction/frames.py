@@ -92,9 +92,16 @@ def _extract(video_url: str, *, frame_count: int) -> list[tuple[float, bytes]]:
 
         video_path.write_bytes(response.content)
 
+        # ``FileNotFoundError`` is the specific shape ``ffmpeg-python``
+        # surfaces when the host ``ffmpeg`` / ``ffprobe`` binary is absent
+        # from ``PATH`` — the wrapper spawns a subprocess and the missing
+        # binary raises at ``subprocess.Popen`` before any ``ffmpeg.Error``
+        # can be constructed. Catching both keeps the missing-binary case
+        # on the typed-error branch instead of leaking ``FileNotFoundError``
+        # past the extractor hook's silent-degrade guard.
         try:
             probe: dict[str, Any] = ffmpeg.probe(str(video_path))
-        except ffmpeg.Error as exc:
+        except (ffmpeg.Error, FileNotFoundError) as exc:
             raise FrameExtractionError(f"ffprobe failed: {exc}") from exc
 
         duration = _read_duration(probe)
@@ -111,7 +118,7 @@ def _extract(video_url: str, *, frame_count: int) -> list[tuple[float, bytes]]:
                     .output(str(frame_path), vframes=1, **{"q:v": _MJPEG_QUALITY})
                     .run(quiet=True, overwrite_output=True)
                 )
-            except ffmpeg.Error as exc:
+            except (ffmpeg.Error, FileNotFoundError) as exc:
                 raise FrameExtractionError(
                     f"ffmpeg extract failed at t={timestamp:.2f}s: {exc}"
                 ) from exc

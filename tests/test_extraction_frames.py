@@ -13,12 +13,15 @@ Tests use the bundled ``tests/data/sample_5s.mp4`` fixture — a 5s
 from __future__ import annotations
 
 import logging
+import tempfile
 from pathlib import Path
 from typing import Any
 
+import ffmpeg  # type: ignore[import-untyped]
 import httpx
 import pytest
 
+from planazo.extraction import frames as frames_module
 from planazo.extraction.frames import (
     MAX_REEL_FRAMES,
     FrameExtractionError,
@@ -138,3 +141,117 @@ def test_extract_reel_frames_probe_failure_raises_and_warns(
     warnings = [r for r in caplog.records if r.name == _FRAMES_LOGGER]
     assert warnings, "expected a WARNING record from planazo.extraction.frames"
     assert any(_TEST_URL in r.getMessage() for r in warnings)
+
+
+def test_extract_reel_frames_ffmpeg_binary_absent_raises_frame_extraction_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Missing ``ffmpeg`` / ``ffprobe`` on ``PATH`` surfaces as ``FrameExtractionError``.
+
+    Regression gate for the reviewer-fix widening of the probe-stage
+    ``except`` clause to ``(ffmpeg.Error, FileNotFoundError)``. Under the
+    pre-fix code the raw ``FileNotFoundError`` from ``subprocess.Popen``
+    escapes past ``ffmpeg.Error`` and the extractor hook's silent-degrade
+    guard misses it.
+    """
+    _patch_httpx_success(monkeypatch, _FIXTURE_MP4.read_bytes())
+
+    def _raise_fnf(*args: Any, **kwargs: Any) -> None:
+        raise FileNotFoundError("[Errno 2] No such file or directory: 'ffprobe'")
+
+    monkeypatch.setattr(frames_module.ffmpeg, "probe", _raise_fnf)
+    caplog.set_level(logging.WARNING, logger=_FRAMES_LOGGER)
+
+    with pytest.raises(FrameExtractionError) as excinfo:
+        extract_reel_frames(_TEST_URL)
+
+    assert "ffprobe" in str(excinfo.value)
+    warnings = [r for r in caplog.records if r.name == _FRAMES_LOGGER]
+    assert warnings, "expected a WARNING record from planazo.extraction.frames"
+    assert any(_TEST_URL in r.getMessage() for r in warnings)
+    assert any("ffprobe" in r.getMessage() for r in warnings)
+
+
+def test_extract_reel_frames_ffmpeg_error_raises_frame_extraction_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Mid-extract ``ffmpeg.Error`` (probe succeeds, ``.run()`` fails) maps to typed error.
+
+    Locks the second ``except`` branch inside ``_extract``, which the
+    probe-failure test above does not reach. The stream builder is
+    replaced with a stub whose ``.run()`` raises ``ffmpeg.Error``; the
+    top-level probe call is stubbed to return a valid duration.
+    """
+    _patch_httpx_success(monkeypatch, _FIXTURE_MP4.read_bytes())
+
+    def _stub_probe(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"format": {"duration": "5.0"}}
+
+    class _StubStream:
+        def output(self, *args: Any, **kwargs: Any) -> _StubStream:
+            return self
+
+        def run(self, *args: Any, **kwargs: Any) -> None:
+            raise ffmpeg.Error("ffmpeg", stdout=b"", stderr=b"conversion failed")
+
+    def _stub_input(*args: Any, **kwargs: Any) -> _StubStream:
+        return _StubStream()
+
+    monkeypatch.setattr(frames_module.ffmpeg, "probe", _stub_probe)
+    monkeypatch.setattr(frames_module.ffmpeg, "input", _stub_input)
+    caplog.set_level(logging.WARNING, logger=_FRAMES_LOGGER)
+
+    with pytest.raises(FrameExtractionError) as excinfo:
+        extract_reel_frames(_TEST_URL)
+
+    assert "ffmpeg extract failed" in str(excinfo.value)
+    warnings = [r for r in caplog.records if r.name == _FRAMES_LOGGER]
+    assert warnings, "expected a WARNING record from planazo.extraction.frames"
+    assert any(_TEST_URL in r.getMessage() for r in warnings)
+
+
+def test_extract_reel_frames_cleans_up_tempdir_on_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``tempfile.TemporaryDirectory`` is cleaned up when the extract stage raises.
+
+    Records the tempdir path via a spy on ``tempfile.TemporaryDirectory``
+    and asserts the directory is gone from disk after
+    ``FrameExtractionError`` unwinds — the context-manager cleanup path
+    is load-bearing per ADR 0013's "temp-file lifecycle discipline"
+    trade-off.
+    """
+    _patch_httpx_success(monkeypatch, _FIXTURE_MP4.read_bytes())
+
+    def _stub_probe(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"format": {"duration": "5.0"}}
+
+    class _StubStream:
+        def output(self, *args: Any, **kwargs: Any) -> _StubStream:
+            return self
+
+        def run(self, *args: Any, **kwargs: Any) -> None:
+            raise ffmpeg.Error("ffmpeg", stdout=b"", stderr=b"conversion failed")
+
+    def _stub_input(*args: Any, **kwargs: Any) -> _StubStream:
+        return _StubStream()
+
+    monkeypatch.setattr(frames_module.ffmpeg, "probe", _stub_probe)
+    monkeypatch.setattr(frames_module.ffmpeg, "input", _stub_input)
+
+    captured_paths: list[str] = []
+    real_temporary_directory = tempfile.TemporaryDirectory
+
+    def _spy_temporary_directory(*args: Any, **kwargs: Any) -> Any:
+        td = real_temporary_directory(*args, **kwargs)
+        captured_paths.append(td.name)
+        return td
+
+    monkeypatch.setattr(frames_module.tempfile, "TemporaryDirectory", _spy_temporary_directory)
+
+    with pytest.raises(FrameExtractionError):
+        extract_reel_frames(_TEST_URL)
+
+    assert captured_paths, "spy did not capture a tempdir"
+    for path in captured_paths:
+        assert not Path(path).exists(), f"tempdir {path} leaked past the raise"
