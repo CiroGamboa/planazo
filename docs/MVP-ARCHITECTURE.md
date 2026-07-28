@@ -224,18 +224,19 @@ Governed by [**ADR 0006 — Instagram extraction approach**](adr/0006-instagram-
 
 SQLite + JSON columns (via SQLite's JSON1). Domain-only — free-form agent memory lives elsewhere (§8).
 
-- **`storage/db.py`** — `connect()`: connection + migrations (`schema_v1.sql` applied idempotently on every connection open).
+- **`storage/db.py`** — `connect()`: connection + migrations. `schema_v1.sql` applies idempotently via `CREATE TABLE IF NOT EXISTS` on every open; `schema_v2.sql`'s `ALTER TABLE` statements apply exactly once per database, guarded by a `schema_migrations` table and run inside one transaction (`executescript()` does not roll back earlier DDL in the same script when a later statement fails, so the migration runs each statement through its own `execute()` call and rolls back the whole batch on failure).
 - **`storage/dao.py`** — narrow DAO surface, no ORM. Two tiers: connection-parameterized primitives for internal composition, and the self-contained `save_event`/`search_events` wrappers that open their own connection and return a typed-error-or-success dict, so they are usable directly as LLM tools.
 
-Schema (v1):
+Schema (v1 + v2):
 
 | Table | Purpose |
 | --- | --- |
 | `events(id, source, source_url UNIQUE, title, start_utc, end_utc, category, city, price_cents, geo_lat, geo_lng, confidence, extra JSON, ingested_at)` | The shared domain surface. `extra JSON` absorbs source-specific fields without altering the table. |
-| `users(id, telegram_user_id UNIQUE, display_name, created_at)` | Multi-user seam. |
+| `users(id, telegram_user_id UNIQUE, display_name, created_at, age, location, language, nationality, pending_registration_field)` | Multi-user seam. The last five columns (v2) back the guided registration flow: four nullable profile fields plus a pointer to whichever field the user's next message should answer (see [ADR 0013](adr/0013-registration-conversation-state.md)). |
 | `preferences(user_id FK, key, value, updated_at)` | Structured filter prefs used by the ranker and pushed into the agent context. |
 | `approvals(id, user_id FK, artifact_kind, artifact_id, decision, decided_at)` | Audit trail for future calendar wiring. |
 | `extraction_runs_index(id, run_id, user_id, url, started_at)` | Thin index; the full run payload lives in the JSONL log (§9). |
+| `schema_migrations(version PK, applied_at)` | Tracks which schema migrations beyond the v1 baseline have been applied, so `schema_v2.sql`'s `ALTER TABLE` statements run exactly once per database. |
 
 ```mermaid
 erDiagram
@@ -249,6 +250,11 @@ erDiagram
         string telegram_user_id UK
         string display_name
         datetime created_at
+        int age
+        string location
+        string language
+        string nationality
+        string pending_registration_field
     }
     events {
         int id PK
@@ -286,6 +292,10 @@ erDiagram
         int user_id FK
         string url
         datetime started_at
+    }
+    schema_migrations {
+        int version PK
+        datetime applied_at
     }
 ```
 

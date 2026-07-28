@@ -5,9 +5,12 @@ import pytest
 from pydantic import ValidationError
 
 from planazo.identity import (
+    UserRecord,
     delete_preference,
     get_or_create_user,
     get_preferences,
+    record_registration_answer,
+    set_pending_registration_field,
     set_preference,
 )
 from planazo.storage import db
@@ -32,6 +35,76 @@ def test_get_or_create_user_is_idempotent_by_telegram_user_id(
     # The existing row wins — this is get-or-create, not upsert.
     assert second.display_name == "Dani"
     assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
+
+
+def test_get_or_create_user_leaves_the_registration_columns_null_for_a_fresh_user(
+    conn: sqlite3.Connection,
+) -> None:
+    user = get_or_create_user(conn, "tg-1", "Dani")
+
+    assert user.age is None
+    assert user.location is None
+    assert user.language is None
+    assert user.nationality is None
+    assert user.pending_registration_field is None
+
+
+def test_record_registration_answer_persists_the_field_and_advances_the_pointer(
+    conn: sqlite3.Connection,
+) -> None:
+    user = get_or_create_user(conn, "tg-1", "Dani")
+    assert user.id is not None
+
+    updated = record_registration_answer(conn, user.id, "age", 29, "location")
+
+    assert updated.age == 29
+    assert updated.pending_registration_field == "location"
+    # Read back independently, not just the value the write handed back.
+    reread = get_or_create_user(conn, "tg-1", "Dani")
+    assert reread.age == 29
+    assert reread.pending_registration_field == "location"
+
+
+def test_set_pending_registration_field_sets_the_pointer(conn: sqlite3.Connection) -> None:
+    user = get_or_create_user(conn, "tg-1", "Dani")
+    assert user.id is not None
+
+    updated = set_pending_registration_field(conn, user.id, "display_name")
+
+    assert updated.pending_registration_field == "display_name"
+
+
+def test_set_pending_registration_field_to_none_clears_the_pointer_only(
+    conn: sqlite3.Connection,
+) -> None:
+    user = get_or_create_user(conn, "tg-1", "Dani")
+    assert user.id is not None
+    record_registration_answer(conn, user.id, "age", 29, "location")
+
+    cleared = set_pending_registration_field(conn, user.id, None)
+
+    assert cleared.pending_registration_field is None
+    # The profile column the earlier answer wrote is untouched.
+    assert cleared.age == 29
+
+
+def test_profile_complete_requires_age_location_language_and_nationality_all_set() -> None:
+    base = UserRecord(telegram_user_id="tg-1", display_name="Dani")
+    assert base.profile_complete is False
+
+    almost = base.model_copy(update={"age": 29, "location": "Barcelona", "language": "en"})
+    assert almost.profile_complete is False
+
+    complete = almost.model_copy(update={"nationality": "ES"})
+    assert complete.profile_complete is True
+
+
+def test_is_mid_registration_mirrors_the_pending_field_pointer() -> None:
+    base = UserRecord(telegram_user_id="tg-1", display_name="Dani")
+    assert base.is_mid_registration is False
+
+    pending = base.model_copy(update={"pending_registration_field": "age"})
+    assert pending.is_mid_registration is True
 
 
 def test_get_preferences_returns_empty_for_an_unknown_user(conn: sqlite3.Connection) -> None:
