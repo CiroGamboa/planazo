@@ -7,8 +7,9 @@ does, so this is CRUD-plus-validation against real SQLite that any surface
 can drive.
 
 `handle_register` starts or resumes the flow. `handle_registration_answer` is
-the plain-text continuation #57 will route free text past; it is inert (no
-reply, no write) whenever nothing is pending. Both read
+the plain-text continuation `bot/chat.py`'s three-way dispatch routes an
+in-flight answer to; it is inert (no reply, no write) whenever nothing is
+pending. Both read
 `UserRecord.pending_registration_field` as the entire state machine — one
 column names the next step, `NULL` means nothing is in flight
 (`docs/adr/0013-registration-conversation-state.md`).
@@ -35,10 +36,9 @@ from planazo.bot.config import (
     resolve_for,
 )
 from planazo.bot.models import IncomingMessage
-from planazo.bot.session import resolve_user
+from planazo.bot.session import resolve_user, stored_id
 from planazo.identity import (
     ProfileField,
-    UserRecord,
     record_registration_answer,
     set_pending_registration_field,
 )
@@ -154,18 +154,6 @@ def _next_field(steps: list[RegistrationStep], field: ProfileField) -> ProfileFi
     return _field_of(steps[index + 1]) if index + 1 < len(steps) else None
 
 
-def _stored_id(user: UserRecord) -> int:
-    """The `users.id` of a row that has been through the repository.
-
-    Mirrors `commands._stored_id`: `resolve_user` never returns a record with
-    `id is None`, so this stays loud rather than silently coercing a caller
-    bug into a fresh row.
-    """
-    if user.id is None:
-        raise RuntimeError(f"resolved an unsaved users row for {user.telegram_user_id!r}")
-    return user.id
-
-
 def _validate_answer(config: BotConfig, step: RegistrationStep, text: str) -> str | int:
     """The step's validated answer, or a raised `_AnswerRejectedError`.
 
@@ -227,7 +215,7 @@ async def handle_register(
     field = user.pending_registration_field
     if field is None:
         field = _field_of(steps[0])
-        user = set_pending_registration_field(conn, _stored_id(user), field)
+        user = set_pending_registration_field(conn, stored_id(user), field)
     step = _step_for(steps, field)
     await surface.reply(resolve_for(config, step.prompt, user))
 
@@ -237,9 +225,10 @@ async def handle_registration_answer(
 ) -> None:
     """Validate one answer against the pending step, then advance or re-prompt.
 
-    Inert when nothing is pending: no reply, no write — the shape #57 layers
-    its own free-text routing onto without touching this mechanism. On a
-    valid answer, the field and the pointer's next value are written in one
+    Inert when nothing is pending: no reply, no write — `bot/chat.py`'s
+    dispatch routes only an in-flight answer here, and this function does
+    not itself decide when that is the case. On a valid answer, the field
+    and the pointer's next value are written in one
     call (`record_registration_answer`), so there is no state between "the
     answer landed" and "the pointer advanced" for a crash to land inside.
     """
@@ -257,7 +246,7 @@ async def handle_registration_answer(
         return
 
     next_field = _next_field(steps, field)
-    updated = record_registration_answer(conn, _stored_id(user), field, value, next_field)
+    updated = record_registration_answer(conn, stored_id(user), field, value, next_field)
     if next_field is None:
         await surface.reply(resolve_for(config, "register_complete", updated))
         return

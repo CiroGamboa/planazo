@@ -8,8 +8,9 @@ imports `telegram`. It owns three things: building the `Application` with one
 `adapter_for` is the seam. It turns any PTB-free command coroutine into a PTB
 callback, so a new command is registered by naming its coroutine rather than
 by writing transport code again. The same seam wraps the one `MessageHandler`
-in the tree: the plain-text continuation for an in-flight registration
-answer.
+in the tree: `bot/chat.py`'s three-way dispatch over every non-command text
+update — an in-flight registration answer, a register-first notice, or a
+turn through the agent loop.
 """
 
 from __future__ import annotations
@@ -30,10 +31,11 @@ from telegram.ext import (
     filters,
 )
 
+from planazo.bot.chat import handle_plain_text
 from planazo.bot.commands import handle_help, handle_me, handle_prefs, handle_start
 from planazo.bot.config import BotConfig, load_config, resolve
 from planazo.bot.models import IncomingMessage
-from planazo.bot.registration import handle_register, handle_registration_answer
+from planazo.bot.registration import handle_register
 from planazo.bot.surface import surface_for
 from planazo.config import read_bot_token
 from planazo.interfaces.surface import UserSurface
@@ -132,7 +134,7 @@ def adapter_for(command: BotCommand, config: BotConfig) -> UpdateCallback:
 
 def build_application(token: str, config: BotConfig) -> BotApplication:
     """Build the `Application` with one `CommandHandler` per command, plus one
-    `MessageHandler` for a plain-text registration answer.
+    `MessageHandler` wrapping `bot/chat.py`'s three-way plain-text dispatch.
 
     `filters.TEXT & ~filters.COMMAND` is what keeps the two kinds of update
     from shadowing each other: PTB's `filters.COMMAND` matches any update
@@ -144,9 +146,7 @@ def build_application(token: str, config: BotConfig) -> BotApplication:
     for name, command in _HANDLERS.items():
         application.add_handler(CommandHandler(name, adapter_for(command, config)))
     application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND, adapter_for(handle_registration_answer, config)
-        )
+        MessageHandler(filters.TEXT & ~filters.COMMAND, adapter_for(handle_plain_text, config))
     )
     return application
 

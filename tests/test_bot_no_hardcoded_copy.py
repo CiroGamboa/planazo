@@ -10,7 +10,7 @@ inside a module-level dict/list literal that contains a whitespace character
 (a `COMMANDS`/old-`MESSAGES`-shaped dict of copy, even one that never reaches
 `.reply` directly).
 
-The one known, deliberate non-match: `commands._stored_id`'s `RuntimeError`
+The one known, deliberate non-match: `session.stored_id`'s `RuntimeError`
 message. It documents an internal invariant violation that never reaches
 `surface.reply` and is not a module-level dict/list literal, so it sits
 outside this scan's scope by construction rather than being a missed case.

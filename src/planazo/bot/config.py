@@ -182,7 +182,7 @@ def resolve(config: BotConfig, message_id: str, locale: str, **kwargs: object) -
     `KeyError`, deliberately unguarded: message ids are code-controlled
     constants, not user input, so a typo is a programmer error and should
     fail loud (AGENTS.md rule 1 is about external input; this is internal
-    call-site hygiene, the same posture as `commands._stored_id`'s
+    call-site hygiene, the same posture as `bot.session.stored_id`'s
     `RuntimeError`).
     """
     translations = config.messages[message_id]
