@@ -72,6 +72,8 @@ Signature: `on_tool_output: Callable[[StepRecord], list[dict[str, Any]] | None] 
 
 #### 7. "One image per call" enforced by the hook picking exactly one visual asset
 
+**§Decision 7 partially superseded by M3.5 (#65) — the hook now sends up to 3 image assets for `GraphSidecar` (carousel) posts. `GraphImage` and `GraphVideo` behaviour unchanged.**
+
 Selection rule, in order: (a) first `MediaAsset` with `kind == "image"`; (b) else first `MediaAsset` with `kind == "thumbnail"`; (c) else no visual asset — the hook appends only an `input_text` note ("no visual asset available for this post") and the LLM falls back to caption-only extraction. Deterministic; matches how M2's adapter maps `GraphImage` (image), `GraphSidecar` (image nodes first), and `GraphVideo` (video + thumbnail).
 
 *Alternative rejected — attach every image asset.* Blows the cost envelope (multiple STRONG-tier image calls per run) and violates the delegation-brief bullet "one image per call".
