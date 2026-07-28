@@ -133,7 +133,7 @@ Planazo adopts a two-agent shape: a **Recommender** (`agents/event_agent.py`, CH
 - **The trust boundary is a code-shape guarantee.** The Recommender's tool registry does not import `sources.instagram.*`; the Extractor's registry does. `ExtractionResult.notes`'s 200-char cap is smaller than any real caption's usable length, so a compromised Extractor cannot smuggle raw caption bytes to the Recommender through the hand-off.
 - **The monitor sees both sides of the delegation.** Joining `data/runs/*.jsonl` and `var/extraction_runs.jsonl` on `run_id` reconstructs the full delegation trace; a swallowed error or a mid-run race becomes visible without either agent complaining.
 - **Terminal state is a code-shape guarantee.** The LLM ends a run by calling `save_event` (success) or `report_extraction_status` (unhappy); `extract_once` inspects the trace's tool calls rather than parsing `LoopResult.answer` as JSON. No malformed-answer fragility.
-- **The delegation surface is one Pydantic aggregate.** `ExtractionResult` is what the Recommender's future `dispatch_extraction` tool imports — one contract, one validation site, one bounded context to bump when the shape changes.
+- **The delegation surface is one Pydantic aggregate.** `ExtractionResult` is what the Recommender's `dispatch_extraction` tool imports — one contract, one validation site, one bounded context to bump when the shape changes.
 - **`run_loop` stays domain-agnostic.** The `on_tool_output` hook is a generic seam; the Extractor supplies the hook and the multimodal-image logic. Future non-image cross-turn injections (a hypothetical citation-fetcher tool that appends its retrieved document as a message) reuse the same seam without another `run_loop` change.
 
 ### Negative / accepted trade-offs

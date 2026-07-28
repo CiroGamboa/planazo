@@ -76,9 +76,13 @@ def run_once(user_message: str, **run_context: Any) -> LoopResult:
     writes anything.
 
     Supplying `user_id` adds the four memory tools (`retrieve_memory`,
-    `save_memory`, `retrieve_notes`, `save_note`), each bound to that identity
-    by a closure. `user_id` is never a tool parameter, so no prompt and no
-    tool-call argument can point them at another user's private facts.
+    `save_memory`, `retrieve_notes`, `save_note`) plus `dispatch_extraction`,
+    each bound to that identity by a closure. `user_id` is never a tool
+    parameter, so no prompt and no tool-call argument can point them at
+    another user's private facts or forge the delegator on an extraction.
+    `dispatch_extraction` reaches the Extractor through a lazy import inside
+    this function so `event_agent.py`'s static import graph never touches
+    `planazo.sources.instagram` (ADR 0005 §Trust boundary).
 
     The two calendar reference tools are opt-in through `calendar_enabled`.
     When they are enabled:
@@ -116,6 +120,16 @@ def run_once(user_message: str, **run_context: Any) -> LoopResult:
         memory_schemas, memory_registry = build_memory_tools(user_id)
         tool_schemas = tool_schemas + memory_schemas
         registry = {**registry, **memory_registry}
+        # Lazy import: `planazo.extraction.tools` top-imports the Extractor,
+        # which top-imports `planazo.sources.instagram`. Reaching it here
+        # keeps that chain out of `event_agent.py`'s static import graph
+        # (ADR 0005 §Trust boundary), verified by the AST guard in
+        # `tests/test_trust_boundary.py`.
+        from planazo.extraction.tools import build_dispatch_extraction
+
+        extraction_schemas, extraction_registry = build_dispatch_extraction(user_id)
+        tool_schemas = tool_schemas + extraction_schemas
+        registry = {**registry, **extraction_registry}
     if run_context.get("calendar_enabled", False):
         tool_schemas = tool_schemas + calendar_tools.TOOL_SCHEMAS
         registry = {**registry, **calendar_tools.TOOL_REGISTRY}

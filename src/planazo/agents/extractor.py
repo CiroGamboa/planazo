@@ -215,10 +215,10 @@ def extract_once(
 ) -> ExtractionResult:
     """Run one Instagram-post → `Event` extraction and return the hand-off.
 
-    Delegated by the Recommender via the future `dispatch_extraction`
-    tool. Not user-facing directly: `url` and `delegator_user_id` come
-    from the Recommender's session; the caption text never crosses back
-    across the return.
+    Delegated by the Recommender through the `dispatch_extraction` tool
+    (`extraction.tools.build_dispatch_extraction`). Not user-facing
+    directly: `url` and `delegator_user_id` come from the Recommender's
+    session; the caption text never crosses back across the return.
     """
     run_id = str(uuid4())
     resolved_source = source if source is not None else _default_source()
