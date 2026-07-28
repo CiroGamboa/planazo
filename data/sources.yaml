@@ -2,14 +2,14 @@
 # and post URLs before running the scheduler.
 #
 # The scheduler processes both blocks on every tick:
-#   - `accounts:` — discover recent posts on each account, then extract each URL.
-#     Requires the Instagram adapter's authenticated `list_recent_posts` path
-#     (#63 — instagrapi + burner). Comment out entries whose account you don't
-#     want scanned yet.
+#   - `accounts:` — discover recent posts on each account via the configured
+#     `backend` (`anonymous` default via `curl_cffi` + Meta's `web_profile_info`;
+#     `hikerapi` for business venue accounts the anonymous endpoint refuses).
+#     Comment out entries whose account you don't want scanned yet.
 #   - `posts:` — extract these specific post URLs directly (works from anonymous
-#     access via `Post.from_shortcode`; the M3.5 fallback path independent of
-#     account-scan discovery). Successful extractions are idempotent — the
-#     composite `UNIQUE(source_url, event_index_in_post)` in `events` locks out
+#     access via `Post.from_shortcode`; independent of `accounts:` discovery).
+#     Successful extractions are idempotent — the composite
+#     `UNIQUE(source_url, event_index_in_post)` in `events` locks out
 #     re-persistence — so a post entry's `cadence` only gates *failure retry*.
 #
 # Either block may be empty. A config with only `accounts:`, only `posts:`, both,
@@ -23,17 +23,16 @@ sources:
       carousels: true
       video_posts: true
 
-    # Scan the recent posts of these accounts. Each account's plan expands to
-    # `(url, media_kind)` pairs via `InstagramSource.plan_for`.
+    # Scan the recent posts of these accounts. `backend` picks the discovery
+    # client the scheduler routes to. Default is `anonymous`; business venue
+    # accounts need `hikerapi`.
     accounts:
-      - url: "https://instagram.com/PLACEHOLDER_ACCOUNT_1"
+      - url: "https://instagram.com/PLACEHOLDER_CREATOR_ACCOUNT"
         cadence: "24h"
-      - url: "https://instagram.com/PLACEHOLDER_ACCOUNT_2"
-        media_types:
-          static_posts: true
-          reels: false
-          carousels: true
-          video_posts: true
+        # backend: "anonymous" — inherits default
+      - url: "https://instagram.com/PLACEHOLDER_BUSINESS_VENUE"
+        cadence: "24h"
+        backend: "hikerapi"
 
     # Extract these specific post URLs on every tick. URL must match
     # `https://[www.]instagram.com/{p|reel}/<shortcode>/…` — account URLs pasted

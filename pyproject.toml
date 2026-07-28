@@ -13,6 +13,7 @@ dependencies = [
     "instaloader>=4.14,<5",
     "python-telegram-bot>=22.8,<23",
     "ffmpeg-python>=0.2,<0.3",
+    "curl-cffi>=0.7,<1.0",
 ]
 
 [dependency-groups]
@@ -27,6 +28,7 @@ dev = [
 [project.scripts]
 planazo-agent = "planazo.agents.cli:main"
 planazo-monitor = "planazo.monitor.cli:main"
+planazo-scheduler = "planazo.scheduler.cli:main"
 planazo-sources-instagram = "planazo.sources.instagram.cli:main"
 
 [build-system]

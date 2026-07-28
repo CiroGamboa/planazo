@@ -132,7 +132,8 @@ Under `src/planazo/`, each domain concept lives in a self-contained folder that 
 | `approval/` | Approval-gate audit | `ApprovalDecision`, `ApprovalGate` protocol |
 | `calendar/` | Reference calendar tools (v0.2 real Google Calendar replaces this) | `EventCandidateInput`, `CalendarConfirmationInput`, `CandidateStore` (JSON), `save_event_candidate`/`confirm_and_create_calendar_event` tools |
 | `query/` | Free-text → structured intent | `SearchIntent`, `interpret()` |
-| `sources/` | Source adapters (Instagram first; TikTok / YouTube / news to follow) | `RawPost`, `MediaAsset`, `SourcesConfig`, `InstagramSource` |
+| `sources/` | Source adapters (Instagram first; TikTok / YouTube / news to follow) | `RawPost`, `MediaAsset`, `SourcesConfig`, `PostConfig`, `AccountConfig` (with `backend` discriminator), `InstagramSource`, `InstagramDiscoveryProtocol`, `AnonInstagramClient`, `HikerClient` |
+| `scheduler/` | Periodic ingestion clock — routes account URLs to a discovery backend, pre-checks idempotency, drives `extract_once` under a seeded system user | `ScanState`, `SchedulerRunRecord`, `TickReport`, `run_tick`, `planazo-scheduler` CLI |
 | `memory/` | Facts + notes + rules (private/shared) | `Fact`, `Note`, `MemoryScopeRequest`, closured memory tools |
 | `recommendation/` | Deterministic ranker (LLM re-ranker deferred) | `RankedEventList` — landed by M4 |
 | `monitor/` | Out-of-band LLM-as-judge grader | `RunStep`, `RunSession`, `Verdict`, `GradedRun` |
@@ -212,9 +213,9 @@ Governed by [**ADR 0005 — Multi-agent shape**](adr/0005-multi-agent-shape.md) 
 
 **Extractor-host prerequisite.** The Extractor (§4) needs `ffmpeg` on `PATH` for the reel frame-extraction pipeline — `brew install ffmpeg` (macOS) or `apt-get install ffmpeg` (Linux) on the host that runs `planazo-agent`. Not required inside the `sources-instagram` container, which does not run the extractor.
 
-**Scheduled ingestion.** A host-cron `planazo-scheduler --tick` invocation is the clock that drives the adapter on a real schedule: for each account in `data/sources.yaml`, the scheduler consults `scan_state` + `next_run_after` for the cadence gate, calls `InstagramSource.list_recent_posts(account_url)` for discovery, pre-checks each `PostRef.url` against `catalog/repository.py::events_exist_for_source_url` to skip already-persisted URLs before spending STRONG-tier LLM budget, and dispatches the survivors into `extract_once` under a seeded system user (`telegram_user_id="system"`). One JSONL line per account per tick lands in `var/scheduler_runs.jsonl` for post-hoc observability. Governed by [**ADR 0011 — Scheduled Instagram ingestion**](adr/0011-scheduled-ingestion.md).
+**Scheduled ingestion.** A host-cron `planazo-scheduler --tick` invocation is the clock that drives the adapter on a real schedule. The scheduler lives in its own bounded context (`src/planazo/scheduler/`) — models (`ScanState`, `SchedulerRunRecord`, `TickReport`), the `scan_state` repository, the `run_tick` composition root, and the `planazo-scheduler` CLI. For each configured entry in `data/sources.yaml`, the scheduler consults `scan_state` + `next_run_after` for the cadence gate; account entries route through `AccountConfig.backend` to one of two `InstagramDiscoveryProtocol` implementations (`AnonInstagramClient` — `curl_cffi` + Meta's `web_profile_info`; `HikerClient` — paid multi-key HikerAPI pool) for discovery, post entries skip discovery entirely; every survivor pre-checks against `catalog/repository.py::events_exist_for_source_url` to skip already-persisted URLs before spending STRONG-tier LLM budget, and the rest dispatch into `extract_once` under a seeded system user (`telegram_user_id="system"`). One `SchedulerRunRecord` line per source URL processed lands in `var/scheduler_runs.jsonl` for post-hoc observability. Governed by [**ADR 0011 — Scheduled Instagram ingestion**](adr/0011-scheduled-ingestion.md) and [**ADR 0014 — Instagram discovery backends**](adr/0014-instagram-discovery-backends.md).
 
-**Config layer — two work-lists.** `sources.instagram` in `data/sources.yaml` carries two independently-populated blocks the scheduler processes on every tick. `accounts:` names accounts to scan for recent posts — the discovery path, which depends on `InstagramSource.list_recent_posts` and therefore on an authenticated `instagrapi` session. `posts:` names explicit post URLs the scheduler sends straight into `extract_once` — a fallback path that works from anonymous `Post.from_shortcode` and does not depend on the burner account, unblocking the scheduler while the burner is in Meta appeal review. Both blocks are optional (an empty config is a valid empty tick); successful extractions from `posts:` are naturally idempotent via the composite `UNIQUE(source_url, event_index_in_post)` in `events`, so the per-entry `cadence` on a post gates only the failure-retry path. `PostConfig.url` is validated against `instagram.com/{p|reel}/<shortcode>/` at load time — an account URL pasted into `posts:` surfaces as a Pydantic `ValidationError`, not a runtime `not_found`. `sources.enumerate_configured_posts(source_config)` returns the flat URL list in config order for the scheduler to consume.
+**Config layer — two work-lists.** `sources.instagram` in `data/sources.yaml` carries two independently-populated blocks the scheduler processes on every tick. `accounts:` names accounts to scan for recent posts — the discovery path routed via `AccountConfig.backend` to one of the two discovery backends the scheduler composes (`anonymous` via `curl_cffi` + Meta's `web_profile_info`; `hikerapi` via a paid multi-key pool). `posts:` names explicit post URLs the scheduler sends straight into `extract_once` — no discovery, always works from anonymous `Post.from_shortcode`. Both blocks are optional (an empty config is a valid empty tick); successful extractions from `posts:` are naturally idempotent via the composite `UNIQUE(source_url, event_index_in_post)` in `events`, so the per-entry `cadence` on a post gates only the failure-retry path. `PostConfig.url` is validated against `instagram.com/{p|reel}/<shortcode>/` at load time — an account URL pasted into `posts:` surfaces as a Pydantic `ValidationError`, not a runtime `not_found`. `sources.enumerate_configured_posts(source_config)` returns the flat URL list in config order, and `sources.is_instagram_post_url(url)` exposes the same shape check for callers (the `planazo-scheduler --once <url>` CLI branch) that need to discriminate a loose URL.
 
 **Typed error branches** (rule 4): `unsupported_source`, `rate_limited`, `auth_failed`, `not_found`, `unsupported_media`. The adapter never raises on the happy path.
 
@@ -243,6 +244,7 @@ Schema (v1):
 | `preferences(user_id FK, key, value, updated_at)` | Structured filter prefs used by the ranker and pushed into the agent context. |
 | `approvals(id, user_id FK, artifact_kind, artifact_id, decision, decided_at)` | Audit trail for future calendar wiring. |
 | `extraction_runs_index(id, run_id, user_id, url, started_at)` | Thin index; the full run payload lives in the JSONL log (§9). |
+| `scan_state(source_url PK, last_scanned_at, last_success_at, consecutive_failures)` | Per-source-URL scheduler bookkeeping — post entries and account entries share the table (`source_url` is the honest name for both). `next_run_after(cadence, last_scanned_at)` drives the cadence gate; `consecutive_failures` drives the failure-skip gate (ADR 0011 §D9). Read + upserted every `planazo-scheduler --tick`. |
 
 ```mermaid
 erDiagram
@@ -295,6 +297,12 @@ erDiagram
         int user_id FK
         string url
         datetime started_at
+    }
+    scan_state {
+        string source_url PK
+        datetime last_scanned_at
+        datetime last_success_at
+        int consecutive_failures
     }
 ```
 
@@ -573,6 +581,7 @@ Accepted ADRs describe current state; planned ADRs are reserved for their own ti
 | 0012 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
 | 0012 | [`multi-event-extraction`](adr/0012-multi-event-extraction.md) | Lift extraction cardinality to 0..N events per post: `ExtractionResult.events: list[Event]`, `save_event(event_index_in_post)`, composite `UNIQUE(source_url, event_index_in_post)`, `events_exist_for_source_url` primitive. Supersedes ADR 0005 §Decision 10; partially supersedes §Decision 11's invariant clause. |
 | 0013 | [`extractor-side-frame-extraction`](adr/0013-extractor-side-frame-extraction.md) | Reel multimodal input: the extractor downloads the reel `video_url` to a temp file, extracts `MAX_REEL_FRAMES=3` evenly-spaced JPEG frames via `ffmpeg`, and sends them as base64 `input_image` parts alongside the thumbnail; silent degrade to thumbnail-only on `FrameExtractionError`. Extends ADR 0005's delegation-brief effort budget with the reel-frame arm; partially supersedes ADR 0006 §Decision 4 (extractor now downloads binaries; the adapter still emits URL-only `MediaAsset` entries). |
+| 0014 | [`instagram-discovery-backends`](adr/0014-instagram-discovery-backends.md) | Two-backend discovery split routed by `AccountConfig.backend`: `anonymous` (`curl_cffi` + Meta `web_profile_info`) and `hikerapi` (paid HikerAPI, multi-key pool with uniform random selection + 5-minute retirement window). Discovery lives in the `scheduler/` bounded context, not on `InstagramSource`. Partially supersedes ADR 0011's Context claim of an adapter-side `list_recent_posts`, ADR 0011 §Decision 3 (`scan_state` primary key renamed `account_url` → `source_url`), and ADR 0011 §Decision 8 (audit-log field set extended with `source_kind`, `backend`, `started_at`, `ended_at`; grain changed to per source URL). |
 
 Until each ADR lands, its section here reads as "planned — ADR NNNN"; when it lands, the entry is edited in place to link the accepted ADR.
 
@@ -589,7 +598,7 @@ Every capability the MVP claims maps to a module, an evidence trace, and an ADR.
 | Shared content is untrusted | Extractor trust boundary + `save_note` quoting | `untrusted-content.md` | 0005 (invariant), 0006 (source) |
 | Executor + specialist agent with delegation brief + shared memory | `event_agent.py` + `extractor.py` + `events` table + `extraction_runs.jsonl` | (integrated across bot flows) | [0005](adr/0005-multi-agent-shape.md) |
 | Monitor on its own clock, categorical grades + rationale | `monitor/` | `data/monitor/YYYY-MM-DD.md` | 0007 |
-| Scheduled ingestion pipeline | `scheduler/` + `sources/instagram/` + `events` table + `scan_state` | `var/scheduler_runs.jsonl` | [0011](adr/0011-scheduled-ingestion.md) |
+| Scheduled ingestion pipeline | `scheduler/` (`run_tick`, `planazo-scheduler` CLI) + `sources/instagram/` (`AnonInstagramClient`, `HikerClient`) + `events` table + `scan_state` table | `var/scheduler_runs.jsonl` (one `SchedulerRunRecord` line per source URL processed) | [0011](adr/0011-scheduled-ingestion.md), [0014](adr/0014-instagram-discovery-backends.md) |
 
 ## Verification
 

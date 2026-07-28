@@ -12,6 +12,8 @@ M3 shipped `extract_once(url, delegator_user_id) -> ExtractionResult` — the Ex
 M3.5 adds the missing pieces:
 
 - **Discovery** — a `list_recent_posts(account_url) -> list[PostRef]` primitive on `InstagramSource`.
+
+**§Context partially superseded by ADR 0014 (#67) — discovery is now split across two backends (anonymous `curl_cffi` + multi-key HikerAPI pool) routed at the scheduler composition root via `AccountConfig.backend`; the discovery seam lives in the `scheduler/` bounded context, not on `InstagramSource`.**
 - **Clock** — host-cron `planazo-scheduler --tick` that reads `data/sources.yaml`, respects per-account cadence via `next_run_after`, and drives one pass through the account list per invocation.
 - **Idempotency** — a pre-`extract_once` check that skips URLs already persisted to `events`.
 - **Multi-shape extraction quality** — multi-event carousels (0..N events per post, [ADR 0012](0012-multi-event-extraction.md) / #64), multi-slide carousel LLM turn (up to 3 images for `GraphSidecar`, #65), and reel deep-extraction via extractor-side ffmpeg frame sampling ([ADR 0013](0013-extractor-side-frame-extraction.md) / #66).
@@ -37,6 +39,8 @@ The nine load-bearing decisions:
    - **Rejected alternative — rely on `save_event`'s `duplicate_event` typed branch alone.** STRONG-tier LLM calls are ~$0.02 each; letting the model run the full extraction only to be caught by the `UNIQUE(source_url, event_index_in_post)` constraint at `save_event` time burns budget on every already-persisted URL. Pre-checking is O(1) SQL against the existing UNIQUE-derived index.
 
 3. **State — dedicated `scan_state` table.** Columns: `account_url TEXT PRIMARY KEY, last_scanned_at TIMESTAMP, last_success_at TIMESTAMP, consecutive_failures INTEGER NOT NULL DEFAULT 0`. Read + upserted by the scheduler on every account visit.
+
+   **§Decision 3 partially superseded by ADR 0014 (#67) — the primary-key column is `source_url` (not `account_url`); posts and accounts share the state table because their bookkeeping shape is identical.**
    - **Rejected alternative — derive scheduler state from `extraction_runs_index`.** `extraction_runs_index` is per-run (one row per `extract_once` invocation), not per-account; deriving last-scan / last-success timestamps requires grouping across all rows for an account, which is slow at scale and forces the scheduler to reason about per-run failure semantics it does not own.
 
 4. **System user identity — seeded `users` row with `telegram_user_id="system"`, `display_name="Scheduled Scanner"`.** Bootstrapped idempotently on first `--tick` via `identity/repository.py::get_or_create_user`. Passed as `delegator_user_id` to every `extract_once` call the scheduler makes.
@@ -53,6 +57,8 @@ The nine load-bearing decisions:
    - **Rejected alternative — Zen `input_video` passthrough (Path B in the ADR 0013 investigation).** Step 0 probe against `STRONG` returned `400 invalid_request_error` across three shape variants of the `input_video` content part; the API does not accept the type at this Zen version.
 
 8. **Audit log — separate `var/scheduler_runs.jsonl` file for scheduler ticks.** One JSON object per account per tick with fields: `run_id, account_url, posts_discovered, posts_extracted_ok, posts_extracted_error, posts_skipped_idempotent, errors: list[str]`. Append-only, human-tailable.
+
+   **§Decision 8 partially superseded by ADR 0014 (#67) — one JSONL record per source-URL processed (not per account per tick); the record adds `source_kind`, `backend`, `started_at`, `ended_at`, and `gate_reason` for operator observability, and `errors` entries are regex-locked to `<error_type>: <detail>` via `format_error_entry`.**
    - **Rejected alternative — join scheduler records into `var/extraction_runs.jsonl`.** Scheduler "attempt" records have no LLM turns and no `RunStep`-shaped tool dispatches; forcing them through `RunStep` either (a) leaves half the fields empty on every scheduler row, or (b) grows `RunStep` with scheduler-only fields, which the monitor's join-by-`run_id` would then have to case-split around. Schemas diverge — separate files is the cleaner boundary.
 
 9. **Failure handling — `scan_state.consecutive_failures >= 3` skips the account for one tick.** After three consecutive failed ticks against the same account, the scheduler skips that account on the next tick and resets the counter on the tick after that (so a permanently broken account gets exactly one attempt per two ticks worth of interval).

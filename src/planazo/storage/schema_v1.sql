@@ -58,3 +58,19 @@ CREATE TABLE IF NOT EXISTS extraction_runs_index (
     url        TEXT    NOT NULL,
     started_at TEXT    NOT NULL
 );
+
+-- `scan_state` holds one row per source URL the scheduler has scanned. The
+-- primary key is `source_url`: both post entries (from `sources.instagram.posts:`)
+-- and account entries (from `sources.instagram.accounts:`) share the table
+-- because their bookkeeping shape is identical. Timestamps are ISO-8601 TEXT
+-- to match every other table. This is a `CREATE TABLE IF NOT EXISTS` — an
+-- existing dev database without this table picks it up on the next
+-- `db.connect()`; a stale dev database with an earlier column shape needs
+-- deletion before the next open (the events schema followed the same pattern
+-- when #64 landed).
+CREATE TABLE IF NOT EXISTS scan_state (
+    source_url           TEXT    PRIMARY KEY,
+    last_scanned_at      TEXT,
+    last_success_at      TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0
+);

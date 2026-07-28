@@ -360,3 +360,51 @@ def test_enumerate_configured_posts_empty_returns_empty_list() -> None:
     )
 
     assert enumerate_configured_posts(instagram) == []
+
+
+# ── AccountConfig.backend field ────────────────────────────────────────────
+
+
+def test_account_config_backend_defaults_to_anonymous() -> None:
+    """No `backend:` key in YAML → default `"anonymous"` (backward-compat)."""
+    account = AccountConfig(url="https://instagram.com/some_venue/")
+    assert account.backend == "anonymous"
+
+
+def test_account_config_backend_accepts_hikerapi_literal() -> None:
+    account = AccountConfig(url="https://instagram.com/some_venue/", backend="hikerapi")
+    assert account.backend == "hikerapi"
+
+
+def test_account_config_backend_rejects_unknown_backend_literal() -> None:
+    with pytest.raises(ValidationError):
+        AccountConfig(
+            url="https://instagram.com/some_venue/",
+            backend="playwright",  # type: ignore[arg-type]
+        )
+
+
+def test_load_config_folds_backend_from_yaml(tmp_path: Path) -> None:
+    """`backend:` in YAML lands on the model; absent entries default to anonymous."""
+    yaml_path = _write(
+        tmp_path / "sources.yaml",
+        """
+sources:
+  instagram:
+    default_cadence: "6h"
+    default_media_types:
+      static_posts: true
+      reels: true
+      carousels: true
+      video_posts: true
+    accounts:
+      - url: "https://instagram.com/creator_a"
+      - url: "https://instagram.com/business_venue"
+        backend: "hikerapi"
+""".strip(),
+    )
+
+    instagram = load_config(yaml_path).sources["instagram"]
+    default_backend, explicit_backend = instagram.accounts
+    assert default_backend.backend == "anonymous"
+    assert explicit_backend.backend == "hikerapi"
