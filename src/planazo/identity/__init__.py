@@ -14,6 +14,7 @@ does not expose LLM tools directly — its data reaches the loop via
 
 from planazo.identity.models import PreferenceRecord, UserRecord
 from planazo.identity.repository import (
+    delete_preference,
     get_or_create_user,
     get_preferences,
     set_preference,
@@ -22,6 +23,7 @@ from planazo.identity.repository import (
 __all__ = [
     "PreferenceRecord",
     "UserRecord",
+    "delete_preference",
     "get_or_create_user",
     "get_preferences",
     "set_preference",
