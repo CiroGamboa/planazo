@@ -16,6 +16,7 @@ _EXPECTED_TABLES = {
     "llm_decisions",
     "recommendations",
     "conversation_state",
+    "curator_state",
 }
 
 _REGISTRATION_USER_COLUMNS = {
