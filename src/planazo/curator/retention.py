@@ -43,6 +43,7 @@ from planazo.catalog.repository import (
     purge_archived_events_older_than,
 )
 from planazo.curator.models import DEFAULT_AUDIT_LOG_PATH, CuratorRunRecord
+from planazo.curator.notifier import notify_admins_of_retention
 from planazo.curator.repository import append_run_record
 from planazo.storage import db
 
@@ -133,6 +134,12 @@ def run_retention(
         ended_at=ended_at,
     )
     _append_run_record_best_effort(result=result, audit_log_path=audit_log_path)
+    # Rule 4 — the notifier itself catches every failure surface; the
+    # belt-and-braces wrapper catches a hypothetical contract change.
+    try:
+        notify_admins_of_retention(result)
+    except Exception as exc:
+        logger.warning("curator.notifier: notify_admins_of_retention raised %s", type(exc).__name__)
     return result
 
 

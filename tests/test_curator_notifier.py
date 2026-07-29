@@ -20,9 +20,12 @@ from planazo.curator import notifier as curator_notifier
 from planazo.curator.agent import CuratorRunResult
 from planazo.curator.notifier import (
     _parse_admin_user_ids,
+    _render_retention_message,
     _render_tick_message,
+    notify_admins_of_retention,
     notify_admins_of_tick,
 )
+from planazo.curator.retention import RetentionResult
 
 
 def _tick_result(**overrides: Any) -> CuratorRunResult:
@@ -254,9 +257,9 @@ def test_run_curator_invokes_notifier_after_upsert(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
     """The composition root fires the notifier after audit + state writes."""
+    from planazo.agents.loop import LoopResult
     from planazo.curator import agent as curator_agent
     from planazo.curator.service import run_curator
-    from planazo.agents.loop import LoopResult
 
     # Stub run_loop and observability so run_curator_once doesn't touch DB.
     def fake_run_loop(**kwargs: Any) -> LoopResult:
@@ -286,9 +289,9 @@ def test_run_curator_swallows_notifier_exceptions(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
     """A notifier raise never blocks the tick's return."""
+    from planazo.agents.loop import LoopResult
     from planazo.curator import agent as curator_agent
     from planazo.curator.service import run_curator
-    from planazo.agents.loop import LoopResult
 
     def fake_run_loop(**kwargs: Any) -> LoopResult:
         return LoopResult(answer="done", steps=1, stopped="answered")
@@ -308,3 +311,117 @@ def test_run_curator_swallows_notifier_exceptions(
         audit_log_path=tmp_path / "curator_runs.jsonl",
     )
     assert result.stopped == "answered"
+
+
+# ---------------------------------------------------------------------------
+# Retention notifier
+# ---------------------------------------------------------------------------
+
+
+def _retention_result(**overrides: Any) -> RetentionResult:
+    defaults: dict[str, Any] = {
+        "run_id": "cafebabe-run-id",
+        "retention_days": 30,
+        "cutoff": datetime(2026, 11, 1, tzinfo=UTC),
+        "deleted": 3,
+        "preview": [],
+        "dry_run": False,
+        "started_at": datetime(2026, 12, 1, tzinfo=UTC),
+        "ended_at": datetime(2026, 12, 1, 0, 0, 1, tzinfo=UTC),
+    }
+    defaults.update(overrides)
+    return RetentionResult(**defaults)
+
+
+def test_render_retention_message_carries_all_fields() -> None:
+    text = _render_retention_message(_retention_result())
+
+    assert "run_id: cafebabe" in text
+    assert "retention_days: 30" in text
+    assert "deleted: 3" in text
+    assert "dry_run: False" in text
+
+
+def test_render_retention_message_never_leaks_event_content() -> None:
+    """Rule 2: no title/description/venue crosses the boundary."""
+    text = _render_retention_message(_retention_result())
+
+    for banned in ("title", "description", "venue", "caption"):
+        assert banned not in text.lower()
+
+
+def test_notify_admins_of_retention_sends_to_every_admin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_ADMIN_USER_IDS", "111,222")
+    stub = _install_urlopen_stub(monkeypatch)
+
+    notify_admins_of_retention(_retention_result())
+
+    assert stub.call_count == 2
+
+
+def test_notify_admins_of_retention_no_op_when_env_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_ADMIN_USER_IDS", raising=False)
+    stub = _install_urlopen_stub(monkeypatch)
+
+    notify_admins_of_retention(_retention_result())
+
+    stub.assert_not_called()
+
+
+def test_run_retention_invokes_notifier(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """The retention composition root fires notify_admins_of_retention."""
+    from planazo.curator.retention import run_retention
+
+    notify_calls: list[RetentionResult] = []
+
+    def fake_notify(result: RetentionResult) -> None:
+        notify_calls.append(result)
+
+    from planazo.curator import retention as curator_retention
+
+    monkeypatch.setattr(curator_retention, "notify_admins_of_retention", fake_notify)
+    # Redirect the retention DB to a fresh :memory: — we don't care about
+    # actual events here, just the notifier fire.
+    from planazo.storage import db
+
+    monkeypatch.setattr(db, "DB_PATH", ":memory:")
+
+    result = run_retention(
+        retention_days=30,
+        dry_run=True,
+        audit_log_path=tmp_path / "curator_runs.jsonl",
+    )
+
+    assert len(notify_calls) == 1
+    assert notify_calls[0].run_id == result.run_id
+
+
+def test_run_retention_swallows_notifier_exceptions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """A notifier raise never blocks the retention return."""
+    from planazo.curator.retention import run_retention
+
+    def raising_notify(result: RetentionResult) -> None:
+        raise RuntimeError("simulated notifier explosion")
+
+    from planazo.curator import retention as curator_retention
+
+    monkeypatch.setattr(curator_retention, "notify_admins_of_retention", raising_notify)
+    from planazo.storage import db
+
+    monkeypatch.setattr(db, "DB_PATH", ":memory:")
+
+    # Does not raise — the DELETE has already committed.
+    result = run_retention(
+        retention_days=30,
+        dry_run=True,
+        audit_log_path=tmp_path / "curator_runs.jsonl",
+    )
+    assert result.retention_days == 30

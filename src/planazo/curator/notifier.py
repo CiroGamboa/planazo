@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from planazo.curator.agent import CuratorRunResult
+    from planazo.curator.retention import RetentionResult
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,17 @@ def notify_admins_of_tick(result: CuratorRunResult) -> None:
     AFTER the tick's DB writes have committed.
     """
     _notify_admins(_render_tick_message(result))
+
+
+def notify_admins_of_retention(result: RetentionResult) -> None:
+    """Send one summary DM per admin describing the retention sweep.
+
+    Same env-var contract + Rule 4 discipline as `notify_admins_of_tick`.
+    Includes `retention_days` so a misconfigured cron
+    (`--rotate-archived 1` instead of `30`) surfaces prominently in the
+    operator's DM.
+    """
+    _notify_admins(_render_retention_message(result))
 
 
 def _notify_admins(message: str) -> None:
@@ -152,6 +164,23 @@ def _render_tick_message(result: CuratorRunResult) -> str:
         f"merged: {result.events_merged}",
         f"categories updated: {result.categories_updated}",
         f"errors: {len(result.errors)}",
+        f"dry_run: {result.dry_run}",
+    ]
+    return "\n".join(lines)
+
+
+def _render_retention_message(result: RetentionResult) -> str:
+    """Build the Rule-2-safe summary text for a retention sweep.
+
+    Same discipline as `_render_tick_message`. Includes `retention_days`
+    so a misconfigured cron surfaces prominently.
+    """
+    lines = [
+        "🗑️ Planazo curator retention sweep",
+        f"run_id: {result.run_id[:8]}",
+        f"retention_days: {result.retention_days}",
+        f"purgeable: {len(result.preview)}",
+        f"deleted: {result.deleted}",
         f"dry_run: {result.dry_run}",
     ]
     return "\n".join(lines)
