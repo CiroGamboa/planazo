@@ -287,7 +287,8 @@ def _filter_candidates(events: tuple[Event, ...], intent: SearchIntent) -> tuple
         retained.append(event)
     radius_filtered = filter_events_for_intent(retained, intent)
     assert radius_filtered.error_type is None
-    return radius_filtered.events[:100]
+    cap = intent.limit if intent.limit is not None else 100
+    return radius_filtered.events[:cap]
 
 
 def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> RecommenderResult:
@@ -363,14 +364,20 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
     # deliberately bounded to the four MVP filters below; the new filters
     # remain reachable at the repository layer for direct callers.
     def search_events(
-        category: str = "", city: str = "", start_after: str = "", max_results: int = 20
+        category: str = "",
+        city: str = "",
+        start_after: str = "",
+        max_results: int = intent.limit if intent.limit is not None else 20,
     ) -> dict[str, object]:
         """Search the shared event store — Recommender's read-only tool.
 
         Bounded projection of `catalog.tools.search_events`: exposes only the
         four filters the Recommender's LLM currently reasons about. Pass
         `category` (one of the `EventCategory` Literals), `city`, an
-        ISO-8601 `start_after` timestamp, and a `max_results` cap.
+        ISO-8601 `start_after` timestamp, and a `max_results` cap. The
+        default follows the validated intent's user-stated count when one
+        was given, so a query like "give me 3 events" fetches around 3
+        rather than the Recommender's own unbounded-search default of 20.
         """
         return catalog_search_events(
             category=category,

@@ -76,7 +76,7 @@ def _assert_fallback(intent: SearchIntent, frozen: datetime) -> None:
     assert intent.radius_km is None
     assert intent.budget_cents is None
     assert intent.start_utc == frozen
-    assert intent.end_utc == frozen + timedelta(hours=72)
+    assert intent.end_utc == frozen + timedelta(days=30)
 
 
 # --------------------------------------------------------------------------
@@ -140,6 +140,27 @@ def test_negative_sentinels_land_as_none_on_the_intent(
     assert intent.error_type is None
     assert intent.radius_km is None
     assert intent.budget_cents is None
+
+
+def test_record_search_intent_limit_sentinel_round_trips() -> None:
+    # `_record_search_intent`'s own sentinel contract, called directly rather
+    # than through a mocked `interpret()` turn — mirrors the negative-sentinel
+    # discipline already proven above for `radius_km` / `budget_cents`.
+    unset = query_interpreter._record_search_intent(
+        start_utc="2026-08-01T18:00:00+00:00",
+        end_utc="2026-08-01T23:00:00+00:00",
+        city="Barcelona",
+        limit=-1,
+    )
+    assert unset.limit is None
+
+    five = query_interpreter._record_search_intent(
+        start_utc="2026-08-01T18:00:00+00:00",
+        end_utc="2026-08-01T23:00:00+00:00",
+        city="Barcelona",
+        limit=5,
+    )
+    assert five.limit == 5
 
 
 def test_unknown_category_in_arguments_falls_back(

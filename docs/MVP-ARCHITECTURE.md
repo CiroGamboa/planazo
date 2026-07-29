@@ -170,7 +170,7 @@ Governed by [**ADR 0011 — Telegram bot interface abstraction**](adr/0011-teleg
 ### 2. Query interpreter — `src/planazo/query/interpreter.py`
 
 - Single Zen `call()` on `CHEAP` with a function-call tool schema derived by `schema_for` from a signature-mirror of `SearchIntent` (`_record_search_intent` in `src/planazo/query/interpreter.py`). `categories` travels the wire as a comma-separated string; `radius_km` and `budget_cents` use negative sentinels to signal "unspecified" — the same wire convention `confirm_and_create_calendar_event` and `search_events` already use for optional arguments.
-- **Pydantic-validates** the returned arguments. On malformed output, returns a degraded intent (`window=today+72h, categories=[], geo=Barcelona`) plus a typed `error_type="interpreter_fallback"` — never raises, never silently defaults.
+- **Pydantic-validates** the returned arguments. On malformed output, returns a degraded intent (`window=today+30d, categories=[], geo=Barcelona`) plus a typed `error_type="interpreter_fallback"` — never raises, never silently defaults.
 - Called only from the bot's `/find` handler; the Recommender loop never calls it.
 
 `SearchIntent` lives in `src/planazo/query/models.py` next to `EventCategory` (see [`AGENTS.md`](../AGENTS.md#data-contracts-compatibility-surfaces)).
