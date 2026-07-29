@@ -59,7 +59,7 @@ class _NoCloseConn:
     def __init__(self, real: sqlite3.Connection) -> None:
         self._real = real
 
-    def close(self) -> None:  # noqa: D401 — no-op proxy
+    def close(self) -> None:
         return None
 
     def __getattr__(self, name: str) -> object:

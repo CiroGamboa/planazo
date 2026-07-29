@@ -7,7 +7,7 @@ import pytest
 from agentlib.core import CHEAP, STRONG
 from planazo.agents import cli
 from planazo.agents.event_agent import RecommenderResult
-from planazo.query.models import SearchIntent
+from planazo.query.models import SearchIntent, SearchRoute
 
 
 def _intent() -> SearchIntent:
@@ -38,7 +38,7 @@ def test_cli_interprets_then_passes_typed_intent_and_user_id(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     intent = _intent()
-    interpret = MagicMock(return_value=intent)
+    interpret = MagicMock(return_value=SearchRoute(intent=intent))
     run_once = MagicMock(return_value=_result())
     monkeypatch.setattr(cli, "interpret", interpret)
     monkeypatch.setattr(cli, "run_once", run_once)
@@ -55,7 +55,7 @@ def test_cli_interprets_then_passes_typed_intent_and_user_id(
 def test_cli_forwards_model_and_calendar_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cli, "interpret", MagicMock(return_value=_intent()))
+    monkeypatch.setattr(cli, "interpret", MagicMock(return_value=SearchRoute(intent=_intent())))
     run_once = MagicMock(return_value=_result())
     monkeypatch.setattr(cli, "run_once", run_once)
 
@@ -94,7 +94,7 @@ def test_calendar_approval_prompt_declines_on_missing_input(
 def test_cli_provider_error_is_a_single_nonzero_result(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(cli, "interpret", MagicMock(return_value=_intent()))
+    monkeypatch.setattr(cli, "interpret", MagicMock(return_value=SearchRoute(intent=_intent())))
     monkeypatch.setattr(cli, "run_once", MagicMock(side_effect=openai.OpenAIError("provider down")))
 
     assert cli.main(["--user-id", "7", "find events"]) == 1
@@ -156,7 +156,7 @@ def test_cli_renders_typed_results_and_uses_error_exit_code(
     needle: str,
     exit_code: int,
 ) -> None:
-    monkeypatch.setattr(cli, "interpret", MagicMock(return_value=_intent()))
+    monkeypatch.setattr(cli, "interpret", MagicMock(return_value=SearchRoute(intent=_intent())))
     monkeypatch.setattr(cli, "run_once", MagicMock(return_value=result))
 
     assert cli.main(["--user-id", "7", "find events"]) == exit_code
@@ -200,7 +200,7 @@ def test_repl_passes_each_nonempty_prompt_to_the_typed_boundary(
 ) -> None:
     inputs = iter(["find events", "quit"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
-    monkeypatch.setattr(cli, "interpret", MagicMock(return_value=_intent()))
+    monkeypatch.setattr(cli, "interpret", MagicMock(return_value=SearchRoute(intent=_intent())))
     run_once = MagicMock(return_value=_result())
     monkeypatch.setattr(cli, "run_once", run_once)
 

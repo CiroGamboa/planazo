@@ -25,11 +25,7 @@ from planazo.bot.models import IncomingMessage
 from planazo.catalog.models import Event
 from planazo.conversation.models import (
     ConversationReply,
-    ConversationState,
-    PendingClarification,
 )
-from planazo.conversation.repository import upsert_state
-from planazo.identity import get_or_create_user
 from planazo.query.models import SearchIntent
 from planazo.storage import db
 

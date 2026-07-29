@@ -349,6 +349,10 @@ def format_reply(config: BotConfig, reply: ConversationReply) -> str:
             reply.answer if reply.answer else resolve(config, "find_no_results_default", locale)
         )
         return resolve(config, "find_no_results", locale, message=message)
+    if reply.kind == "chat":
+        # ADR 0020 router branch — render the LLM's own reply verbatim.
+        answer = reply.answer if reply.answer else ""
+        return resolve(config, "chat_reply", locale, answer=answer)
     error_type = reply.error_type if reply.error_type is not None else "unknown_error"
     return resolve(config, "find_error", locale, error_type=error_type)
 

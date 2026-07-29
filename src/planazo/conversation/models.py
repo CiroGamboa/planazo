@@ -70,8 +70,15 @@ class ConversationState(BaseModel):
     updated_at: datetime
 
 
-ConversationReplyKind = Literal["clarification", "recommendations", "detail", "no_results", "error"]
-"""The five branches the service's return value takes.
+ConversationReplyKind = Literal[
+    "clarification",
+    "recommendations",
+    "detail",
+    "no_results",
+    "error",
+    "chat",
+]
+"""The six branches the service's return value takes.
 
 - `clarification` — the Recommender asked a follow-up question. The
   service persisted `pending_clarification`; the caller renders the
@@ -88,6 +95,12 @@ ConversationReplyKind = Literal["clarification", "recommendations", "detail", "n
   renders `answer` — a bounded free-form explanation.
 - `error` — the Recommender returned a typed error. The caller
   renders a short human message keyed on `error_type`.
+- `chat` — ADR 0020 router branch. The interpreter classified the
+  message as small-talk or a meta-question; `handle_user_message`
+  returned this WITHOUT opening a Recommender loop. The caller
+  renders `answer` verbatim (LLM-produced, 1..500 chars). No
+  `agent_runs` / `recommendations` / `llm_decisions` row is written
+  for a `chat` turn.
 """
 
 
