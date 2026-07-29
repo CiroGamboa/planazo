@@ -85,6 +85,15 @@ def test_account_scan_preset_lifts_carousel_and_reel_caps() -> None:
     assert ACCOUNT_SCAN.max_reel_frames > SINGLE_POST.max_reel_frames
 
 
+def test_account_scan_preset_locked_at_expected_values() -> None:
+    """Guard the ACCOUNT_SCAN value change from PR #134 — the caps grew from
+    10/6 to 20/10 to match typical curator carousels (25-30 slides). A
+    future accidental revert to 10/6 would silently regress roundup
+    coverage; this test breaks first."""
+    assert ACCOUNT_SCAN.max_carousel_images == 20
+    assert ACCOUNT_SCAN.max_reel_frames == 10
+
+
 # ---- resolve_profile ------------------------------------------------------
 
 

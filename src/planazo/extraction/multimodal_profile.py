@@ -20,9 +20,10 @@ right budget per entry point:
 - `SINGLE_POST` (3 / 3) — byte-identical to the pre-profile defaults.
   Used by `--tick` post-only extraction, `--once <post-url>`, and the
   Recommender's `dispatch_extraction` tool.
-- `ACCOUNT_SCAN` (10 / 6) — the default for `--scan-account` and the
-  `--tick` account-discovery path. Trades ~3x token cost per carousel
-  for coverage of roundup posts.
+- `ACCOUNT_SCAN` (20 / 10) — the default for `--scan-account` and the
+  `--tick` account-discovery path. Sized for typical curator carousels
+  (25-30 slides). Trades higher token cost per carousel for coverage of
+  roundup posts.
 
 Per-account overrides layer on top of a base preset via
 `resolve_profile`. A `sources.yaml` account entry can set
@@ -63,9 +64,16 @@ SINGLE_POST: Final[MultimodalProfile] = MultimodalProfile(max_carousel_images=3,
 """Default profile for single-post entry points. Preserves pre-config behavior."""
 
 ACCOUNT_SCAN: Final[MultimodalProfile] = MultimodalProfile(
-    max_carousel_images=10, max_reel_frames=6
+    max_carousel_images=20, max_reel_frames=10
 )
-"""Default profile for `--scan-account` and account-discovery ticks — roundup-friendly."""
+"""Default profile for `--scan-account` and account-discovery ticks — roundup-friendly.
+
+Bumped from 10/6 to 20/10 after the M6 demo run against
+`@planesenbarcelona` — a typical curator carousel is 25-30 slides, and
+10 was leaving the LLM enough context to identify multi-event roundups
+but not enough to enumerate them cleanly (see issue #134). Still well
+under the profile's runaway-cost backstop (30 hard cap).
+"""
 
 
 def resolve_profile(

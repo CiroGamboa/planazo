@@ -102,7 +102,16 @@ def _read_delegation_brief() -> str:
 DELEGATION_BRIEF: Final[str] = _read_delegation_brief()
 
 USER_MESSAGE: Final[str] = "Extract every distinct event announced by the Instagram post above."
-MAX_STEPS: Final[int] = 8
+MAX_STEPS: Final[int] = 32
+"""Max LLM turns per extraction — fetch + up to ~30 `save_event` calls + terminal.
+
+Bumped from 8 to 32 to accommodate roundup posts and date-range expansion.
+A 19-event roundup or a 20-27 Aug range needs enough budget to emit one
+`save_event` per event; 8 was fine for single-venue posts but forced the
+LLM to bail on multi-event posts before it could enumerate. See issue
+#134 (partial-save discipline + date expansion) for the load-bearing
+rationale.
+"""
 MAX_OUTPUT_TOKENS: Final[int] = 2000
 
 
