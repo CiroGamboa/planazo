@@ -35,15 +35,15 @@ def test_load_config_parses_shipped_schema_example() -> None:
 
 
 def test_shipped_schema_carries_planesenbarcelona_override() -> None:
-    """Locks the seed override from PR #134 — the demo-ready curator entry
-    with `max_carousel_images: 25`. Guard so a future YAML edit that drops
-    the override silently reverts the demo's end-to-end story."""
+    """Locks the seed override from PR #134 — the demo-tuned curator entry
+    with `max_carousel_images: 5`. Guard so a future YAML edit that drops
+    the override silently reverts the demo path."""
     config = load_config(Path("data/sources.yaml"))
     instagram = config.sources["instagram"]
 
     matches = [account for account in instagram.accounts if "planesenbarcelona" in account.url]
     assert len(matches) == 1
-    assert matches[0].max_carousel_images == 25
+    assert matches[0].max_carousel_images == 5
 
 
 def test_load_config_folds_per_account_cadence_override(tmp_path: Path) -> None:
