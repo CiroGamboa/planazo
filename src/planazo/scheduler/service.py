@@ -50,6 +50,7 @@ from uuid import uuid4
 
 from planazo.catalog.repository import events_exist_for_source_url
 from planazo.extraction.models import ExtractionResult
+from planazo.extraction.multimodal_profile import ACCOUNT_SCAN, SINGLE_POST, MultimodalProfile
 from planazo.interfaces.sources import EventSource
 from planazo.scheduler.audit import append_run_record
 from planazo.scheduler.models import (
@@ -74,6 +75,7 @@ from planazo.sources.instagram.hiker_client import HikerClientError
 
 __all__ = [
     "ExtractorCallable",
+    "ExtractorFactory",
     "run_tick",
 ]
 
@@ -103,6 +105,28 @@ the real LLM path. The type alias exists so a downstream refactor renaming
 the callable cannot silently drift — `test_run_tick_accepts_positional_extractor_callable`
 locks the shape at the type layer, `test_scheduler_types.py` locks it at
 the mypy-strict layer.
+"""
+
+
+ExtractorFactory = Callable[[MultimodalProfile], ExtractorCallable]
+"""Optional per-URL extractor factory closed over `MultimodalProfile`.
+
+When set on `run_tick`, `_process_account_entry` resolves the account's
+`MultimodalProfile` (base `ACCOUNT_SCAN` layered with per-account
+overrides from `data/sources.yaml`) and asks the factory for an
+extractor bound to that profile. `_process_post_entry` does the same
+with base `SINGLE_POST`.
+
+When `run_tick` is called with `extractor_factory=None` (the pattern
+every test uses), the fixed `extractor` argument is used verbatim and no
+profile is threaded through — matching pre-profile behavior.
+
+The composition root wires the factory over `extract_once`:
+
+    def _factory(profile: MultimodalProfile) -> ExtractorCallable:
+        def _extract(url: str, uid: int) -> ExtractionResult:
+            return extract_once(url, delegator_user_id=uid, profile=profile)
+        return _extract
 """
 
 
@@ -474,6 +498,7 @@ def run_tick(
     extractor: ExtractorCallable,
     config: SourcesConfig,
     audit_log_path: Path,
+    extractor_factory: ExtractorFactory | None = None,
 ) -> TickReport:
     """Run one tick — the pure-composition scheduler entry point.
 
@@ -520,6 +545,7 @@ def run_tick(
                 now=now,
                 audit_log_path=audit_log_path,
                 system_user_id=system_user_id,
+                extractor_factory=extractor_factory,
             )
             records.append(record)
 
@@ -533,6 +559,7 @@ def run_tick(
                 now=now,
                 audit_log_path=audit_log_path,
                 system_user_id=system_user_id,
+                extractor_factory=extractor_factory,
             )
             records.append(record)
     finally:
@@ -556,14 +583,23 @@ def _process_post_entry(
     now: Callable[[], datetime],
     audit_log_path: Path,
     system_user_id: int,
+    extractor_factory: ExtractorFactory | None = None,
 ) -> SchedulerRunRecord:
     """Dispatch one `PostConfig` entry to `_process_source_url`.
 
     Post URLs skip discovery — `backend_client` and `backend_name` are
     `None`. `_process_source_url` handles the M10 cadence-order swap
     (idempotency pre-check before cadence gate) internally.
+
+    When `extractor_factory` is set, the extractor is rebuilt with the
+    `SINGLE_POST` profile — a post-only work item has no roundup context
+    to justify lifting the caps. When `None` (test wiring), the passed
+    `extractor` is used verbatim.
     """
     cadence = entry.resolved_cadence(source_defaults)
+    resolved_extractor = (
+        extractor_factory(SINGLE_POST) if extractor_factory is not None else extractor
+    )
     return _process_source_url(
         conn=conn,
         source_url=entry.url,
@@ -571,7 +607,7 @@ def _process_post_entry(
         cadence=cadence,
         backend_client=None,
         backend_name=None,
-        extractor=extractor,
+        extractor=resolved_extractor,
         now=now,
         audit_log_path=audit_log_path,
         system_user_id=system_user_id,
@@ -589,15 +625,27 @@ def _process_account_entry(
     now: Callable[[], datetime],
     audit_log_path: Path,
     system_user_id: int,
+    extractor_factory: ExtractorFactory | None = None,
 ) -> SchedulerRunRecord:
     """Dispatch one `AccountConfig` entry to `_process_source_url`.
 
     Account URLs go through discovery via the configured backend before
     the extractor sees any post URL. Cadence-first ordering is preserved
     for accounts (discovery is the rate-limit surface cadence must protect).
+
+    When `extractor_factory` is set, the extractor is rebuilt with the
+    account's resolved `MultimodalProfile` — base `ACCOUNT_SCAN` layered
+    with any per-account overrides on `AccountConfig`. When `None` (test
+    wiring), the passed `extractor` is used verbatim so existing tests
+    that stub the extractor keep working.
     """
     cadence = entry.resolved_cadence(source_defaults)
     backend_client = backends[entry.backend]
+    if extractor_factory is not None:
+        profile = entry.resolved_multimodal_profile(ACCOUNT_SCAN)
+        resolved_extractor = extractor_factory(profile)
+    else:
+        resolved_extractor = extractor
     return _process_source_url(
         conn=conn,
         source_url=entry.url,
@@ -605,7 +653,7 @@ def _process_account_entry(
         cadence=cadence,
         backend_client=backend_client,
         backend_name=entry.backend,
-        extractor=extractor,
+        extractor=resolved_extractor,
         now=now,
         audit_log_path=audit_log_path,
         system_user_id=system_user_id,

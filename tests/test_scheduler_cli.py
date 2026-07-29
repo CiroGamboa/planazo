@@ -161,6 +161,15 @@ def _install_config(monkeypatch: pytest.MonkeyPatch, config: SourcesConfig) -> N
 
 def _install_extractor(monkeypatch: pytest.MonkeyPatch, extractor: ExtractorCallable) -> None:
     monkeypatch.setattr(scheduler_cli, "_build_extractor", lambda: extractor)
+    # `_run_once` (account branch) and `_run_scan_account` route through
+    # `_build_extractor_factory()`; hand back a factory that ignores the
+    # profile and returns the same fake so existing tests exercise the
+    # account-path without knowing about `MultimodalProfile`.
+    monkeypatch.setattr(
+        scheduler_cli,
+        "_build_extractor_factory",
+        lambda: lambda _profile: extractor,
+    )
 
 
 # ---- argparse contract ----------------------------------------------------
