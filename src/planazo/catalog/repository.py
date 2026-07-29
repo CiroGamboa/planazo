@@ -36,6 +36,7 @@ def _last_row_id(cursor: sqlite3.Cursor) -> int:
 
 
 def _event_from_row(row: sqlite3.Row) -> Event:
+    archived_at_raw = row["archived_at"]
     return Event(
         id=row["id"],
         source=row["source"],
@@ -62,6 +63,7 @@ def _event_from_row(row: sqlite3.Row) -> Event:
         image_url=row["image_url"],
         language=row["language"],
         recurring=bool(row["recurring"]),
+        archived_at=datetime.fromisoformat(archived_at_raw) if archived_at_raw else None,
     )
 
 
@@ -127,7 +129,9 @@ def events_exist_for_source_url(conn: sqlite3.Connection, url: str) -> list[int]
     return [int(row["event_index_in_post"]) for row in cursor.fetchall()]
 
 
-def get_event_by_id(conn: sqlite3.Connection, event_id: int) -> Event | None:
+def get_event_by_id(
+    conn: sqlite3.Connection, event_id: int, *, include_archived: bool = False
+) -> Event | None:
     """Return the `events` row for `event_id`, or `None` if absent.
 
     The primitive a history reader ("tell me about #N", the `/find`
@@ -135,11 +139,83 @@ def get_event_by_id(conn: sqlite3.Connection, event_id: int) -> Event | None:
     the full `Event` aggregate. A deleted or never-persisted id is a
     successful empty read — matching the discipline of `query_events`
     (an empty filter returns an empty list rather than raising).
+
+    By default an archived row (`archived_at IS NOT NULL`) reads back
+    as `None` — the Recommender's "tell me about #N" follow-up should
+    not surface an event the curator retired. `include_archived=True`
+    is the admin escape hatch for the curator + monitor.
     """
-    row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+    if include_archived:
+        row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT * FROM events WHERE id = ? AND archived_at IS NULL", (event_id,)
+        ).fetchone()
     if row is None:
         return None
     return _event_from_row(row)
+
+
+def soft_delete_event(
+    conn: sqlite3.Connection,
+    event_id: int,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Mark `event_id` archived; return `True` iff a live row was touched.
+
+    Sets `archived_at` to `now` (defaults to `datetime.now(UTC)`) only when the
+    row exists and is currently live. A missing id or an already-archived row
+    is a `False` return — no exception. The curator's `archive_event` tool
+    (ADR 0020) turns that into a typed `not_found` / `already_archived` error
+    dict; the raw primitive stays honest and idempotent.
+
+    The rationale that justifies this soft-delete is NOT stored here — it
+    lives in `llm_decisions` with `decision_kind="archive"` and a run_id that
+    ties it to the curator tick that produced it.
+    """
+    stamped = (now or datetime.now(UTC)).isoformat()
+    cursor = conn.execute(
+        "UPDATE events SET archived_at = ? WHERE id = ? AND archived_at IS NULL",
+        (stamped, event_id),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def restore_event(conn: sqlite3.Connection, event_id: int) -> bool:
+    """NULL out `archived_at` for `event_id`; return `True` iff a row was restored.
+
+    The reversibility guarantee ADR 0020 rests on: any curator decision is
+    one `UPDATE` away from being undone. `False` when the id is missing or
+    already live.
+    """
+    cursor = conn.execute(
+        "UPDATE events SET archived_at = NULL WHERE id = ? AND archived_at IS NOT NULL",
+        (event_id,),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def update_event_category(conn: sqlite3.Connection, event_id: int, new_category: str) -> bool:
+    """Set `events.category = ?` for a live row; return `True` on match.
+
+    `new_category` MUST be a valid `EventCategory` Literal value — the caller
+    (the curator's `update_event_category` tool) validates via `Event`'s
+    Pydantic model before dispatching here. This primitive does no validation
+    on the string beyond the DB write, matching the pattern of
+    `soft_delete_event` (loud primitive, typed wrapper in `tools.py`).
+
+    Archived rows are refused: the curator's charter is to correct LIVE
+    catalogue mistakes, not to rewrite retired entries.
+    """
+    cursor = conn.execute(
+        "UPDATE events SET category = ? WHERE id = ? AND archived_at IS NULL",
+        (new_category, event_id),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
 
 
 def query_events(
@@ -153,6 +229,7 @@ def query_events(
     title_contains: str | None = None,
     budget_cents_max: int | None = None,
     max_results: int = 20,
+    include_archived: bool = False,
 ) -> list[Event]:
     """Return events matching every supplied filter, earliest start first.
 
@@ -161,9 +238,16 @@ def query_events(
     `tag` filter opens the `tags` JSON array with `json_each` and checks for
     membership by value; `title_contains` runs a `LIKE '%X%'` scan;
     `budget_cents_max` bounds `price_cents` from above (inclusive).
+
+    By default archived rows (`archived_at IS NOT NULL`) are excluded — the
+    Recommender's read surface never sees curator-retired events (ADR 0020).
+    `include_archived=True` is the admin opt-out used by the curator's own
+    `list_*` tools and by the monitor when it needs full history.
     """
     clauses: list[str] = []
     params: list[object] = []
+    if not include_archived:
+        clauses.append("archived_at IS NULL")
     if category is not None:
         clauses.append("category = ?")
         params.append(category)
