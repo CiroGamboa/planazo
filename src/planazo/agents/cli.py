@@ -187,8 +187,14 @@ def _run(
     """
     gate = ApprovalGate(tool_names=frozenset(IRREVERSIBLE_TOOLS), approve=_terminal_approve)
 
-    # Interpret the raw prompt into a structured SearchIntent
-    intent = interpret(prompt)
+    # Interpret the raw prompt. ADR 0020: `interpret` may route the
+    # message as `chat` (small talk / meta-question) — in that case
+    # print the router's reply verbatim and exit; no Recommender loop.
+    routed = interpret(prompt)
+    if routed.kind == "chat":
+        print(routed.answer)
+        return 0
+    intent = routed.intent
 
     run_context: dict[str, Any] = {
         "model": model,

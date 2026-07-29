@@ -73,12 +73,16 @@ def test_search_intent_rejects_invalid_radius(radius: float) -> None:
 
 def test_interpreter_contract_has_no_coordinate_surface() -> None:
     reflected = signature(interpreter._record_search_intent)
+    # ADR 0020: the interpreter now exposes two tool schemas (search + chat).
+    # Neither may leak coordinate surface.
     public_text = "\n".join(
         (
             interpreter._record_search_intent.__doc__ or "",
+            interpreter._reply_chat.__doc__ or "",
             interpreter._SYSTEM_PROMPT,
-            str(interpreter.TOOL_SCHEMA),
-            getsource(interpreter._fallback_intent),
+            str(interpreter.SEARCH_TOOL_SCHEMA),
+            str(interpreter.CHAT_TOOL_SCHEMA),
+            getsource(interpreter._fallback_search_route),
         )
     ).lower()
 

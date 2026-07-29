@@ -37,6 +37,7 @@ messages:
   find_no_results: {en: "{message}", es: "{message}"}
   find_no_results_default: {en: "No matching events found. Try broadening the query.", es: "No se han encontrado eventos. Prueba a ampliar la búsqueda."}
   find_error: {en: "Sorry, something went wrong ({error_type}). Try again in a moment.", es: "Lo siento, algo salió mal ({error_type}). Prueba de nuevo en un momento."}
+  chat_reply: {en: "{answer}", es: "{answer}"}
   register_display_name: {en: "What name should I use for you?", es: "¿Qué nombre quieres que use para ti?"}
   register_age: {en: "How old are you?", es: "¿Cuántos años tienes?"}
   register_location: {en: "Which city or neighbourhood are you in?", es: "¿En qué ciudad o barrio estás?"}

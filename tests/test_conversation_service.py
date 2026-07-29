@@ -148,7 +148,15 @@ def _install_stubs(
     result_iter = iter(results)
     run_id_iter = iter(run_ids)
 
-    def fake_interpret(text: str) -> SearchIntent:
+    from planazo.query.models import SearchRoute
+
+    def fake_interpret(text: str) -> SearchRoute:
+        # ADR 0020: `interpret` now returns a discriminated `RoutedMessage`.
+        # Tests targeting the search branch wrap the mock intent here so the
+        # fresh-query path unwraps it back to `interpret_returns`.
+        return SearchRoute(intent=interpret_returns)
+
+    def fake_interpret_search_only(text: str) -> SearchIntent:
         return interpret_returns
 
     def fake_run_and_capture(
@@ -158,6 +166,7 @@ def _install_stubs(
         return next(result_iter), next(run_id_iter, None)
 
     monkeypatch.setattr(service, "interpret", fake_interpret)
+    monkeypatch.setattr(service, "interpret_search_only", fake_interpret_search_only)
     monkeypatch.setattr(service, "_run_and_capture", fake_run_and_capture)
     return calls, run_ids
 
@@ -254,8 +263,9 @@ def test_clarification_answer_writes_preference_and_reruns(
     # First: triggers pending_clarification.
     service.handle_user_message(conn, user_id, "find me events")
 
-    # Now stub `interpret` to return intent2 for turn 2 (music enrichment).
-    monkeypatch.setattr(service, "interpret", lambda _text: intent2)
+    # Now stub `interpret_search_only` for turn 2 (music enrichment).
+    # ADR 0020 §D5: the clarification-answer path bypasses the router.
+    monkeypatch.setattr(service, "interpret_search_only", lambda _text: intent2)
 
     reply = service.handle_user_message(conn, user_id, "music")
 
@@ -473,4 +483,120 @@ def test_more_results_without_prior_run_falls_through_to_fresh(
     )
 
     reply = service.handle_user_message(conn, user_id, "more")
+    assert reply.kind == "no_results"
+
+
+def test_chat_route_returns_kind_chat_without_calling_run_once(
+    monkeypatch: pytest.MonkeyPatch, conn: sqlite3.Connection, user_id: int
+) -> None:
+    """ADR 0020: a greeting routed by the interpreter as `chat` skips `run_once`.
+
+    No `agent_runs` / `recommendations` / `llm_decisions` row is
+    written for this turn. `conversation_state.updated_at` refreshes
+    but every other field is preserved.
+    """
+    from planazo.query.models import ChatRoute
+
+    run_once_calls: list[tuple[int, object]] = []
+
+    def fake_run_and_capture(user_id: int, intent: object) -> tuple[object, str | None]:
+        run_once_calls.append((user_id, intent))
+        raise AssertionError("run_once must not fire on a chat route")
+
+    monkeypatch.setattr(
+        service,
+        "interpret",
+        lambda _text: ChatRoute(answer="¡Hola! Aquí estoy para recomendarte eventos."),
+    )
+    monkeypatch.setattr(service, "_run_and_capture", fake_run_and_capture)
+
+    reply = service.handle_user_message(conn, user_id, "Hola")
+
+    assert reply.kind == "chat"
+    assert reply.answer == "¡Hola! Aquí estoy para recomendarte eventos."
+    assert run_once_calls == []
+    # State is refreshed (updated_at) but chat carries no run_id.
+    state = get_state(conn, user_id)
+    assert state is not None
+    assert state.last_recommendation_run_id is None
+
+
+def test_chat_route_preserves_prior_run_id_and_pending_clarification(
+    monkeypatch: pytest.MonkeyPatch, conn: sqlite3.Connection, user_id: int
+) -> None:
+    """A chat turn between search turns doesn't wipe follow-up state.
+
+    ADR 0020 §D5: the router doesn't invalidate ongoing conversation
+    threads — a "Hi" in the middle of a `/find` conversation preserves
+    the ability to do "more results" or "tell me about #N" on the
+    prior batch.
+    """
+    from planazo.conversation.models import ConversationState
+    from planazo.conversation.repository import now_utc, upsert_state
+    from planazo.query.models import ChatRoute
+
+    # Seed a state with a prior run_id — simulates a `/find` from the prior turn.
+    prior = ConversationState(
+        user_id=user_id,
+        pending_clarification=None,
+        last_recommendation_run_id="run-prior",
+        updated_at=now_utc(),
+    )
+    upsert_state(conn, prior)
+
+    monkeypatch.setattr(
+        service, "interpret", lambda _text: ChatRoute(answer="Sure — how can I help?")
+    )
+
+    reply = service.handle_user_message(conn, user_id, "thanks!")
+
+    assert reply.kind == "chat"
+    state = get_state(conn, user_id)
+    assert state is not None
+    assert state.last_recommendation_run_id == "run-prior"
+
+
+def test_clarification_answer_bypasses_router_via_interpret_search_only(
+    monkeypatch: pytest.MonkeyPatch, conn: sqlite3.Connection, user_id: int
+) -> None:
+    """ADR 0020 §D5: mid-clarification, the router is bypassed.
+
+    When a user mid-clarification sends a numeric-only answer or a
+    short cue, an over-eager LLM might route it as chat. The
+    clarification-answer path is the more specific state and wins —
+    it calls `interpret_search_only` which returns a SearchIntent
+    unconditionally, so `run_once` still fires.
+    """
+    from planazo.conversation.models import ConversationState, PendingClarification
+    from planazo.conversation.repository import now_utc, upsert_state
+    from planazo.query.models import ChatRoute
+
+    # Seed a pending clarification.
+    intent_snapshot = _intent()
+    pending = PendingClarification(question="Which day?", intent_snapshot=intent_snapshot)
+    prior = ConversationState(
+        user_id=user_id,
+        pending_clarification=pending,
+        last_recommendation_run_id=None,
+        updated_at=now_utc(),
+    )
+    upsert_state(conn, prior)
+
+    # Even though `interpret` would return a chat route for "2",
+    # `interpret_search_only` still returns a search intent.
+    monkeypatch.setattr(
+        service,
+        "interpret",
+        lambda _text: ChatRoute(answer="Nice number!"),
+    )
+    fresh_intent = _intent()
+    monkeypatch.setattr(service, "interpret_search_only", lambda _text: fresh_intent)
+
+    result = RecommenderResult(status="no_results", answer="none", stopped="answered", steps=1)
+    monkeypatch.setattr(service, "_run_and_capture", lambda _uid, _intent: (result, "run-clar-ans"))
+
+    reply = service.handle_user_message(conn, user_id, "2")
+
+    # Clarification-answer path fired → run_once was invoked → reply is `no_results`,
+    # NOT `chat`.
     assert reply.kind == "no_results"

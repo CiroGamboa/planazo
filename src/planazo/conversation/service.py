@@ -61,8 +61,8 @@ from planazo.conversation.models import (
 from planazo.conversation.repository import get_state, now_utc, upsert_state
 from planazo.identity.repository import set_preference
 from planazo.observability.repository import query_agent_runs, query_recommendations
-from planazo.query.interpreter import interpret
-from planazo.query.models import SearchIntent
+from planazo.query.interpreter import interpret, interpret_search_only
+from planazo.query.models import RoutedMessage, SearchIntent
 
 logger = logging.getLogger(__name__)
 
@@ -475,8 +475,12 @@ def _handle_clarification_answer(
         )
     # Re-run interpret + run_once with the same text; the fresh
     # preference row is already in the DB, so `run_once` will pick
-    # it up as push context.
-    fresh_intent = interpret(text)
+    # it up as push context. ADR 0020 §D5: use `interpret_search_only`
+    # so a router that would classify a numeric answer ("2") or a
+    # short cue ("music") as chat still lands us in the search branch
+    # — the clarification-answer path is the more specific state and
+    # wins over the router.
+    fresh_intent = interpret_search_only(text)
     result, new_run_id = _run_and_capture(user_id, fresh_intent)
     reply = _project_recommendations(result)
     new_state = _augment_state_after_result(
@@ -496,13 +500,58 @@ def _handle_fresh_query(
     state: ConversationState | None,
     text: str,
 ) -> ConversationReply:
-    """Run one fresh `interpret + run_once` and return the projected reply."""
-    intent = interpret(text)
+    """Run one fresh `interpret + (chat branch OR run_once)` turn.
+
+    ADR 0020: the interpreter now returns a `RoutedMessage` — either
+    `SearchRoute` (continue to `run_once` as before) or `ChatRoute`
+    (return the LLM's own reply verbatim, no Recommender loop, no
+    `agent_runs` / `recommendations` / `llm_decisions` row).
+
+    A `ChatRoute` turn still refreshes `conversation_state.updated_at`
+    so operator-activity queries see the turn happened — but nothing
+    else about the state changes (no new `last_recommendation_run_id`,
+    no `pending_clarification`).
+    """
+    routed = interpret(text)
+    if routed.kind == "chat":
+        return _handle_chat_route(conn, user_id, state, routed)
+    intent = routed.intent
     result, new_run_id = _run_and_capture(user_id, intent)
     reply = _project_recommendations(result)
     new_state = _augment_state_after_result(state, user_id, result, new_run_id, intent)
     _persist_state_best_effort(conn, new_state)
     return reply
+
+
+def _handle_chat_route(
+    conn: sqlite3.Connection,
+    user_id: int,
+    state: ConversationState | None,
+    routed: RoutedMessage,
+) -> ConversationReply:
+    """Return the router's `ChatRoute` reply verbatim.
+
+    Called from the fresh-query path when `interpret()` classified the
+    text as small-talk or a meta-question (ADR 0020). No Recommender
+    loop, no LLM cost beyond the router turn itself. The scratchpad
+    row's `updated_at` still refreshes so the audit trail sees the
+    turn happened; every other field is preserved from the prior state.
+    """
+    assert routed.kind == "chat", "caller guarantees chat route"
+    # Refresh updated_at while preserving whatever the prior state
+    # carried (a pending clarification a user hasn't answered stays
+    # pending; a prior recommendation run_id stays reachable for
+    # follow-ups — a chat turn does not invalidate them).
+    new_state = ConversationState(
+        user_id=user_id,
+        pending_clarification=state.pending_clarification if state is not None else None,
+        last_recommendation_run_id=(
+            state.last_recommendation_run_id if state is not None else None
+        ),
+        updated_at=now_utc(),
+    )
+    _persist_state_best_effort(conn, new_state)
+    return ConversationReply(kind="chat", answer=routed.answer)
 
 
 def handle_user_message(conn: sqlite3.Connection, user_id: int, text: str) -> ConversationReply:

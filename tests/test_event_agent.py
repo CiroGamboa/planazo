@@ -1,6 +1,5 @@
 import json
 import random
-import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
