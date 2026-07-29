@@ -40,6 +40,7 @@ locks the two-backend routing via `AccountConfig.backend`.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 from collections.abc import Callable
@@ -61,6 +62,7 @@ from planazo.scheduler.models import (
     TickReport,
     format_error_entry,
 )
+from planazo.scheduler.notifier import notify_admins_of_failure_skip
 from planazo.scheduler.repository import (
     bootstrap_system_user,
     get_scan_state,
@@ -76,6 +78,8 @@ __all__ = [
     "ExtractorCallable",
     "run_tick",
 ]
+
+logger = logging.getLogger(__name__)
 
 CONSECUTIVE_FAILURE_SKIP_THRESHOLD: Final[int] = 3
 """How many consecutive failed ticks before a source URL skips one round.
@@ -386,10 +390,25 @@ def _process_source_url(
             started_at=started_at,
             ended_at=ended_at,
         )
-        # `failure_skip` resets the counter (ADR 0011 §D9). `cadence_not_ready`
+        # `failure_skip` resets the counter (ADR 0011 §D9) and fires the
+        # admin threshold-trigger notification (ADR 0022). `cadence_not_ready`
         # touches nothing — the URL is not due yet.
         if gate_reason == "failure_skip":
+            # Capture the pre-reset counter for the notification: this is
+            # the value that TRIGGERED the skip (>= CONSECUTIVE_FAILURE_SKIP_THRESHOLD),
+            # not the post-reset zero.
+            threshold_counter = state.consecutive_failures if state is not None else 0
             _reset_failure_counter_on_gate_skip(conn, source_url=source_url)
+            # Rule 4 belt-and-braces: `notify_admins_of_failure_skip` catches
+            # every failure surface internally, but wrap here in case a future
+            # refactor changes that contract.
+            try:
+                notify_admins_of_failure_skip(source_url, threshold_counter)
+            except Exception as exc:
+                logger.warning(
+                    "scheduler.notifier: notify_admins_of_failure_skip raised %s",
+                    type(exc).__name__,
+                )
         append_run_record(record, audit_log_path)
         return record
 

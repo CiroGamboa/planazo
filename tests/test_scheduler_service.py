@@ -473,6 +473,128 @@ def test_tick_skips_when_consecutive_failures_ge_3(
     assert state.consecutive_failures == 0
 
 
+def test_failure_skip_fires_admin_notifier_with_pre_reset_counter(
+    conn: sqlite3.Connection, audit_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0022: `failure_skip` gate fires the admin threshold-trigger DM.
+
+    The notifier receives the PRE-reset counter (the value that
+    triggered the skip), not the post-reset zero, so the operator
+    sees how deep the URL was into failure before the skip took over.
+    """
+    upsert_scan_state(
+        conn,
+        ScanState(source_url=ACCOUNT_URL, consecutive_failures=5),
+    )
+    captured: list[tuple[str, int]] = []
+
+    def fake_notify(source_url: str, consecutive_failures: int) -> None:
+        captured.append((source_url, consecutive_failures))
+
+    # Patch the imported name inside service.py (where it is actually
+    # called), not the origin module — mirrors curator notifier tests.
+    from planazo.scheduler import service as scheduler_service
+
+    monkeypatch.setattr(scheduler_service, "notify_admins_of_failure_skip", fake_notify)
+
+    backend = ExplodingBackend()
+    extractor = CountingExtractor()
+    config = _config_with(
+        _source_config(accounts=[AccountConfig(url=ACCOUNT_URL, backend="anonymous")])
+    )
+    _run_tick_defaults(
+        conn,
+        config,
+        audit_log,
+        extractor=extractor,
+        backends=_backends(anonymous=backend),
+    )
+
+    assert captured == [(ACCOUNT_URL, 5)]
+
+
+def test_failure_skip_notifier_exception_does_not_break_the_tick(
+    conn: sqlite3.Connection, audit_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raising notifier never propagates — Rule 4 belt-and-braces.
+
+    The `SchedulerRunRecord` still lands and `scan_state` still resets.
+    """
+    upsert_scan_state(
+        conn,
+        ScanState(source_url=ACCOUNT_URL, consecutive_failures=3),
+    )
+
+    def raising_notify(source_url: str, consecutive_failures: int) -> None:
+        raise RuntimeError("simulated Telegram outage")
+
+    from planazo.scheduler import service as scheduler_service
+
+    monkeypatch.setattr(scheduler_service, "notify_admins_of_failure_skip", raising_notify)
+
+    backend = ExplodingBackend()
+    extractor = CountingExtractor()
+    config = _config_with(
+        _source_config(accounts=[AccountConfig(url=ACCOUNT_URL, backend="anonymous")])
+    )
+    report = _run_tick_defaults(
+        conn,
+        config,
+        audit_log,
+        extractor=extractor,
+        backends=_backends(anonymous=backend),
+    )
+
+    # Tick still completed; audit record still landed; counter still reset.
+    assert report.records[0].gate_reason == "failure_skip"
+    state = get_scan_state(conn, ACCOUNT_URL)
+    assert state is not None
+    assert state.consecutive_failures == 0
+
+
+def test_cadence_not_ready_does_not_fire_notifier(
+    conn: sqlite3.Connection, audit_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only `failure_skip` fires the trigger; `cadence_not_ready` is silent.
+
+    The threshold trigger is scoped to threshold-crossings, not to any
+    skip. A URL still within its cadence window never notifies the admin.
+    """
+    # Mark the URL as recently scanned so cadence_not_ready fires.
+    upsert_scan_state(
+        conn,
+        ScanState(
+            source_url=ACCOUNT_URL,
+            consecutive_failures=0,
+            last_scanned_at=FIXED_NOW,
+        ),
+    )
+    captured: list[tuple[str, int]] = []
+
+    def fake_notify(source_url: str, consecutive_failures: int) -> None:
+        captured.append((source_url, consecutive_failures))
+
+    from planazo.scheduler import service as scheduler_service
+
+    monkeypatch.setattr(scheduler_service, "notify_admins_of_failure_skip", fake_notify)
+
+    backend = ExplodingBackend()
+    extractor = CountingExtractor()
+    config = _config_with(
+        _source_config(accounts=[AccountConfig(url=ACCOUNT_URL, backend="anonymous")])
+    )
+    report = _run_tick_defaults(
+        conn,
+        config,
+        audit_log,
+        extractor=extractor,
+        backends=_backends(anonymous=backend),
+    )
+
+    assert report.records[0].gate_reason == "cadence_not_ready"
+    assert captured == []
+
+
 def test_tick_increments_consecutive_failures_on_extraction_error(
     conn: sqlite3.Connection, audit_log: Path
 ) -> None:
