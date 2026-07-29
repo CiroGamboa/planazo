@@ -136,10 +136,19 @@ def _registered_handlers(config: BotConfig) -> list[object]:
 
 
 def _accepting(text: str, config: BotConfig) -> list[frozenset[str]]:
-    """The registered commands whose handler accepts `text`."""
+    """The registered commands whose handler accepts `text`.
+
+    Only `CommandHandler`s expose `.commands`; the transport shell
+    also registers one `MessageHandler` for the multi-turn
+    clarification-answer continuation. Filter to command handlers
+    so a message handler that legitimately accepts free text does
+    not raise when we read `.commands`.
+    """
     update = Update(update_id=1, message=make_message(text))
     return [
-        handler.commands for handler in _registered_handlers(config) if handler.check_update(update)
+        handler.commands
+        for handler in _registered_handlers(config)
+        if hasattr(handler, "commands") and handler.check_update(update)
     ]
 
 
@@ -169,6 +178,7 @@ def _stored_preferences() -> list[tuple[str, str]]:
         ("/prefs", "prefs"),
         ("/prefs set city Barcelona", "prefs"),
         (f"/prefs@{BOT_USERNAME} remove city", "prefs"),
+        ("/find techno tonight", "find"),
     ],
 )
 def test_each_command_routes_to_exactly_one_registered_handler(
@@ -181,22 +191,31 @@ def test_each_command_routes_to_exactly_one_registered_handler(
 
 
 def test_an_unknown_command_routes_nowhere(config: BotConfig) -> None:
-    assert _accepting("/find techno tonight", config) == []
+    assert _accepting("/nosuchcommand techno tonight", config) == []
 
 
 def test_the_registered_commands_are_the_ones_the_bot_advertises(config: BotConfig) -> None:
     # `/start` and `/help` read their list from `COMMANDS`; this is what keeps
     # what the bot offers and what it answers from drifting apart.
-    registered = {name for handler in _registered_handlers(config) for name in handler.commands}
+    registered = {
+        name
+        for handler in _registered_handlers(config)
+        if hasattr(handler, "commands")
+        for name in handler.commands
+    }
 
     assert registered == {command.removeprefix("/") for command in COMMANDS}
 
 
-def test_build_application_registers_one_group_of_four_handlers(config: BotConfig) -> None:
+def test_build_application_registers_one_group_of_five_handlers_and_one_message_handler(
+    config: BotConfig,
+) -> None:
     application = build_application("1:A", config)
 
     assert list(application.handlers) == [0]
-    assert len(application.handlers[0]) == 4
+    # Five `CommandHandler`s (start/help/me/prefs/find) plus one `MessageHandler`
+    # for the multi-turn clarification-answer continuation seam.
+    assert len(application.handlers[0]) == 6
 
 
 @pytest.mark.asyncio

@@ -27,6 +27,9 @@ Do **not** write an ADR for:
 
 ## Current accepted decisions
 
+- [0016 — Multi-turn Recommender conversation](0016-multi-turn-recommender-conversation.md)
+  defines the DB-backed per-user scratchpad, preference-namespaced profile enrichment, and the `handle_user_message` composition root the bot's `/find` handler + any CLI helper call.
+
 - [0014 — Deterministic ranking boundary](0014-deterministic-ranking-boundary.md)
   defines the pure post-Recommender public ranking contract.
 
