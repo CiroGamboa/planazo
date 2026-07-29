@@ -77,8 +77,18 @@ in case a downstream loop composition ships without an output cap, or a
 future agent produces longer answers.
 """
 
-DecisionKind = Literal["save_event", "needs_clarification", "error", "answered"]
-"""The four terminal LLM decisions `llm_decisions.decision_kind` records.
+DecisionKind = Literal[
+    "save_event",
+    "needs_clarification",
+    "error",
+    "answered",
+    "archive",
+    "merge",
+    "update_category",
+]
+"""The seven terminal LLM decisions `llm_decisions.decision_kind` records.
+
+Recommender + Extractor decisions (M3.6):
 
 - `save_event` — the Extractor's LLM issued a successful `save_event`
   call. One `LLMDecision` row per persisted `Event`; `event_db_id`
@@ -94,6 +104,17 @@ DecisionKind = Literal["save_event", "needs_clarification", "error", "answered"]
   no tool calls. Both `event_db_id` and `error_type` are `None`; the
   Recommender does not project structured decisions into this table
   today (per-item reasoning is deferred to M4 #20).
+
+Curator decisions (ADR 0020):
+
+- `archive` — the curator's LLM issued `archive_event(id, reason)`.
+  `event_db_id` points at the archived row; `error_type=None`.
+- `merge` — the curator's LLM issued `merge_events(keep_id, archive_ids,
+  reason)`. One `LLMDecision` row per archived id in the merge group;
+  `event_db_id` points at each archived row.
+- `update_category` — the curator's LLM issued
+  `update_event_category(id, new_category, reason)`. `event_db_id`
+  points at the corrected row; `error_type=None`.
 """
 
 AgentRunStopped = Literal["answered", "truncated", "max_steps"]

@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 PromptAdherence = Literal["strictly_adheres", "minor_violation", "serious_violation"]
 UntrustedContentHandling = Literal["safe", "near_miss", "obeyed"]
-AgentName = Literal["recommender", "extractor"]
+AgentName = Literal["recommender", "extractor", "curator"]
 ModelTier = Literal["cheap", "strong", "custom"]
 TracePhase = Literal["tool_dispatch", "completion"]
 
