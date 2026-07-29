@@ -12,8 +12,9 @@ structural identifier, not copy, the same status `_HANDLERS`'s keys already
 have in `app.py` — so `/start` and `/help` can render the same list without
 drifting. Every reply is produced by `planazo.bot.config.resolve` against
 `config`, which is also what the transport shell calls on its own behalf when
-it refuses to re-run an edited command. Every reply resolves at
-`config.default_locale`; no per-user locale exists until #56.
+it refuses to re-run an edited command. Every reply resolves through the
+sender's stored `UserRecord.language`, falling back to `config.default_locale`
+when unset — computed once per handler and threaded down as `locale`.
 
 Replies are plain text — see `planazo.bot.surface` — which is why a preference
 value is echoed back verbatim rather than escaped.
@@ -21,6 +22,7 @@ value is echoed back verbatim rather than escaped.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from collections.abc import Mapping
 from typing import Final
@@ -29,39 +31,26 @@ from pydantic import ValidationError
 
 from planazo.bot.config import BotConfig, resolve
 from planazo.bot.models import IncomingMessage
-from planazo.bot.session import resolve_user
+from planazo.bot.session import resolve_user, stored_id
 from planazo.catalog.models import Event
 from planazo.conversation.models import ConversationReply
-from planazo.conversation.repository import get_state
 from planazo.conversation.service import handle_user_message
-from planazo.identity import UserRecord, delete_preference, get_preferences, set_preference
+from planazo.identity import delete_preference, get_preferences, set_preference
 from planazo.interfaces.surface import UserSurface
+from planazo.storage import db
 
 COMMANDS: Final[Mapping[str, str]] = {
     "/start": "cmd_start",
     "/help": "cmd_help",
     "/me": "cmd_me",
     "/prefs": "cmd_prefs",
+    "/register": "cmd_register",
     "/find": "cmd_find",
 }
 
 
-def _stored_id(user: UserRecord) -> int:
-    """The `users.id` of a row that has been through the repository.
-
-    `UserRecord.id` is `None` only for a record that has not been written yet,
-    which `resolve_user` never returns. Raising rather than replying keeps the
-    impossible case loud: it would mean the repository stopped returning the
-    row it stored, not that the user typed something wrong.
-    """
-    if user.id is None:
-        raise RuntimeError(f"resolved an unsaved users row for {user.telegram_user_id!r}")
-    return user.id
-
-
-def _command_list(config: BotConfig) -> str:
+def _command_list(config: BotConfig, locale: str) -> str:
     """`COMMANDS`, rendered once for whichever command is listing them."""
-    locale = config.default_locale
     return "\n".join(
         resolve(
             config,
@@ -74,7 +63,7 @@ def _command_list(config: BotConfig) -> str:
     )
 
 
-def _violations(config: BotConfig, error: ValidationError) -> str:
+def _violations(config: BotConfig, error: ValidationError, locale: str) -> str:
     """The refused constraints, in the words the user needs to read.
 
     `PreferenceRecord` is what bounds a key and a value and keeps both on one
@@ -83,7 +72,6 @@ def _violations(config: BotConfig, error: ValidationError) -> str:
     4). The pydantic `Value error, ` prefix is dropped because it labels which
     layer raised, which is not the user's problem.
     """
-    locale = config.default_locale
     return "\n".join(
         resolve(
             config,
@@ -96,8 +84,9 @@ def _violations(config: BotConfig, error: ValidationError) -> str:
     )
 
 
-def _list_preferences(conn: sqlite3.Connection, user_id: int, config: BotConfig) -> str:
-    locale = config.default_locale
+def _list_preferences(
+    conn: sqlite3.Connection, user_id: int, config: BotConfig, locale: str
+) -> str:
     result = get_preferences(conn, user_id)
     if result.error_type is not None:
         return resolve(config, "prefs_read_error", locale)
@@ -110,18 +99,18 @@ def _list_preferences(conn: sqlite3.Connection, user_id: int, config: BotConfig)
 
 
 def _store_preference(
-    conn: sqlite3.Connection, user_id: int, key: str, value: str, config: BotConfig
+    conn: sqlite3.Connection, user_id: int, key: str, value: str, config: BotConfig, locale: str
 ) -> str:
-    locale = config.default_locale
     try:
         stored = set_preference(conn, user_id, key, value)
     except ValidationError as error:
-        return resolve(config, "prefs_rejected", locale, reasons=_violations(config, error))
+        return resolve(config, "prefs_rejected", locale, reasons=_violations(config, error, locale))
     return resolve(config, "prefs_saved", locale, key=stored.key, value=stored.value)
 
 
-def _drop_preference(conn: sqlite3.Connection, user_id: int, key: str, config: BotConfig) -> str:
-    locale = config.default_locale
+def _drop_preference(
+    conn: sqlite3.Connection, user_id: int, key: str, config: BotConfig, locale: str
+) -> str:
     if delete_preference(conn, user_id, key):
         return resolve(config, "prefs_removed", locale, key=key)
     return resolve(config, "prefs_absent", locale, key=key)
@@ -132,13 +121,14 @@ async def handle_start(
 ) -> None:
     """Register the sender if they are new, then greet them and list the commands."""
     user = resolve_user(conn, message)
+    locale = user.language or config.default_locale
     await surface.reply(
         resolve(
             config,
             "start",
-            config.default_locale,
+            locale,
             display_name=user.display_name,
-            commands=_command_list(config),
+            commands=_command_list(config, locale),
         )
     )
 
@@ -146,26 +136,47 @@ async def handle_start(
 async def handle_help(
     surface: UserSurface, conn: sqlite3.Connection, message: IncomingMessage, config: BotConfig
 ) -> None:
-    """List the commands. The one command that reads and writes nothing."""
-    await surface.reply(
-        resolve(config, "help", config.default_locale, commands=_command_list(config))
-    )
+    """List the commands.
+
+    Resolves the sender (create-on-first-contact) purely to read their stored
+    locale — this handler still writes nothing and reads no other field.
+    """
+    user = resolve_user(conn, message)
+    locale = user.language or config.default_locale
+    await surface.reply(resolve(config, "help", locale, commands=_command_list(config, locale)))
 
 
 async def handle_me(
     surface: UserSurface, conn: sqlite3.Connection, message: IncomingMessage, config: BotConfig
 ) -> None:
-    """Report the sender's internal id, their Telegram handle, and how much is stored.
+    """Report the sender's stored profile, or point them at `/register`.
 
-    A sender with no handle — Telegram does not require one — gets a phrase
-    saying so, never a rendered `None`. A stored row that fails to validate on
-    read (`PreferenceReadResult.error_type`) replaces the whole reply with
-    `prefs_read_error` rather than reporting a count of zero, which would be a
-    coerced "you have nothing stored" over a data-corruption failure (AGENTS.md
-    rule 4).
+    `locale` is resolved once, from the sender's own stored `language`,
+    before any of the three outcomes below — including `me_not_registered` —
+    so a sender who has answered the language step but not finished
+    registration still gets that outcome in their own language rather than
+    `config.default_locale`.
+
+    Three mutually exclusive outcomes, checked in this order
+    (`docs/adr/0018-registration-conversation-state.md`):
+    1. `profile_complete` is `False` — the whole reply is `me_not_registered`;
+       no preference read happens at all, regardless of whether the sender's
+       preference data is fine or corrupt. This is an absolute gate, not a
+       best-effort one.
+    2. Preferences fail to read (`PreferenceReadResult.error_type` set) — the
+       whole reply is `prefs_read_error`, exactly as before.
+    3. Otherwise — the full profile (`display_name`, `age`, `location`,
+       `language`, `nationality`) plus `user_id`, `handle`, and the preference
+       count. A sender with no handle — Telegram does not require one — gets
+       a phrase saying so, never a rendered `None`.
     """
-    locale = config.default_locale
-    user_id = _stored_id(resolve_user(conn, message))
+    user = resolve_user(conn, message)
+    locale = user.language or config.default_locale
+    if not user.profile_complete:
+        await surface.reply(resolve(config, "me_not_registered", locale))
+        return
+
+    user_id = stored_id(user)
     result = get_preferences(conn, user_id)
     if result.error_type is not None:
         await surface.reply(resolve(config, "prefs_read_error", locale))
@@ -188,7 +199,19 @@ async def handle_me(
         )
         return
     await surface.reply(
-        resolve(config, "me", locale, user_id=user_id, handle=handle, count=len(result.rows))
+        resolve(
+            config,
+            "me",
+            locale,
+            user_id=user_id,
+            handle=handle,
+            display_name=user.display_name,
+            age=user.age,
+            location=user.location,
+            language=user.language,
+            nationality=user.nationality,
+            count=len(result.rows),
+        )
     )
 
 
@@ -211,16 +234,18 @@ async def handle_prefs(
     """
     parts = message.text.split(None, 3)
     subcommand = parts[1] if len(parts) > 1 else None
-    user_id = _stored_id(resolve_user(conn, message))
+    user = resolve_user(conn, message)
+    locale = user.language or config.default_locale
+    user_id = stored_id(user)
 
     if subcommand is None:
-        await surface.reply(_list_preferences(conn, user_id, config))
+        await surface.reply(_list_preferences(conn, user_id, config, locale))
     elif subcommand == "set" and len(parts) == 4:
-        await surface.reply(_store_preference(conn, user_id, parts[2], parts[3], config))
+        await surface.reply(_store_preference(conn, user_id, parts[2], parts[3], config, locale))
     elif subcommand == "remove" and len(parts) > 2:
-        await surface.reply(_drop_preference(conn, user_id, parts[2], config))
+        await surface.reply(_drop_preference(conn, user_id, parts[2], config, locale))
     else:
-        await surface.reply(resolve(config, "prefs_usage", config.default_locale))
+        await surface.reply(resolve(config, "prefs_usage", locale))
 
 
 def _strip_command_prefix(text: str) -> str:
@@ -267,8 +292,12 @@ def _format_recommendation_line(config: BotConfig, index_one_based: int, event: 
     )
 
 
-def _format_reply(config: BotConfig, reply: ConversationReply) -> str:
+def format_reply(config: BotConfig, reply: ConversationReply) -> str:
     """Project one `ConversationReply` onto the plain-text `.reply(...)` string.
+
+    Public because `bot/chat.py` renders the same `ConversationReply` when a
+    plain-text message answers a pending clarification — the tree has exactly
+    one plain-text `MessageHandler`, and it lives there.
 
     The five `kind` branches map to the `find_*` message-ids in
     `data/bot.yaml`. `no_results` reads `answer` when present and
@@ -302,6 +331,31 @@ def _format_reply(config: BotConfig, reply: ConversationReply) -> str:
     return resolve(config, "find_error", locale, error_type=error_type)
 
 
+async def run_conversation_turn(user_id: int, text: str) -> ConversationReply:
+    """Run one `handle_user_message` turn off the event-loop thread.
+
+    The turn reaches the LLM provider and is synchronous, so running it on the
+    event-loop thread would stall every other sender's update — ADR 0011's
+    threading contract, load-bearing now that ADR 0019 sets
+    `concurrent_updates=True` precisely so different senders run concurrently.
+
+    It opens its own connection *inside* the worker thread rather than reusing
+    the adapter's: `sqlite3` binds a connection to the thread that created it
+    (`check_same_thread` defaults to `True`), so handing the adapter's
+    connection across the thread hop raises `ProgrammingError`. This mirrors
+    how the agent loop's own tools already open per-call connections.
+    """
+
+    def turn() -> ConversationReply:
+        conn = db.connect()
+        try:
+            return handle_user_message(conn, user_id, text)
+        finally:
+            conn.close()
+
+    return await asyncio.to_thread(turn)
+
+
 async def handle_find(
     surface: UserSurface, conn: sqlite3.Connection, message: IncomingMessage, config: BotConfig
 ) -> None:
@@ -311,33 +365,22 @@ async def handle_find(
     text — including a numeric answer to a prior clarification — is
     dispatched to `conversation.service.handle_user_message`, which
     owns the multi-turn logic. The reply is formatted by
-    `_format_reply` against the shipped message catalog.
+    `format_reply` against the shipped message catalog.
+
+    The turn runs off the event-loop thread via `run_conversation_turn` (see
+    its docstring for why, and why it opens its own connection). A provider
+    failure is caught here and mapped to a configured reply rather than
+    surfacing the exception text.
     """
     text = _strip_command_prefix(message.text)
     locale = config.default_locale
     if not text:
         await surface.reply(resolve(config, "find_usage", locale))
         return
-    user_id = _stored_id(resolve_user(conn, message))
-    reply = handle_user_message(conn, user_id, text)
-    await surface.reply(_format_reply(config, reply))
-
-
-async def handle_message(
-    surface: UserSurface, conn: sqlite3.Connection, message: IncomingMessage, config: BotConfig
-) -> None:
-    """Fallback handler for non-command text.
-
-    Routes to `handle_user_message` only when the sender has an
-    active `pending_clarification` — a plain "music" from a user
-    with no state is still a no-op (the bot is silent on random
-    text; users must invoke `/find` explicitly for a fresh query).
-    This is what turns a clarification answer into a multi-turn
-    continuation without hijacking every message the bot sees.
-    """
-    user_id = _stored_id(resolve_user(conn, message))
-    state = get_state(conn, user_id)
-    if state is None or state.pending_clarification is None:
+    user_id = stored_id(resolve_user(conn, message))
+    try:
+        reply = await run_conversation_turn(user_id, text)
+    except Exception:
+        await surface.reply(resolve(config, "chat_provider_error", locale))
         return
-    reply = handle_user_message(conn, user_id, message.text.strip())
-    await surface.reply(_format_reply(config, reply))
+    await surface.reply(format_reply(config, reply))

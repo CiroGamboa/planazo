@@ -18,9 +18,22 @@ _EXPECTED_TABLES = {
     "conversation_state",
 }
 
+_REGISTRATION_USER_COLUMNS = {
+    "age",
+    "location",
+    "language",
+    "nationality",
+    "pending_registration_field",
+}
+
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
     rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    return {row["name"] for row in rows}
+
+
+def _user_column_names(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute("PRAGMA table_info(users)").fetchall()
     return {row["name"] for row in rows}
 
 
@@ -35,11 +48,23 @@ def test_connect_applies_every_expected_table(monkeypatch: pytest.MonkeyPatch) -
             conn.close()
 
 
+def test_connect_applies_the_registration_profile_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(db, "DB_PATH", ":memory:")
+
+    conn = db.connect()
+    try:
+        assert _user_column_names(conn) >= _REGISTRATION_USER_COLUMNS
+    finally:
+        conn.close()
+
+
 def test_reconnecting_to_the_same_file_reapplies_the_schema_without_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # The idempotency that matters in production: the second open runs the same
-    # CREATE TABLE script against a database that already has every table.
+    # The idempotency that matters in production: the second open re-runs the
+    # migration discovery against a database already at the latest version.
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "planazo.db")
 
     first = db.connect()
@@ -51,6 +76,7 @@ def test_reconnecting_to_the_same_file_reapplies_the_schema_without_error(
     second = db.connect()
     try:
         assert _table_names(second) == _EXPECTED_TABLES
+        assert _user_column_names(second) >= _REGISTRATION_USER_COLUMNS
     finally:
         second.close()
 

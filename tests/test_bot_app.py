@@ -7,29 +7,34 @@ handlers rather than feeding updates through a started application.
 
 What the tiers cover, in the order they appear: that each registered command
 actually dispatches (including the `/cmd@botname` form group chats deliver),
-that the registered set is the set the bot advertises, that an `Update`
-projects into the right `IncomingMessage`, that a malformed update is ignored
-rather than crashing, that an edited command is refused before it can replay an
-old write over a newer one, and that `main()` explains a missing token instead
-of polling with one. `config` loads the real shipped `data/bot.yaml`, so
-`resolve(config, "edited_command", config.default_locale)` is the same text
-the running bot would send.
+that the registered set is the set the bot advertises, that a plain-text
+update routes to the registration continuation handler and not to any
+`CommandHandler` (and vice versa), that an `Update` projects into the right
+`IncomingMessage` for both a command and plain text, that a malformed update
+is ignored rather than crashing, that an edited command or registration
+answer is refused before it can replay an old write over a newer one, and
+that `main()` explains a missing token instead of polling with one. `config`
+loads the real shipped `data/bot.yaml`, so `resolve(config, "edited_command",
+config.default_locale)` is the same text the running bot would send.
 """
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from pathlib import Path
 from typing import NoReturn
 
 import pytest
 from telegram import Chat, Message, MessageEntity, Update, User
+from telegram.ext import CommandHandler, MessageHandler
 
 from planazo.bot import app
 from planazo.bot.app import adapter_for, build_application, main
 from planazo.bot.commands import COMMANDS, handle_prefs, handle_start
 from planazo.bot.config import BotConfig, load_config, resolve
 from planazo.bot.models import IncomingMessage
+from planazo.bot.queue import PerUserQueue
 from planazo.identity import get_preferences
 from planazo.storage import db
 
@@ -76,6 +81,49 @@ class RecordingCommand:
         self.calls.append(message)
 
 
+class SlowCommand:
+    """A stub command that blocks on a test-controlled `asyncio.Event` until
+    released, then replies with the message's own text.
+
+    Raises if entered by a second call for the same sender while the first is
+    still inside it — the simplest proof two dispatches for one key never run
+    concurrently, mirroring `tests/test_bot_queue.py`'s own guard at the
+    `PerUserQueue` tier one level down.
+    """
+
+    def __init__(self) -> None:
+        self.released = asyncio.Event()
+        self.entered: list[str] = []
+        self.exited: list[str] = []
+        self._active: set[str] = set()
+
+    async def __call__(
+        self, surface: object, conn: object, message: IncomingMessage, config: object
+    ) -> None:
+        key = message.telegram_user_id
+        if key in self._active:
+            raise AssertionError(f"sender {key!r} ran concurrently with itself")
+        self._active.add(key)
+        self.entered.append(message.text)
+        try:
+            await self.released.wait()
+        finally:
+            self._active.discard(key)
+        self.exited.append(message.text)
+        await surface.reply(message.text)
+
+
+class RaisingCommand:
+    """A stub command that always raises — proves a job's exception still
+    releases its sender's slot rather than leaving the queue's lock stuck
+    held (ADR 0014's crash-recovery guarantee)."""
+
+    async def __call__(
+        self, surface: object, conn: object, message: IncomingMessage, config: object
+    ) -> None:
+        raise RuntimeError(f"boom: {message.text}")
+
+
 def make_message(
     text: str | None,
     *,
@@ -83,20 +131,26 @@ def make_message(
     message_id: int = 1,
     handle: str | None = "daniv",
     with_user: bool = True,
+    user_id: int = SENDER_ID,
 ) -> Message:
     """One real `telegram.Message`, built offline.
 
     A command only routes when a `BOT_COMMAND` entity sits at offset 0, so the
-    entity is derived from the leading token rather than omitted.
+    entity is derived from the leading token rather than omitted — but only
+    when `text` actually starts with `/`, matching what Telegram itself would
+    attach; a plain-text answer (no leading `/`) gets no entity, which is what
+    lets it exercise the plain-text `MessageHandler` instead of a command's.
+    `user_id` defaults to `SENDER_ID` and only needs overriding by a test that
+    exercises two distinct senders against one shared queue.
     """
     user = (
-        User(id=SENDER_ID, first_name="Dani", last_name="V", is_bot=False, username=handle)
+        User(id=user_id, first_name="Dani", last_name="V", is_bot=False, username=handle)
         if with_user
         else None
     )
     entities = (
         [MessageEntity(type=MessageEntity.BOT_COMMAND, offset=0, length=len(text.split()[0]))]
-        if text
+        if text and text.startswith("/")
         else []
     )
     message = Message(
@@ -178,6 +232,8 @@ def _stored_preferences() -> list[tuple[str, str]]:
         ("/prefs", "prefs"),
         ("/prefs set city Barcelona", "prefs"),
         (f"/prefs@{BOT_USERNAME} remove city", "prefs"),
+        ("/register", "register"),
+        (f"/register@{BOT_USERNAME}", "register"),
         ("/find techno tonight", "find"),
     ],
 )
@@ -196,26 +252,59 @@ def test_an_unknown_command_routes_nowhere(config: BotConfig) -> None:
 
 def test_the_registered_commands_are_the_ones_the_bot_advertises(config: BotConfig) -> None:
     # `/start` and `/help` read their list from `COMMANDS`; this is what keeps
-    # what the bot offers and what it answers from drifting apart.
+    # what the bot offers and what it answers from drifting apart. Filtered to
+    # `CommandHandler`: the plain-text `MessageHandler` has no `.commands`.
     registered = {
         name
         for handler in _registered_handlers(config)
-        if hasattr(handler, "commands")
+        if isinstance(handler, CommandHandler)
         for name in handler.commands
     }
 
     assert registered == {command.removeprefix("/") for command in COMMANDS}
 
 
-def test_build_application_registers_one_group_of_five_handlers_and_one_message_handler(
+def test_build_application_registers_six_commands_and_one_message_handler(
     config: BotConfig,
 ) -> None:
     application = build_application("1:A", config)
+    handlers = application.handlers[0]
 
     assert list(application.handlers) == [0]
-    # Five `CommandHandler`s (start/help/me/prefs/find) plus one `MessageHandler`
-    # for the multi-turn clarification-answer continuation seam.
-    assert len(application.handlers[0]) == 6
+    # Six `CommandHandler`s (start/help/me/prefs/register/find) plus exactly one
+    # `MessageHandler` — `bot/chat.py`'s four-way plain-text dispatch. Two
+    # `MessageHandler`s would race PTB over the same non-command text.
+    assert len(handlers) == 7
+    assert sum(isinstance(handler, CommandHandler) for handler in handlers) == 6
+    assert sum(isinstance(handler, MessageHandler) for handler in handlers) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_plain_text_update_routes_only_to_the_message_handler_and_adapts(
+    config: BotConfig,
+) -> None:
+    """No-shadowing in the direction the command-routing tests above cannot
+    reach, plus adaptation for that same non-command tier.
+
+    `test_each_command_routes_to_exactly_one_registered_handler` already
+    proves a command matches exactly its own `CommandHandler` and never this
+    one; this proves the reverse — a plain-text update (no `BOT_COMMAND`
+    entity) matches the `MessageHandler` and no `CommandHandler` — then
+    projects into an `IncomingMessage` through the same `adapter_for` path
+    already proven for commands.
+    """
+    bot = StubBot()
+    update = Update(update_id=1, message=make_message("Barcelona", bot=bot))
+
+    matched = [handler for handler in _registered_handlers(config) if handler.check_update(update)]
+    assert [type(handler) for handler in matched] == [MessageHandler]
+
+    command = RecordingCommand()
+    await adapter_for(command, config)(update, StubContext(bot))
+
+    (message,) = command.calls
+    assert message.text == "Barcelona"
+    assert message.telegram_user_id == str(SENDER_ID)
 
 
 @pytest.mark.asyncio
@@ -305,6 +394,31 @@ async def test_an_edited_command_is_refused_and_never_reaches_the_command(
 
 
 @pytest.mark.asyncio
+async def test_an_edited_registration_answer_is_refused_and_never_reaches_the_handler(
+    database: Path, config: BotConfig
+) -> None:
+    """The same refusal, reached through a plain-text registration answer.
+
+    `adapter_for` itself is unchanged — this is what proves the refusal
+    generalizes to the new route rather than having only ever been exercised
+    through a `CommandHandler`-shaped update.
+    """
+    command = RecordingCommand()
+    bot = StubBot()
+    update = Update(update_id=1, edited_message=make_message("Barcelona", bot=bot))
+
+    assert update.message is None
+
+    await adapter_for(command, config)(update, StubContext(bot))
+
+    assert command.calls == []
+    assert [call["text"] for call in bot.sent] == [
+        resolve(config, "edited_command", config.default_locale)
+    ]
+    assert not database.exists()
+
+
+@pytest.mark.asyncio
 async def test_editing_an_old_removal_does_not_destroy_the_newer_value(config: BotConfig) -> None:
     """The scenario the notice exists for, end to end against real SQLite.
 
@@ -350,6 +464,230 @@ async def test_a_command_runs_end_to_end_against_real_sqlite(config: BotConfig) 
     (sent,) = bot.sent
     assert sent["chat_id"] == CHAT_ID
     assert "Dani V" in str(sent["text"])
+
+
+@pytest.mark.asyncio
+async def test_two_updates_from_the_same_sender_never_run_concurrently(config: BotConfig) -> None:
+    """AC1 — same-sender ordering. The second update is dispatched while the
+    first's job is held open on `SlowCommand.released`; both must land in
+    arrival order, and `SlowCommand`'s own active-call guard would raise if
+    they ever overlapped.
+    """
+    command = SlowCommand()
+    bot = StubBot()
+    context = StubContext(bot)
+    adapter = adapter_for(command, config)
+
+    first = asyncio.create_task(
+        adapter(Update(update_id=1, message=make_message("first", bot=bot)), context)
+    )
+    await asyncio.sleep(0)
+    second = asyncio.create_task(
+        adapter(Update(update_id=2, message=make_message("second", bot=bot, message_id=2)), context)
+    )
+    await asyncio.sleep(0)
+
+    command.released.set()
+    await first
+    await second
+
+    assert command.entered == ["first", "second"]
+    assert command.exited == ["first", "second"]
+    real_replies = [call["text"] for call in bot.sent if call["text"] in ("first", "second")]
+    assert real_replies == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_two_different_senders_run_fully_concurrently(config: BotConfig) -> None:
+    """AC2 — cross-sender concurrency, sharing one `PerUserQueue`. The first
+    sender's job is held open on `SlowCommand.released`; the second sender's
+    real command (`handle_start`) must complete, and its reply land, before
+    the first sender's job is released to finish — proving one sender's slow
+    run never delays another's.
+    """
+    slow = SlowCommand()
+    queue = PerUserQueue(config.queue.bound)
+    bot = StubBot()
+    context = StubContext(bot)
+
+    held = asyncio.create_task(
+        adapter_for(slow, config, queue)(
+            Update(update_id=1, message=make_message("slow", bot=bot)), context
+        )
+    )
+    await asyncio.sleep(0)
+    assert slow.entered == ["slow"]
+    assert bot.sent == []
+
+    other_id = SENDER_ID + 1
+    await adapter_for(handle_start, config, queue)(
+        Update(
+            update_id=2,
+            message=make_message("/start", bot=bot, message_id=2, user_id=other_id),
+        ),
+        context,
+    )
+
+    assert len(bot.sent) == 1
+    assert slow.exited == []
+
+    slow.released.set()
+    await held
+
+    assert slow.exited == ["slow"]
+    assert bot.sent[-1]["text"] == "slow"
+
+
+@pytest.mark.asyncio
+async def test_a_queued_message_gets_an_immediate_acknowledgment(config: BotConfig) -> None:
+    """AC3 — the second message's own first recorded reply is the ack, sent
+    before its turn comes; its real reply follows once it does."""
+    command = SlowCommand()
+    bot = StubBot()
+    context = StubContext(bot)
+    adapter = adapter_for(command, config)
+
+    first = asyncio.create_task(
+        adapter(Update(update_id=1, message=make_message("first", bot=bot)), context)
+    )
+    await asyncio.sleep(0)
+    second = asyncio.create_task(
+        adapter(Update(update_id=2, message=make_message("second", bot=bot, message_id=2)), context)
+    )
+    await asyncio.sleep(0)
+
+    assert [call["text"] for call in bot.sent] == [
+        resolve(config, config.queue.ack_message, config.default_locale)
+    ]
+
+    command.released.set()
+    await first
+    await second
+
+    assert [call["text"] for call in bot.sent] == [
+        resolve(config, config.queue.ack_message, config.default_locale),
+        "first",
+        "second",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_full_backlog_overflows_and_the_fourth_job_never_runs(config: BotConfig) -> None:
+    """AC4 — a concrete overflow: `queue.bound=2` admits 1 running + 2
+    waiting, so a 4th message for the same sender overflows without ever
+    calling its command body, while messages 1-3 all eventually get their own
+    real reply.
+    """
+    config = config.model_copy(update={"queue": config.queue.model_copy(update={"bound": 2})})
+    command = SlowCommand()
+    bot = StubBot()
+    context = StubContext(bot)
+    adapter = adapter_for(command, config)
+
+    tasks = [
+        asyncio.create_task(
+            adapter(
+                Update(update_id=n, message=make_message(str(n), bot=bot, message_id=n)), context
+            )
+        )
+        for n in (1, 2, 3)
+    ]
+    await asyncio.sleep(0)
+
+    await adapter(Update(update_id=4, message=make_message("4", bot=bot, message_id=4)), context)
+
+    overflow = resolve(config, config.queue.overflow_message, config.default_locale)
+    assert bot.sent[-1]["text"] == overflow
+
+    command.released.set()
+    await asyncio.gather(*tasks)
+
+    assert command.entered == ["1", "2", "3"]
+    real_replies = [call["text"] for call in bot.sent if call["text"] in ("1", "2", "3")]
+    assert real_replies == ["1", "2", "3"]
+
+
+@pytest.mark.asyncio
+async def test_a_raising_command_still_releases_its_senders_slot(config: BotConfig) -> None:
+    """AC5 — crash recovery. Message 1's own exception propagates out of its
+    `await adapter(...)`, and message 2 for the same sender, sharing the same
+    `PerUserQueue`, still runs and gets its own real reply — proving that
+    exact lock was released, not left stuck held.
+    """
+    queue = PerUserQueue(config.queue.bound)
+    bot = StubBot()
+    context = StubContext(bot)
+
+    with pytest.raises(RuntimeError, match="boom: first"):
+        await adapter_for(RaisingCommand(), config, queue)(
+            Update(update_id=1, message=make_message("first", bot=bot)), context
+        )
+
+    ok = RecordingCommand()
+    await adapter_for(ok, config, queue)(
+        Update(update_id=2, message=make_message("second", bot=bot, message_id=2)), context
+    )
+
+    assert [call.text for call in ok.calls] == ["second"]
+
+
+def test_build_application_raises_concurrent_updates_to_256(config: BotConfig) -> None:
+    """`concurrent_updates` moves from PTB's default of 1 to `True`'s own
+    "no cap" spelling, `256` (ADR 0014)."""
+    application = build_application("1:A", config)
+
+    assert application.concurrent_updates == 256
+
+
+@pytest.mark.asyncio
+async def test_the_shared_queue_serializes_across_different_handler_kinds(
+    monkeypatch: pytest.MonkeyPatch, config: BotConfig
+) -> None:
+    """The queue `build_application` builds is shared by every handler, not
+    just re-created per handler kind: a `/prefs` job in flight still gates the
+    plain-text `MessageHandler`'s own job for the same sender.
+    """
+    command = SlowCommand()
+    monkeypatch.setitem(app._HANDLERS, "prefs", command)
+
+    application = build_application("1:A", config)
+    handlers = application.handlers[0]
+    prefs_callback = next(
+        handler.callback
+        for handler in handlers
+        if isinstance(handler, CommandHandler) and "prefs" in handler.commands
+    )
+    plain_callback = next(
+        handler.callback for handler in handlers if isinstance(handler, MessageHandler)
+    )
+
+    bot = StubBot()
+    context = StubContext(bot)
+
+    prefs_task = asyncio.create_task(
+        prefs_callback(Update(update_id=1, message=make_message("/prefs", bot=bot)), context)
+    )
+    await asyncio.sleep(0)
+    assert command.entered == ["/prefs"]
+
+    plain_task = asyncio.create_task(
+        plain_callback(
+            Update(update_id=2, message=make_message("hello", bot=bot, message_id=2)), context
+        )
+    )
+    await asyncio.sleep(0)
+    assert command.entered == ["/prefs"]
+
+    command.released.set()
+    await prefs_task
+    await plain_task
+
+    assert command.exited == ["/prefs"]
+    assert [call["text"] for call in bot.sent] == [
+        resolve(config, config.queue.ack_message, config.default_locale),
+        "/prefs",
+        resolve(config, "chat_register_first", config.default_locale),
+    ]
 
 
 def test_main_explains_a_missing_token_and_exits_one(

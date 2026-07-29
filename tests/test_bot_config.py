@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from planazo.bot.config import (
     IntRangeConstraint,
     LocaleConstraint,
+    QueueConfig,
     RegistrationStep,
     TextConstraint,
     load_config,
@@ -18,11 +19,17 @@ locales: [en, es]
 messages:
   start: {en: "Hi {name}", es: "Hola {name}"}
   register_display_name: {en: "What name?", es: "¿Qué nombre?"}
+  queue_ack: {en: "Queued", es: "En cola"}
+  queue_overflow: {en: "Too many", es: "Demasiados"}
 registration:
   steps:
     - profile_field: display_name
       prompt: register_display_name
       validation: {kind: text, min_length: 1, max_length: 80}
+queue:
+  bound: 5
+  ack_message: queue_ack
+  overflow_message: queue_overflow
 """.strip()
 
 
@@ -38,6 +45,7 @@ def test_load_config_parses_shipped_catalog() -> None:
     assert "es" in config.locales
     for step in config.registration.steps:
         assert step.prompt in config.messages
+    assert config.queue.bound > 0
 
 
 def test_load_config_rejects_a_message_missing_a_locale(tmp_path: Path) -> None:
@@ -48,6 +56,10 @@ default_locale: en
 locales: [en, es]
 messages:
   start: {en: "Hi {name}"}
+queue:
+  bound: 5
+  ack_message: start
+  overflow_message: start
 """.strip(),
     )
 
@@ -65,6 +77,8 @@ messages:
   start: {en: "Hi {name}", es: "Hola {name}"}
   register_display_name: {en: "What name?", es: "¿Qué nombre?"}
   register_favourite_colour: {en: "Favourite colour?", es: "¿Color favorito?"}
+  queue_ack: {en: "Queued", es: "En cola"}
+  queue_overflow: {en: "Too many", es: "Demasiados"}
 registration:
   steps:
     - profile_field: display_name
@@ -73,6 +87,10 @@ registration:
     - profile_field: favourite_colour
       prompt: register_favourite_colour
       validation: {kind: text, min_length: 1, max_length: 40}
+queue:
+  bound: 5
+  ack_message: queue_ack
+  overflow_message: queue_overflow
 """.strip(),
     )
 
@@ -94,6 +112,10 @@ registration:
     - profile_field: display_name
       prompt: register_missing
       validation: {kind: text, min_length: 1, max_length: 80}
+queue:
+  bound: 5
+  ack_message: start
+  overflow_message: start
 """.strip(),
     )
 
@@ -109,11 +131,40 @@ default_locale: en
 locales: [en]
 messages:
   start: {en: "Hi {name}"}
+queue:
+  bound: 5
+  ack_message: start
+  overflow_message: start
 """.strip(),
     )
 
     with pytest.raises(ValidationError):
         load_config(yaml_path)
+
+
+def test_load_config_rejects_a_queue_message_missing_from_messages(tmp_path: Path) -> None:
+    yaml_path = _write(
+        tmp_path / "bot.yaml",
+        """
+default_locale: en
+locales: [en, es]
+messages:
+  start: {en: "Hi {name}", es: "Hola {name}"}
+queue:
+  bound: 5
+  ack_message: queue_missing
+  overflow_message: queue_missing
+""".strip(),
+    )
+
+    with pytest.raises(ValidationError):
+        load_config(yaml_path)
+
+
+def test_queue_config_rejects_a_non_positive_bound() -> None:
+    for bound in (0, -1):
+        with pytest.raises(ValidationError):
+            QueueConfig(bound=bound, ack_message="queue_ack", overflow_message="queue_overflow")
 
 
 def test_resolve_falls_back_to_the_default_locale_for_an_unknown_locale(tmp_path: Path) -> None:

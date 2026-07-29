@@ -5,13 +5,15 @@ messages:
   cmd_help: {en: "show this list", es: "muestra esta lista"}
   cmd_me: {en: "show your account and how many preferences you have stored", es: "muestra tu cuenta y cuántas preferencias tienes guardadas"}
   cmd_prefs: {en: "view, set, or remove your preferences", es: "consulta, guarda o elimina tus preferencias"}
+  cmd_register: {en: "start or continue your registration", es: "empieza o continúa tu registro"}
   cmd_find: {en: "find events matching a free-text query, with multi-turn clarification", es: "busca eventos que coincidan con una consulta libre, con aclaración multi-turno"}
   command_line: {en: "{command} — {description}", es: "{command} — {description}"}
   start: {en: "Hi {display_name}! You are all set. Here is what I can do:\n\n{commands}", es: "¡Hola {display_name}! Ya estás listo. Esto es lo que puedo hacer:\n\n{commands}"}
   help: {en: "Here is what I can do:\n\n{commands}", es: "Esto es lo que puedo hacer:\n\n{commands}"}
-  me: {en: "Your Planazo id: {user_id}\nTelegram: {handle}\nPreferences stored: {count}", es: "Tu id de Planazo: {user_id}\nTelegram: {handle}\nPreferencias guardadas: {count}"}
+  me: {en: "Your Planazo id: {user_id}\nTelegram: {handle}\nName: {display_name}\nAge: {age}\nLocation: {location}\nLanguage: {language}\nNationality: {nationality}\nPreferences stored: {count}", es: "Tu id de Planazo: {user_id}\nTelegram: {handle}\nNombre: {display_name}\nEdad: {age}\nUbicación: {location}\nIdioma: {language}\nNacionalidad: {nationality}\nPreferencias guardadas: {count}"}
   me_handle: {en: "@{handle}", es: "@{handle}"}
   me_no_handle: {en: "no handle set", es: "sin usuario configurado"}
+  me_not_registered: {en: "You haven't finished registration yet. Send /register to get started.", es: "Todavía no has terminado tu registro. Envía /register para empezar."}
   prefs_usage: {en: "Use one of:\n/prefs — list your preferences\n/prefs set <key> <value> — store or replace one\n/prefs remove <key> — delete one", es: "Usa una de estas opciones:\n/prefs — lista tus preferencias\n/prefs set <clave> <valor> — guarda o reemplaza una\n/prefs remove <clave> — elimina una"}
   prefs_empty: {en: "You have no preferences stored.\n\n{usage}", es: "No tienes preferencias guardadas.\n\n{usage}"}
   prefs_list: {en: "Your preferences:\n\n{lines}", es: "Tus preferencias:\n\n{lines}"}
@@ -40,6 +42,16 @@ messages:
   register_location: {en: "Which city or neighbourhood are you in?", es: "¿En qué ciudad o barrio estás?"}
   register_language: {en: "Which language do you want me to reply in? (en/es)", es: "¿En qué idioma quieres que te responda? (en/es)"}
   register_nationality: {en: "What is your nationality?", es: "¿Cuál es tu nacionalidad?"}
+  register_invalid_text: {en: "That doesn't work — send between {min_length} and {max_length} characters.", es: "Eso no vale — envía entre {min_length} y {max_length} caracteres."}
+  register_invalid_int_range: {en: "That doesn't work — send a whole number between {minimum} and {maximum}.", es: "Eso no vale — envía un número entero entre {minimum} y {maximum}."}
+  register_invalid_locale: {en: "That doesn't work — reply with one of: {locales}.", es: "Eso no vale — responde con una de estas opciones: {locales}."}
+  register_complete: {en: "All set! Your profile is saved. Use /me to see it.", es: "¡Todo listo! Tu perfil está guardado. Usa /me para verlo."}
+  chat_register_first: {en: "Finish registration first — send /register to get started.", es: "Termina primero el registro — envía /register para empezar."}
+  chat_truncated: {en: "Here is what I have so far (the reply was cut short):\n\n{answer}", es: "Esto es lo que tengo hasta ahora (la respuesta se ha cortado):\n\n{answer}"}
+  chat_max_steps: {en: "I couldn't finish that within my step limit. Try rephrasing, or ask something more specific.", es: "No he podido terminar eso dentro de mi límite de pasos. Intenta reformularlo o pregunta algo más concreto."}
+  chat_provider_error: {en: "Something went wrong while answering that. Please try again in a moment.", es: "Algo ha fallado al responder eso. Inténtalo de nuevo en un momento."}
+  queue_ack: {en: "Still working on your last message — I'll get to this one right after.", es: "Todavía estoy con tu último mensaje — atenderé este justo después."}
+  queue_overflow: {en: "You're sending messages faster than I can answer them. Please wait for my replies before sending more.", es: "Me estás enviando mensajes más rápido de lo que puedo responder. Espera mis respuestas antes de enviar más."}
 registration:
   steps:
     - profile_field: display_name
@@ -57,3 +69,7 @@ registration:
     - profile_field: nationality
       prompt: register_nationality
       validation: {kind: text, min_length: 1, max_length: 80}
+queue:
+  bound: 20
+  ack_message: queue_ack
+  overflow_message: queue_overflow

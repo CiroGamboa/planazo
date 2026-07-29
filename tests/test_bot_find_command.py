@@ -1,4 +1,4 @@
-"""Behavior tests for `handle_find` and `handle_message`.
+"""Behavior tests for `handle_find`.
 
 The bot layer is transport-neutral (ADR 0011) — every command is a
 coroutine taking `(UserSurface, sqlite3.Connection, IncomingMessage,
@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from planazo.bot import commands
-from planazo.bot.commands import handle_find, handle_message
+from planazo.bot.commands import handle_find
 from planazo.bot.config import BotConfig, load_config
 from planazo.bot.models import IncomingMessage
 from planazo.catalog.models import Event
@@ -217,62 +217,3 @@ async def test_find_error_renders_error_type(
 
     (reply,) = surface.replies
     assert "search_tool_failure" in reply
-
-
-@pytest.mark.asyncio
-async def test_message_without_pending_clarification_is_silent(
-    monkeypatch: pytest.MonkeyPatch,
-    conn: sqlite3.Connection,
-    surface: RecordingSurface,
-    config: BotConfig,
-) -> None:
-    """A non-command message with no active state is ignored — no dispatch."""
-    called = False
-
-    def fake_handle(*args: object, **kwargs: object) -> ConversationReply:
-        nonlocal called
-        called = True
-        return ConversationReply(kind="no_results")
-
-    monkeypatch.setattr(commands, "handle_user_message", fake_handle)
-
-    # Seed a user with no state.
-    get_or_create_user(conn, "tg-1", "Dani")
-
-    await handle_message(surface, conn, _msg(text="just some text"), config)
-
-    assert not called
-    assert surface.replies == []
-
-
-@pytest.mark.asyncio
-async def test_message_with_pending_clarification_dispatches(
-    monkeypatch: pytest.MonkeyPatch,
-    conn: sqlite3.Connection,
-    surface: RecordingSurface,
-    config: BotConfig,
-) -> None:
-    """A non-command message routes through the service when a clarification is in flight."""
-
-    def fake_handle(*args: object, **kwargs: object) -> ConversationReply:
-        return ConversationReply(kind="recommendations", candidates=(_event(),))
-
-    monkeypatch.setattr(commands, "handle_user_message", fake_handle)
-
-    user = get_or_create_user(conn, "tg-1", "Dani")
-    assert user.id is not None
-    upsert_state(
-        conn,
-        ConversationState(
-            user_id=user.id,
-            pending_clarification=PendingClarification(
-                question="Which category?", intent_snapshot=_intent()
-            ),
-            updated_at=datetime.now(UTC),
-        ),
-    )
-
-    await handle_message(surface, conn, _msg(text="music"), config)
-
-    (reply,) = surface.replies
-    assert "Live jazz" in reply

@@ -150,17 +150,20 @@ The layers below each map to one bounded context (annotated per layer). Numberin
 
 ### 1. Telegram bot — `src/planazo/bot/`
 
-- **`bot/app.py`** — entrypoint; builds the `python-telegram-bot` `Application`, registers one `CommandHandler` per command, converts each `Update` into an `IncomingMessage`, and runs long polling.
+- **`bot/app.py`** — entrypoint; builds the `python-telegram-bot` `Application` with `concurrent_updates=True` so different senders' turns run concurrently, registers one `CommandHandler` per command plus one `MessageHandler` wrapping `bot/chat.py`'s three-way plain-text dispatch, converts each `Update` into an `IncomingMessage`, dispatches every one of those six handlers through one shared per-sender queue before running any of them, and runs long polling.
+- **`bot/queue.py`** — `PerUserQueue`, the per-sender FIFO gate `bot/app.py` dispatches every handler through: a `busy` flag, a waiting counter, and a `deque` of FIFO turn events per `telegram_user_id`, the bound and its two replies configured in `data/bot.yaml` ([ADR 0019](adr/0019-per-user-message-serialization.md)).
 - **`bot/surface.py`** — `TelegramSurface`, the reply channel bound to a `Bot` and a `chat_id`; the implementation of `planazo.interfaces.surface.UserSurface`. Plain text, no `parse_mode`.
 - **`bot/models.py`** — `IncomingMessage`, the Pydantic v2 projection of one update that the command layer consumes.
 - **`bot/session.py`** — resolves the Telegram `user_id` to the internal `users.id` (create-on-first-contact). This is the multi-user seam.
-- **`bot/commands.py`** — `/start`, `/help`, `/me`, `/prefs` (view / set / remove). Pure CRUD on SQLite. `/find <query>` lands with #23 and is the one command that calls the LLM, via the Interpreter.
-- **`bot/config.py`** — Pydantic-validated config loader, mirroring `sources/config.py`. Reads `data/bot.yaml` at startup: the locale-keyed message catalog every reply resolves against, and the ordered registration-step declarations #56 will execute. Loaded once at startup; a malformed file stops the process before Telegram polling starts.
+- **`bot/commands.py`** — `/start`, `/help`, `/me`, `/prefs` (view / set / remove), and `/register` in the advertised command list (`COMMANDS`) — though `/register`'s own handler lives in `registration.py`, not here. Pure CRUD on SQLite. `/me` renders the sender's stored profile (name, age, location, language, nationality) once registration is complete, or points them at `/register` otherwise. Every command's reply resolves through the sender's stored language, falling back to `config.default_locale` when unset. `/find <query>` lands with #23 and is the one command that calls the LLM, via the Interpreter.
+- **`bot/registration.py`** — `/register` plus the plain-text continuation that drives the five configured steps to completion or a re-prompt, once `bot/chat.py`'s dispatch has routed an in-flight answer to it. PTB-free like `commands.py`.
+- **`bot/chat.py`** — the plain-text `MessageHandler`'s three-way dispatch: an in-flight registration answer continues unchanged through `registration.py`; an incomplete profile gets a register-first reply with no call into the agent loop; a complete profile's free text runs through `planazo.agents.event_agent.run_once`, off the event-loop thread via `asyncio.to_thread` (ADR 0011's threading contract), with its outcome — an answer, a truncated partial, an answer-free step-cap stop, or a raised provider exception — mapped to exactly one reply. PTB-free like `commands.py` and `registration.py`; the only module in `bot/` that calls `event_agent.run_once`.
+- **`bot/config.py`** — Pydantic-validated config loader, mirroring `sources/config.py`. Reads `data/bot.yaml` at startup: the locale-keyed message catalog every reply resolves against, and the ordered registration-step declarations `bot/registration.py` executes. Loaded once at startup; a malformed file stops the process before Telegram polling starts.
 - **`bot/approve.py`** — supplies `ApprovalGate.approve` via an inline keyboard `[Approve] [Decline]`, mirrors `_terminal_approve` in `src/planazo/agents/cli.py`. Lands with #22.
 
-Only `app.py` and `surface.py` import `telegram`; `models.py`, `session.py`, and `commands.py` are transport-neutral, which is what lets every command be exercised offline against real SQLite and a recording surface.
+Only `app.py` and `surface.py` import `telegram`; `models.py`, `session.py`, `commands.py`, `registration.py`, `chat.py`, and `queue.py` are transport-neutral, which is what lets every command be exercised offline against real SQLite and a recording surface.
 
-The bot layer is deliberately dumb — no LLM call originates inside it, guarded by the source-text scan in `tests/test_bot_no_llm.py` — so swapping to an LLM-driven natural-language dispatcher later is a change to one file (`commands.py`), not a rewrite.
+The bot layer is deliberately dumb — no LLM call originates inside it, guarded by the source-text scan in `tests/test_bot_no_llm.py`. `bot/chat.py` is the layer's one caller into the agent loop: a fully registered sender's free text reaches `planazo.agents.event_agent.run_once`, and it is that call's own graph — not anything in `bot/` — which reaches the LLM provider. Swapping in a richer dispatcher later — the structured `/find` path (#23), multi-turn history, per-user rate limiting — is a change to `bot/chat.py`, not a rewrite of `commands.py` or `registration.py`.
 
 Governed by [**ADR 0011 — Telegram bot interface abstraction**](adr/0011-telegram-bot-interface.md) (no-LLM-in-bot invariant and how it is enforced, the PTB-free command signature, create-on-first-contact session mapping, the `UserSurface` shape, plain-text replies, long polling, and the threading contract for the approval seam).
 
@@ -244,7 +247,7 @@ Schema:
 | Table | Purpose |
 | --- | --- |
 | `events(id, source, source_url, title, start_utc, end_utc, category, city, price_cents, geo_lat, geo_lng, confidence, extra JSON, ingested_at, event_index_in_post, source_account, venue_name, venue_address, organizer, tags JSON, description, ticket_url, image_url, language, recurring, UNIQUE(source_url, event_index_in_post))` | The shared domain surface. `extra JSON` absorbs source-specific fields without altering the table; `tags` is a JSON array in the same TEXT-column shape. Composite `(source_url, event_index_in_post)` UNIQUE lets one Instagram post persist N distinct events (multi-event carousels) — see ADR 0012. `category` is the `EventCategory` Literal shared with `SearchIntent`; the ten domain-model columns after `event_index_in_post` land in migration 002 (see ADR 0015). Composite indexes `idx_events_city_start(city, start_utc)` and `idx_events_category_start(category, start_utc)` back the two hot Recommender filter shapes. |
-| `users(id, telegram_user_id UNIQUE, display_name, created_at)` | Multi-user seam. |
+| `users(id, telegram_user_id UNIQUE, display_name, created_at, age, location, language, nationality, pending_registration_field)` | Multi-user seam. The last five columns back the guided registration flow — four nullable profile fields plus a pointer to whichever field the user's next message should answer — and land in migration 007 (see [ADR 0018](adr/0018-registration-conversation-state.md)). |
 | `preferences(user_id FK, key, value, updated_at)` | Structured filter prefs used by the ranker and pushed into the agent context. |
 | `approvals(id, user_id FK, artifact_kind, artifact_id, decision, decided_at)` | Audit trail for future calendar wiring. |
 | `extraction_runs_index(id, run_id, user_id, url, started_at)` | Thin index; the full run payload lives in the JSONL log (§9). |
@@ -265,6 +268,11 @@ erDiagram
         string telegram_user_id UK
         string display_name
         datetime created_at
+        int age
+        string location
+        string language
+        string nationality
+        string pending_registration_field
     }
     events {
         int id PK
@@ -631,6 +639,8 @@ Accepted ADRs describe current state; planned ADRs are reserved for their own ti
 | 0015 | [`storage-migrations-and-observability`](adr/0015-storage-migrations-and-observability.md) | Versioned `PRAGMA user_version` migration framework at `src/planazo/storage/migrations/`, applied in per-file transactions; `events` table grown to the full domain model (ten new columns + `EventCategory` Literal) in one migration; new `observability/` bounded context persists one `agent_runs` row per completed loop and 0..N `llm_decisions` rows per loop, best-effort at composition roots. Rationale text stays DB-inside per Rule 2 (redaction happens on the way out, not into DB). Down migrations, retention rotation, and JSONL → SQLite convergence deferred. Refines ADR 0003's schema-evolution follow-up. |
 | 0016 | [`multi-turn-recommender-conversation`](adr/0016-multi-turn-recommender-conversation.md) | New `conversation/` bounded context: `conversation_state` migration (one row per user, upserted every message), `ConversationState` + `PendingClarification` + `ConversationReply` aggregates, and the `handle_user_message` composition root the bot's `/find` handler + a future CLI helper share. Clarification answers land as `pref:clarified.<derived_key>` preference rows; "more results" filters client-side; "tell me about #N" reads `recommendations` via `run_id`. Reuses `interpret + run_once` — no new LLM seam. |
 | 0017 | [`instagram-demo-narrative-logs`](adr/0017-instagram-demo-narrative-logs.md) | Opt-in stdout narrative logger for `planazo-scheduler --once --verbose`: `NarrativeLogger` in `sources/instagram/narrative.py` prints `[HH:MM:SS] verb + structural subject` lines per phase, layered on top of the JSONL sidecar (never a replacement). Rule 2 discipline: only URLs, shortcodes, integer counts, floats, and Literal-valued fields interpolated — no captions, no LLM output. New `on_step` + `on_complete` observer seams on `extract_once`. Cron `--tick` output unchanged. |
+| 0018 | [`registration-conversation-state`](adr/0018-registration-conversation-state.md) | Guided registration state as five nullable `users` columns (migration 007) plus a `pending_registration_field` pointer — no second session concept, no separate table. Owns the sender's next plain-text message while a step is in flight. |
+| 0019 | [`per-user-message-serialization`](adr/0019-per-user-message-serialization.md) | Per-sender FIFO gate (`PerUserQueue`) wraps every handler dispatch in `bot/app.py`, keyed by `telegram_user_id`; `concurrent_updates` raised from PTB's default of 1 to 256 so different senders run concurrently. |
 
 Until each ADR lands, its section here reads as "planned — ADR NNNN"; when it lands, the entry is edited in place to link the accepted ADR.
 

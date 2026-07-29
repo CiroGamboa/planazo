@@ -1,9 +1,9 @@
 """Pydantic-validated loader for `data/bot.yaml`.
 
 `BotConfig` is the root model — a locale-keyed message catalog plus the
-ordered registration-step declarations #56 will execute. It mirrors
-`planazo.sources.config.load_config` in shape: `load_config()` reads the YAML
-file and `model_validate()`s the whole tree in one call, raising
+ordered registration-step declarations `bot/registration.py` executes. It
+mirrors `planazo.sources.config.load_config` in shape: `load_config()` reads
+the YAML file and `model_validate()`s the whole tree in one call, raising
 `ValidationError` uncaught. A malformed or incomplete `data/bot.yaml` is
 therefore a boot-time failure — before the bot ever opens a Telegram
 connection — never a surprise on the first reply (AGENTS.md rule 1, rule 4).
@@ -14,9 +14,9 @@ exactly, so `resolve()` can always fall back to `default_locale` without a
 missing-key check of its own. `registration.steps` declares the ordered
 profile fields a new user is asked for, each step's `prompt` cross-checked
 against `messages` at load time and its `validation` a discriminated union
-over `kind` (`text` / `int_range` / `locale`) — #56 consumes the steps to
-drive the actual registration flow; this module only declares and validates
-their shape.
+over `kind` (`text` / `int_range` / `locale`) — `bot/registration.py`
+consumes the steps to drive the actual registration flow; this module only
+declares and validates their shape.
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ from typing import Annotated, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from planazo.identity import UserRecord
 
 
 class TextConstraint(BaseModel):
@@ -57,10 +59,11 @@ class IntRangeConstraint(BaseModel):
 class LocaleConstraint(BaseModel):
     """A registration step answered with one of `BotConfig.locales`.
 
-    The membership check itself is whatever later consumes this constraint
-    (#56) — this ticket only declares the constraint kind, tying the
-    "language" step's accepted values to `BotConfig.locales` by construction
-    rather than a separately duplicated list.
+    The membership check itself lives in `bot/registration.py`, which
+    consumes this constraint against the running `BotConfig.locales` — this
+    module only declares the constraint kind, tying the "language" step's
+    accepted values to `BotConfig.locales` by construction rather than a
+    separately duplicated list.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -80,7 +83,11 @@ class RegistrationStep(BaseModel):
 
     profile_field: str = Field(min_length=1)
     """The identity field this step fills. Not cross-checked against any
-    persisted schema, since #56 (not this ticket) decides where it lands."""
+    persisted schema here: a step naming a field `identity.models.ProfileField`
+    does not know is caught in `bot/registration.py`, where the steps are
+    consumed, not at load time (`docs/adr/0018-registration-conversation-state.md`).
+    This is a deliberate, permanent property of the loader — not a placeholder —
+    so a step naming a field nothing downstream maps yet still loads."""
 
     prompt: str = Field(min_length=1)
     """A message id — must be a key of `BotConfig.messages`."""
@@ -107,6 +114,25 @@ class RegistrationConfig(BaseModel):
         return self
 
 
+class QueueConfig(BaseModel):
+    """The per-sender FIFO gate's backlog bound and its two dispatch replies."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    bound: int = Field(gt=0)
+    """The number of *waiting* messages admitted per sender, not counting the
+    one already running: a bound of 20 admits 1 in-flight message plus up to
+    20 queued behind it before the 22nd arrival for that sender overflows."""
+
+    ack_message: str = Field(min_length=1)
+    """A key of `BotConfig.messages` — the immediate reply sent when a message
+    is queued behind another still in flight for the same sender."""
+
+    overflow_message: str = Field(min_length=1)
+    """A key of `BotConfig.messages` — the reply sent, instead of queuing,
+    once the sender's backlog has already reached `bound`."""
+
+
 class BotConfig(BaseModel):
     """Root of `data/bot.yaml` — the message catalog and registration steps."""
 
@@ -116,6 +142,7 @@ class BotConfig(BaseModel):
     locales: list[str] = Field(min_length=2)
     messages: dict[str, dict[str, str]]
     registration: RegistrationConfig = Field(default_factory=RegistrationConfig)
+    queue: QueueConfig
 
     @model_validator(mode="after")
     def _default_locale_is_declared(self) -> BotConfig:
@@ -150,6 +177,17 @@ class BotConfig(BaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _queue_messages_exist_in_messages(self) -> BotConfig:
+        for field_name in ("ack_message", "overflow_message"):
+            message_id = getattr(self.queue, field_name)
+            if message_id not in self.messages:
+                raise ValueError(
+                    f"queue.{field_name} references message {message_id!r}, "
+                    f"which is not a key of messages"
+                )
+        return self
+
 
 def load_config(path: Path = Path("data/bot.yaml")) -> BotConfig:
     """Read + validate the bot config; raise `ValidationError` on any issue.
@@ -175,9 +213,22 @@ def resolve(config: BotConfig, message_id: str, locale: str, **kwargs: object) -
     `KeyError`, deliberately unguarded: message ids are code-controlled
     constants, not user input, so a typo is a programmer error and should
     fail loud (AGENTS.md rule 1 is about external input; this is internal
-    call-site hygiene, the same posture as `commands._stored_id`'s
+    call-site hygiene, the same posture as `bot.session.stored_id`'s
     `RuntimeError`).
     """
     translations = config.messages[message_id]
     text = translations.get(locale, translations[config.default_locale])
     return text.format(**kwargs)
+
+
+def resolve_for(config: BotConfig, message_id: str, user: UserRecord, **kwargs: object) -> str:
+    """`resolve()` at `user`'s stored locale, falling back to `config.default_locale`.
+
+    `UserRecord.language` is `None` until the registration flow's language
+    step is answered, so a reply to a sender who has not reached it yet
+    resolves exactly as `resolve(config, message_id, config.default_locale,
+    **kwargs)` would — this is what lets every prompt and failure reply in
+    `bot/registration.py` (and, later, the rest of `bot/`) resolve per-sender
+    instead of at `config.default_locale` unconditionally.
+    """
+    return resolve(config, message_id, user.language or config.default_locale, **kwargs)

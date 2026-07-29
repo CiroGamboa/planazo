@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import UTC, datetime
+from typing import get_args
 
-from planazo.identity.models import PreferenceReadResult, PreferenceRecord, UserRecord
+from planazo.identity.models import PreferenceReadResult, PreferenceRecord, ProfileField, UserRecord
+
+_PROFILE_FIELD_COLUMNS = frozenset(get_args(ProfileField))
 
 
 def _last_row_id(cursor: sqlite3.Cursor) -> int:
@@ -30,7 +33,19 @@ def _user_from_row(row: sqlite3.Row) -> UserRecord:
         telegram_user_id=row["telegram_user_id"],
         display_name=row["display_name"],
         created_at=datetime.fromisoformat(row["created_at"]),
+        age=row["age"],
+        location=row["location"],
+        language=row["language"],
+        nationality=row["nationality"],
+        pending_registration_field=row["pending_registration_field"],
     )
+
+
+def _fetch_user(conn: sqlite3.Connection, user_id: int) -> UserRecord:
+    row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if row is None:
+        raise RuntimeError(f"expected a users row for id={user_id}, got none")
+    return _user_from_row(row)
 
 
 def get_or_create_user(
@@ -57,6 +72,51 @@ def get_or_create_user(
     )
     conn.commit()
     return record.model_copy(update={"id": _last_row_id(cursor)})
+
+
+def set_pending_registration_field(
+    conn: sqlite3.Connection, user_id: int, field: ProfileField | None
+) -> UserRecord:
+    """Set `user_id`'s registration pointer and return the refreshed row.
+
+    Touches only `pending_registration_field` — no profile column changes.
+    `field=None` clears the pointer, meaning no registration step is in
+    flight (either never started, or the last run of the flow finished).
+    """
+    conn.execute(
+        "UPDATE users SET pending_registration_field = ? WHERE id = ?",
+        (field, user_id),
+    )
+    conn.commit()
+    return _fetch_user(conn, user_id)
+
+
+def record_registration_answer(
+    conn: sqlite3.Connection,
+    user_id: int,
+    field: ProfileField,
+    value: str | int,
+    next_pending_field: ProfileField | None,
+) -> UserRecord:
+    """Write one registration answer and advance the pointer, atomically.
+
+    `field` names the column `value` is written to; `next_pending_field`
+    replaces `pending_registration_field` in the same `UPDATE`, so there is
+    no state between "the answer landed" and "the pointer advanced" for a
+    crash to land inside. `field` is checked against `ProfileField`'s known
+    values before it is interpolated into the statement text — it names a
+    column, which `sqlite3` cannot bind as a parameter, so this is the
+    boundary check that keeps that interpolation confined to the five known
+    columns.
+    """
+    if field not in _PROFILE_FIELD_COLUMNS:
+        raise ValueError(f"{field!r} is not a known profile field")
+    conn.execute(
+        f"UPDATE users SET {field} = ?, pending_registration_field = ? WHERE id = ?",
+        (value, next_pending_field, user_id),
+    )
+    conn.commit()
+    return _fetch_user(conn, user_id)
 
 
 def get_preferences(conn: sqlite3.Connection, user_id: int) -> PreferenceReadResult:

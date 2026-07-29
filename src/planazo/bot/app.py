@@ -7,7 +7,18 @@ imports `telegram`. It owns three things: building the `Application` with one
 
 `adapter_for` is the seam. It turns any PTB-free command coroutine into a PTB
 callback, so a new command is registered by naming its coroutine rather than
-by writing transport code again.
+by writing transport code again. The same seam wraps the one `MessageHandler`
+in the tree: `bot/chat.py`'s four-way dispatch over every non-command text
+update — an in-flight registration answer, an answer to a pending `/find`
+clarification, a register-first notice, or a fresh turn through the agent
+loop.
+
+Every one of those seven dispatches runs through one shared
+`planazo.bot.queue.PerUserQueue`, keyed by `telegram_user_id` (ADR 0014): two
+messages from the same sender never run concurrently, while
+`build_application`'s `concurrent_updates=True` lets different senders' turns
+run fully concurrently instead of PTB's own default of one update at a time,
+system-wide.
 """
 
 from __future__ import annotations
@@ -28,16 +39,18 @@ from telegram.ext import (
     filters,
 )
 
+from planazo.bot.chat import handle_plain_text
 from planazo.bot.commands import (
     handle_find,
     handle_help,
     handle_me,
-    handle_message,
     handle_prefs,
     handle_start,
 )
 from planazo.bot.config import BotConfig, load_config, resolve
 from planazo.bot.models import IncomingMessage
+from planazo.bot.queue import DispatchOutcome, PerUserQueue
+from planazo.bot.registration import handle_register
 from planazo.bot.surface import surface_for
 from planazo.config import read_bot_token
 from planazo.interfaces.surface import UserSurface
@@ -73,11 +86,14 @@ _HANDLERS: Final[Mapping[str, BotCommand]] = {
     "help": handle_help,
     "me": handle_me,
     "prefs": handle_prefs,
+    "register": handle_register,
     "find": handle_find,
 }
 
 
-def adapter_for(command: BotCommand, config: BotConfig) -> UpdateCallback:
+def adapter_for(
+    command: BotCommand, config: BotConfig, queue: PerUserQueue | None = None
+) -> UpdateCallback:
     """Wrap a PTB-free command coroutine into a PTB handler callback.
 
     The adapter is the whole transport contract, in one order:
@@ -90,21 +106,39 @@ def adapter_for(command: BotCommand, config: BotConfig) -> UpdateCallback:
     2. Ignore an update carrying no user, no message, or no message text —
        a typed branch with no reply, not a crash.
     3. Bind the reply channel from `context.bot` and the message's chat.
-    4. Refuse an edited command. Re-running one replays an *old* command
-       against *newer* state, which is a silent wrong outcome on persisted
-       data: `set city Barcelona`, `remove city`, `set city Madrid`, then an
-       edit of the second message would delete Madrid and answer "removed".
-       The refusal happens after the surface exists, so the user is told, and
-       before the database is opened, so "writes nothing" is a property of the
-       control flow rather than an assertion about it.
+    4. Refuse an edited command, ahead of `queue` and unqueued. Re-running one
+       replays an *old* command against *newer* state, which is a silent
+       wrong outcome on persisted data: `set city Barcelona`, `remove city`,
+       `set city Madrid`, then an edit of the second message would delete
+       Madrid and answer "removed". The refusal happens after the surface
+       exists, so the user is told, and before the database is opened, so
+       "writes nothing" is a property of the control flow rather than an
+       assertion about it. It never opens a connection or touches per-sender
+       state, so there is no race for `queue` to prevent (ADR 0014).
     5. Validate the update into an `IncomingMessage` (AGENTS.md rule 1). The
        text is passed through unmodified — not pre-split, and not read from
        `context.args`, which drops the line breaks `/prefs set` must be able
        to reject.
-    6. Open one connection, run the command, close it in a `finally`. With
-       PTB's default `concurrent_updates` of 1, updates are handled one at a
-       time, so a per-invocation synchronous connection never crosses threads.
+    6. Dispatch the connection-open / command-call / connection-close
+       sequence through `queue` (`planazo.bot.queue.PerUserQueue`, ADR 0014),
+       keyed by `incoming.telegram_user_id`. Two messages from the same
+       sender never run that sequence concurrently, so a per-invocation
+       synchronous connection never crosses two overlapping runs for that
+       sender — even though `build_application` now raises PTB's
+       `concurrent_updates` above 1, letting different senders' updates run
+       concurrently. A message that arrives while another is already running
+       for the same sender gets an immediate acknowledgment and then its own
+       turn; one already at that sender's backlog bound gets the overflow
+       reply instead, and its command never runs at all.
+
+    `queue` is optional so a caller that only needs one adapter — not
+    cross-call queue sharing — keeps working unchanged: when omitted, a
+    private `PerUserQueue(config.queue.bound)` is constructed for this one
+    `adapter_for` call and shared by every invocation of the adapter it
+    returns.
     """
+    if queue is None:
+        queue = PerUserQueue(config.queue.bound)
 
     async def adapter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user = update.effective_user
@@ -125,31 +159,55 @@ def adapter_for(command: BotCommand, config: BotConfig) -> UpdateCallback:
             text=message.text,
         )
 
-        conn = db.connect()
-        try:
-            await command(surface, conn, incoming, config)
-        finally:
-            conn.close()
+        async def job() -> None:
+            conn = db.connect()
+            try:
+                await command(surface, conn, incoming, config)
+            finally:
+                conn.close()
+
+        async def on_enqueued() -> None:
+            await surface.reply(resolve(config, config.queue.ack_message, config.default_locale))
+
+        outcome = await queue.dispatch(incoming.telegram_user_id, job, on_enqueued)
+        if outcome is DispatchOutcome.OVERFLOW:
+            await surface.reply(
+                resolve(config, config.queue.overflow_message, config.default_locale)
+            )
 
     return adapter
 
 
 def build_application(token: str, config: BotConfig) -> BotApplication:
-    """Build the `Application` with one `CommandHandler` per command.
+    """Build the `Application` with one `CommandHandler` per command, plus one
+    `MessageHandler` wrapping `bot/chat.py`'s four-way plain-text dispatch.
 
-    Also registers one `MessageHandler` for non-command text — the
-    multi-turn `/find` continuation seam. `handle_message` only
-    dispatches when the sender has an active `pending_clarification`,
-    so a random inbound message from a user outside a conversation
-    still results in bot silence. The message handler is added after
-    the command handlers so a `/find` command falls through to its
-    own `CommandHandler` first.
+    `filters.TEXT & ~filters.COMMAND` is what keeps the two kinds of update
+    from shadowing each other: PTB's `filters.COMMAND` matches any update
+    carrying a `BOT_COMMAND` entity regardless of whether a `CommandHandler`
+    claims it, so excluding it here keeps a command update routing to its own
+    `CommandHandler` only, never to this one. Exactly one `MessageHandler` is
+    registered — two would race PTB over the same non-command text — so
+    `handle_plain_text` owns every plain-text route: a registration answer, a
+    `/find` clarification answer, the register-first notice, or a fresh turn
+    through the agent loop. It is added after the command handlers so a
+    command update reaches its own `CommandHandler` first.
+
+    `.concurrent_updates(True)` raises PTB's own concurrency cap from its
+    default of 1 to 256 (`SimpleUpdateProcessor(256)`) — different senders'
+    updates now run fully concurrently. The one `PerUserQueue` built here and
+    passed into every `adapter_for(...)` call below is what makes that safe:
+    it is the only thing still serializing two updates from the *same* sender
+    against each other, now that PTB itself no longer does (ADR 0014).
     """
-    application: BotApplication = ApplicationBuilder().token(token).build()
+    application: BotApplication = ApplicationBuilder().token(token).concurrent_updates(True).build()
+    queue = PerUserQueue(config.queue.bound)
     for name, command in _HANDLERS.items():
-        application.add_handler(CommandHandler(name, adapter_for(command, config)))
+        application.add_handler(CommandHandler(name, adapter_for(command, config, queue)))
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, adapter_for(handle_message, config))
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND, adapter_for(handle_plain_text, config, queue)
+        )
     )
     return application
 

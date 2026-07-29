@@ -1,8 +1,11 @@
 """Pydantic v2 row models for the identity aggregate — `users` + `preferences`.
 
-Both fields match their columns in `planazo/storage/migrations/` 1:1, so a
-row is validated on the way in (AGENTS.md rule 1) and reconstructed on the
-way out. `id`/`created_at`/`updated_at` are `None` until the row exists.
+Both models' fields match their columns in `planazo/storage/migrations/` 1:1,
+so a row is validated on the way in (AGENTS.md rule 1) and reconstructed on
+the way out. `id`/`created_at`/`updated_at` are `None` until the row exists;
+the five registration fields (`age`, `location`, `language`, `nationality`,
+`pending_registration_field`) are `None` until the guided registration flow
+writes them.
 """
 
 from __future__ import annotations
@@ -12,6 +15,14 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
+ProfileField = Literal["display_name", "age", "location", "language", "nationality"]
+"""The `users` columns the guided registration flow can point at or write.
+
+Used by `UserRecord`'s own fields and by the repository functions
+(`set_pending_registration_field`, `record_registration_answer`) that move
+the `pending_registration_field` pointer or write an answer.
+"""
+
 
 class UserRecord(BaseModel):
     """One `users` row — the multi-user seam, keyed externally by Telegram id."""
@@ -20,6 +31,32 @@ class UserRecord(BaseModel):
     telegram_user_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     created_at: datetime | None = None
+    age: int | None = Field(default=None, ge=0)
+    location: str | None = Field(default=None, min_length=1, max_length=500)
+    language: str | None = Field(default=None, min_length=1, max_length=500)
+    nationality: str | None = Field(default=None, min_length=1, max_length=500)
+    pending_registration_field: ProfileField | None = None
+
+    @property
+    def profile_complete(self) -> bool:
+        """`True` iff `age`, `location`, `language`, and `nationality` are all set.
+
+        `display_name` is excluded deliberately (see ADR 0013): create-on-
+        first-contact always populates it before registration ever runs, so
+        it cannot distinguish a registered user from an unregistered one the
+        way the other four fields can.
+        """
+        return (
+            self.age is not None
+            and self.location is not None
+            and self.language is not None
+            and self.nationality is not None
+        )
+
+    @property
+    def is_mid_registration(self) -> bool:
+        """`True` iff a registration step is waiting on this user's next answer."""
+        return self.pending_registration_field is not None
 
 
 class PreferenceRecord(BaseModel):
