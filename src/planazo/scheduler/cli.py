@@ -80,6 +80,7 @@ from planazo.sources.config import (
 from planazo.sources.instagram.anon_client import AnonInstagramClient
 from planazo.sources.instagram.discovery import InstagramDiscoveryProtocol
 from planazo.sources.instagram.hiker_client import HikerClient
+from planazo.sources.instagram.narrative import NarrativeLogger
 from planazo.storage import db
 
 __all__ = ["main"]
@@ -214,6 +215,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "routed through its configured backend. An unconfigured account URL "
         "exits 2.",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Print a step-by-step narrative log to stdout during --once "
+        "extraction. Layered on top of the JSONL sidecar for demo use; "
+        "cron ticks should leave this off to preserve the one-line-per-URL "
+        "output shape. See ADR 0017.",
+    )
     return parser
 
 
@@ -271,7 +281,9 @@ def _find_configured_account(
     return None
 
 
-def _run_once(config: SourcesConfig, url: str, *, audit_log_path: Path) -> int:
+def _run_once(
+    config: SourcesConfig, url: str, *, audit_log_path: Path, verbose: bool = False
+) -> int:
     """Execute `--once <url>` end-to-end. Returns the CLI exit code.
 
     Post URLs (`/p/<shortcode>/`, `/reel/<shortcode>/`) route straight into
@@ -283,11 +295,21 @@ def _run_once(config: SourcesConfig, url: str, *, audit_log_path: Path) -> int:
     `EXIT_CONFIG` with a typed error line — the config is the source of truth
     for backend routing, and inventing a default backend here would create a
     routing ambiguity between the CLI and the tick service (Fork 5).
+
+    When ``verbose`` is `True`, a :class:`NarrativeLogger` is wired into
+    the extractor (`extract_once`'s `on_step` + `on_complete` seams) and
+    its `start()` line fires before the extraction begins. The JSONL
+    sidecar path is unchanged — narrative output is layered on top, not a
+    replacement. See ADR 0017.
     """
     extractor = _build_extractor()
 
     if is_instagram_post_url(url):
-        record = _run_once_post(url, extractor, audit_log_path)
+        narrative = NarrativeLogger(url=url) if verbose else None
+        if narrative is not None:
+            narrative.start()
+        run_extractor = _wrap_extractor_with_narrative(extractor, narrative)
+        record = _run_once_post(url, run_extractor, audit_log_path)
         _print_record(record)
         return EXIT_OK
 
@@ -298,15 +320,49 @@ def _run_once(config: SourcesConfig, url: str, *, audit_log_path: Path) -> int:
     account, source = match
 
     backends = _build_backends(config)
+    narrative = NarrativeLogger(url=account.url) if verbose else None
+    if narrative is not None:
+        narrative.start()
+    run_extractor = _wrap_extractor_with_narrative(extractor, narrative)
     record = _run_once_account(
         account=account,
         source=source,
         backends=backends,
-        extractor=extractor,
+        extractor=run_extractor,
         audit_log_path=audit_log_path,
     )
     _print_record(record)
     return EXIT_OK
+
+
+def _wrap_extractor_with_narrative(
+    extractor: ExtractorCallable, narrative: NarrativeLogger | None
+) -> ExtractorCallable:
+    """Return ``extractor`` unchanged, or wrapped to route through ``narrative``.
+
+    When ``narrative`` is `None` this is the identity — the JSONL sidecar
+    remains the only observer, cron output shape unchanged (ADR 0017
+    decision 1). When set, the wrapper calls the underlying `extract_once`
+    with `on_step=narrative` and `on_complete=narrative.complete`, so the
+    narrative observer sees every tool dispatch and the terminal
+    `LoopResult`. `_build_extractor()` returns `_default_extractor` today
+    — the wrapper bypasses that indirection by calling `extract_once`
+    directly (only route that carries the `on_step` seam). Tests that
+    monkeypatch `_build_extractor` and set `verbose=False` see the
+    identity path, keeping the existing seam intact.
+    """
+    if narrative is None:
+        return extractor
+
+    def _narrative_extractor(url: str, delegator_user_id: int) -> ExtractionResult:
+        return extract_once(
+            url,
+            delegator_user_id=delegator_user_id,
+            on_step=narrative,
+            on_complete=narrative.complete,
+        )
+
+    return _narrative_extractor
 
 
 def _run_once_post(
@@ -451,7 +507,9 @@ def _dispatch(args: argparse.Namespace, *, audit_log_path: Path) -> Callable[[],
     def _once() -> int:
         config = _load_config_for_cli()
         assert args.once is not None
-        return _run_once(config, args.once, audit_log_path=audit_log_path)
+        return _run_once(
+            config, args.once, audit_log_path=audit_log_path, verbose=bool(args.verbose)
+        )
 
     return _once
 
