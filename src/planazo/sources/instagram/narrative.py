@@ -144,13 +144,17 @@ class NarrativeLogger:
     def __call__(self, record: StepRecord) -> None:
         """Format one step and print it. Swallows any exception.
 
+        Every line is prefixed with `Step {n}` derived from
+        `record.step` so the operator sees the LLM loop's rhythm and
+        remaining budget (`MAX_STEPS` in `agents/extractor.py`).
+
         Dispatches on `record.tool`:
-        - `fetch_instagram_post` → `[HH:MM:SS] Fetched post — <n> media asset(s)`
+        - `fetch_instagram_post` → `[HH:MM:SS] Step N: Fetched post — <n> media asset(s)`
           derived from the count of `media` in the tool result.
-        - `save_event` → `[HH:MM:SS] Saved event at index <i> - category=<c>, confidence=<s>`
+        - `save_event` → `[HH:MM:SS] Step N: Saved event at index <i> - category=<c>, ...`
           derived from `record.arguments` (LLM-supplied structural fields
           only — no `title`, no `description`).
-        - `report_extraction_status` → `[HH:MM:SS] Reported <status>: <error_type>`
+        - `report_extraction_status` → `[HH:MM:SS] Step N: Reported <status>: <error_type>`
           derived from Literal-typed argument fields.
         - Anything else (including `fetch_reel_frames` if a future
           refactor lifts frame extraction into a tool) is silently
@@ -173,6 +177,20 @@ class NarrativeLogger:
         except Exception as exc:
             logger.warning("narrative_logger step failed: %s", exc)
 
+    def on_multimodal_send(self, *, count: int, kind: str) -> None:
+        """Emit `Sending N <kind> to LLM for analysis...`.
+
+        Called by the multimodal hook right before it hands slides/frames
+        to the LLM — signals to the operator that the run is now waiting
+        on the model, not stalled. `kind` is one of the Literal values
+        the hook decides between: ``"carousel slides"``, ``"reel frames"``,
+        ``"image"``, ``"thumbnail"``. Best-effort.
+        """
+        try:
+            self._emit(f"Sending {count} {kind} to LLM for analysis (this may take ~20-40s)...")
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("narrative_logger multimodal_send failed: %s", exc)
+
     def complete(self, loop_result: LoopResult) -> None:
         """Print the terminal line: `[HH:MM:SS] Loop terminated: stopped=<s>, steps=<n>`.
 
@@ -192,18 +210,35 @@ class NarrativeLogger:
 
     def _emit_fetch(self, record: StepRecord) -> None:
         result = record.result
+        step = record.step
         if isinstance(result, dict) and "error_type" in result:
             # Typed adapter error — Literal-valued `error_type`, safe to print.
             # `message` is NOT printed — it could carry an upstream body.
             error_type = result.get("error_type", "unknown")
-            self._emit(f"Fetch failed: error_type={error_type}")
+            self._emit(f"Step {step}: Fetch failed - error_type={error_type}")
             return
         media_count = 0
+        image_count = 0
+        video_count = 0
+        thumb_count = 0
         if isinstance(result, dict):
             media = result.get("media")
             if isinstance(media, list):
                 media_count = len(media)
-        self._emit(f"Fetched post - {media_count} media asset(s)")
+                for asset in media:
+                    if not isinstance(asset, dict):
+                        continue
+                    kind = asset.get("kind")
+                    if kind == "image":
+                        image_count += 1
+                    elif kind == "video":
+                        video_count += 1
+                    elif kind == "thumbnail":
+                        thumb_count += 1
+        self._emit(
+            f"Step {step}: Fetched post - {media_count} media asset(s) "
+            f"({image_count} image, {video_count} video, {thumb_count} thumbnail)"
+        )
 
     def _emit_save(self, record: StepRecord) -> None:
         args: dict[str, Any] = record.arguments or {}
@@ -212,6 +247,7 @@ class NarrativeLogger:
         event_index = args.get("event_index_in_post", 0)
         category = args.get("category", "(none)")
         confidence = args.get("confidence", 0.0)
+        step = record.step
         # Rule 2: mypy narrows here but we defensively coerce to safe primitives
         # rather than trust the arg dict — an odd float returns as-is via !r.
         try:
@@ -223,10 +259,10 @@ class NarrativeLogger:
         result = record.result
         if isinstance(result, dict) and "error_type" in result:
             error_type = result.get("error_type", "unknown")
-            self._emit(f"Save failed at index {event_index}: error_type={error_type}")
+            self._emit(f"Step {step}: Save failed at index {event_index} - error_type={error_type}")
             return
         self._emit(
-            f"Saved event at index {event_index} - "
+            f"Step {step}: Saved event at index {event_index} - "
             f"category={category}, confidence={confidence_repr}"
         )
 
@@ -235,7 +271,8 @@ class NarrativeLogger:
         # `status` and `error_type` are Literal-valued; `notes` is NOT printed.
         status = args.get("status", "(unknown)")
         error_type = args.get("error_type", "(unknown)")
-        self._emit(f"Reported {status}: {error_type}")
+        step = record.step
+        self._emit(f"Step {step}: Reported {status} - {error_type}")
 
     # ------------------------------------------------------------------
     # Low-level emit + timestamp — one seam so tests can pin a clock.

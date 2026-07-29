@@ -448,6 +448,7 @@ def _wrap_extractor_with_narrative(
             "delegator_user_id": delegator_user_id,
             "on_step": narrative,
             "on_complete": narrative.complete,
+            "on_multimodal_send": narrative.on_multimodal_send,
         }
         if profile is not None:
             kwargs["profile"] = profile

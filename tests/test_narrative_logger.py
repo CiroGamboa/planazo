@@ -186,7 +186,7 @@ def test_save_event_step_prints_structural_fields_only() -> None:
 
     output = stream.getvalue()
     assert hostile not in output
-    assert _bodies(output) == ["Saved event at index 1 - category=music, confidence=0.87"]
+    assert _bodies(output) == ["Step 2: Saved event at index 1 - category=music, confidence=0.87"]
 
 
 def test_report_extraction_status_step_prints_status_and_error_type() -> None:
@@ -219,7 +219,7 @@ def test_report_extraction_status_step_prints_status_and_error_type() -> None:
 
     output = stream.getvalue()
     assert hostile_notes not in output
-    assert _bodies(output) == ["Reported needs_clarification: missing_date"]
+    assert _bodies(output) == ["Step 3: Reported needs_clarification - missing_date"]
 
 
 def test_fetch_instagram_post_step_prints_media_count() -> None:
@@ -253,7 +253,9 @@ def test_fetch_instagram_post_step_prints_media_count() -> None:
 
     output = stream.getvalue()
     assert hostile_caption not in output
-    assert _bodies(output) == ["Fetched post - 3 media asset(s)"]
+    assert _bodies(output) == [
+        "Step 1: Fetched post - 3 media asset(s) (3 image, 0 video, 0 thumbnail)"
+    ]
 
 
 def test_fetch_instagram_post_step_prints_error_type_on_failure_dict() -> None:
@@ -275,7 +277,7 @@ def test_fetch_instagram_post_step_prints_error_type_on_failure_dict() -> None:
 
     output = stream.getvalue()
     assert "caption bytes" not in output
-    assert _bodies(output) == ["Fetch failed: error_type=not_found"]
+    assert _bodies(output) == ["Step 1: Fetch failed - error_type=not_found"]
 
 
 def test_save_event_failure_branch_prints_error_type_only() -> None:
@@ -300,7 +302,9 @@ def test_save_event_failure_branch_prints_error_type_only() -> None:
         )
     )
 
-    assert _bodies(stream.getvalue()) == ["Save failed at index 0: error_type=duplicate_event"]
+    assert _bodies(stream.getvalue()) == [
+        "Step 2: Save failed at index 0 - error_type=duplicate_event"
+    ]
 
 
 # ---- best-effort discipline -----------------------------------------------
@@ -384,8 +388,8 @@ def test_multiple_steps_produce_lines_in_order() -> None:
     bodies = _bodies(stream.getvalue())
     assert bodies == [
         f"Fetching post {SHORTCODE} from Instagram...",
-        "Fetched post - 1 media asset(s)",
-        "Saved event at index 0 - category=tech, confidence=0.71",
+        "Step 1: Fetched post - 1 media asset(s) (1 image, 0 video, 0 thumbnail)",
+        "Step 2: Saved event at index 0 - category=tech, confidence=0.71",
         "Loop terminated: stopped=answered, steps=3",
     ]
     # Rule 2 regression: no LLM-supplied `title`/`caption` bytes made it through.
@@ -411,3 +415,28 @@ def test_complete_prints_stopped_and_steps_literals_only() -> None:
     output = stream.getvalue()
     assert "LLM ANSWER FRAGMENT" not in output
     assert _bodies(output) == ["Loop terminated: stopped=max_steps, steps=7"]
+
+
+# ---- on_multimodal_send ---------------------------------------------------
+
+
+def test_on_multimodal_send_prints_count_and_kind() -> None:
+    """`on_multimodal_send(count=5, kind='carousel slides')` prints the
+    'waiting on LLM' line — the signal that separates the fetch from the
+    save/report while the model is analyzing images."""
+    logger, stream = _stream_logger()
+
+    logger.on_multimodal_send(count=5, kind="carousel slides")
+
+    bodies = _bodies(stream.getvalue())
+    assert len(bodies) == 1
+    assert bodies[0].startswith("Sending 5 carousel slides to LLM for analysis")
+
+
+def test_on_multimodal_send_reel_frames_variant() -> None:
+    logger, stream = _stream_logger()
+
+    logger.on_multimodal_send(count=3, kind="reel frames")
+
+    bodies = _bodies(stream.getvalue())
+    assert bodies[0].startswith("Sending 3 reel frames to LLM for analysis")
