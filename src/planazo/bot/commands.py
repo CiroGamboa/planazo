@@ -178,7 +178,13 @@ async def handle_me(
     preferences = get_preferences(conn, user_id)
     if preferences.error_type is not None:
         await surface.reply(
-            MESSAGES["me_preferences_unavailable"].format(user_id=user_id, handle=handle)
+            resolve(
+                config,
+                "me_preferences_unavailable",
+                locale,
+                user_id=user_id,
+                handle=handle,
+            )
         )
         return
     await surface.reply(
