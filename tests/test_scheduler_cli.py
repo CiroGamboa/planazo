@@ -547,3 +547,133 @@ def test_is_instagram_post_url_matches_p_and_reel_shapes(
     assert is_instagram_post_url(REEL_URL) is True
     assert is_instagram_post_url(ACCOUNT_URL) is False
     assert is_instagram_post_url("not-a-url") is False
+
+
+# ---- --scan-account -------------------------------------------------------
+#
+# `_run_scan_account` builds its own backend directly (`AnonInstagramClient()`
+# or `HikerClient.from_env()`) instead of routing through `_build_backends`.
+# Tests monkeypatch those module-level names to inject `_ScriptedBackend` stubs.
+
+
+def _install_scan_backends(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    anonymous: InstagramDiscoveryProtocol | None = None,
+    hikerapi_from_env: Any = None,
+) -> None:
+    """Replace the two direct-import backend constructors used by `--scan-account`."""
+    if anonymous is not None:
+        monkeypatch.setattr(scheduler_cli, "AnonInstagramClient", lambda: anonymous)
+    if hikerapi_from_env is not None:
+        monkeypatch.setattr(
+            scheduler_cli.HikerClient, "from_env", classmethod(lambda cls: hikerapi_from_env)
+        )
+
+
+def test_scan_account_defaults_use_anonymous_backend_and_limit_12(
+    monkeypatch: pytest.MonkeyPatch, tmp_db: Path, audit_log_path: Path
+) -> None:
+    """`--scan-account URL` without other flags uses anonymous + limit 12."""
+    anon = _ScriptedBackend(urls=[POST_URL])
+    _install_scan_backends(monkeypatch, anonymous=anon)
+    _install_extractor(monkeypatch, _CountingExtractor())
+
+    assert scheduler_cli.main(["--scan-account", ACCOUNT_URL]) == 0
+    assert anon.calls == [(ACCOUNT_URL, 12)]
+
+
+def test_scan_account_respects_explicit_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_db: Path, audit_log_path: Path
+) -> None:
+    """`--scan-account URL --limit 3` caps discovery at 3."""
+    anon = _ScriptedBackend(urls=[POST_URL])
+    _install_scan_backends(monkeypatch, anonymous=anon)
+    _install_extractor(monkeypatch, _CountingExtractor())
+
+    assert scheduler_cli.main(["--scan-account", ACCOUNT_URL, "--limit", "3"]) == 0
+    assert anon.calls == [(ACCOUNT_URL, 3)]
+
+
+def test_scan_account_with_hikerapi_backend_calls_from_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_db: Path, audit_log_path: Path
+) -> None:
+    """`--backend hikerapi` builds the backend via `HikerClient.from_env()`."""
+    hiker = _ScriptedBackend(urls=[POST_URL])
+    _install_scan_backends(monkeypatch, hikerapi_from_env=hiker)
+    _install_extractor(monkeypatch, _CountingExtractor())
+
+    assert (
+        scheduler_cli.main(["--scan-account", ACCOUNT_URL, "--backend", "hikerapi", "--limit", "7"])
+        == 0
+    )
+    assert hiker.calls == [(ACCOUNT_URL, 7)]
+
+
+def test_scan_account_hikerapi_missing_env_exits_config_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_db: Path,
+    audit_log_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--backend hikerapi` with an empty key pool exits `EXIT_CONFIG`."""
+
+    def _boom() -> Any:
+        raise RuntimeError("no PLANAZO_IG_HIKER_API_KEY_* set")
+
+    monkeypatch.setattr(scheduler_cli.HikerClient, "from_env", classmethod(lambda cls: _boom()))
+    _install_extractor(monkeypatch, _CountingExtractor())
+
+    assert scheduler_cli.main(["--scan-account", ACCOUNT_URL, "--backend", "hikerapi"]) == 2
+    err = capsys.readouterr().err
+    assert "no PLANAZO_IG_HIKER_API_KEY_" in err
+
+
+@pytest.mark.parametrize("bad_limit", ["0", "51", "-1"])
+def test_scan_account_limit_out_of_range_argparse_error(bad_limit: str) -> None:
+    """`--limit` outside [1, 50] exits non-zero from argparse."""
+    with pytest.raises(SystemExit) as info:
+        scheduler_cli.main(["--scan-account", ACCOUNT_URL, "--limit", bad_limit])
+    assert info.value.code != 0
+
+
+def test_limit_without_scan_account_is_argparse_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_db: Path, audit_log_path: Path
+) -> None:
+    """`--tick --limit 3` is refused by the guard added in `main`."""
+    config = _config_with(_source_config(posts=[PostConfig(url=POST_URL)]))
+    _install_config(monkeypatch, config)
+    _install_backends(monkeypatch)
+    _install_extractor(monkeypatch, _CountingExtractor())
+
+    with pytest.raises(SystemExit) as info:
+        scheduler_cli.main(["--tick", "--limit", "3"])
+    assert info.value.code != 0
+
+
+def test_backend_without_scan_account_is_argparse_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_db: Path, audit_log_path: Path
+) -> None:
+    """`--once <post-url> --backend hikerapi` is refused."""
+    config = _config_with(_source_config(posts=[PostConfig(url=POST_URL)]))
+    _install_config(monkeypatch, config)
+    _install_backends(monkeypatch)
+    _install_extractor(monkeypatch, _CountingExtractor())
+
+    with pytest.raises(SystemExit) as info:
+        scheduler_cli.main(["--once", POST_URL, "--backend", "hikerapi"])
+    assert info.value.code != 0
+
+
+def test_scan_account_is_mutually_exclusive_with_tick() -> None:
+    """`--tick --scan-account URL` is refused by argparse's mutex group."""
+    with pytest.raises(SystemExit) as info:
+        scheduler_cli.main(["--tick", "--scan-account", ACCOUNT_URL])
+    assert info.value.code != 0
+
+
+def test_scan_account_is_mutually_exclusive_with_once() -> None:
+    """`--once URL --scan-account URL` is refused by argparse's mutex group."""
+    with pytest.raises(SystemExit) as info:
+        scheduler_cli.main(["--once", POST_URL, "--scan-account", ACCOUNT_URL])
+    assert info.value.code != 0

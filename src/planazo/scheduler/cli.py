@@ -1,6 +1,6 @@
 """`planazo-scheduler` — host-cron entry point for scheduled ingestion.
 
-Two subcommands, mutually exclusive:
+Three subcommands, mutually exclusive:
 
 - `--tick` — run one tick over `data/sources.yaml`. Wires the real
   `AnonInstagramClient` + `HikerClient.from_env()` + `extract_once`, opens
@@ -13,6 +13,12 @@ Two subcommands, mutually exclusive:
   URL is looked up in `sources.yaml` and routed through the same backend
   the tick would use; an unconfigured account URL exits `2` with a typed
   `{"error_type": "unconfigured_account", ...}` line to stdout.
+- `--scan-account <account-url>` — ad-hoc single-account scan without a
+  `data/sources.yaml` edit. Constructs an ephemeral `AccountConfig`, uses
+  `--limit N` (default `12`, min `1`, max `50`) for the discovery cap, and
+  routes through `--backend {anonymous,hikerapi}` (default `anonymous`;
+  `hikerapi` requires the same env vars `--tick`'s hikerapi path expects).
+  Bypasses the cadence gate. Meant for demos and one-off scans.
 
 Exit-code taxonomy (fork 5 + M7 of the plan)
 --------------------------------------------
@@ -72,6 +78,7 @@ from planazo.scheduler.service import (
 )
 from planazo.sources.config import (
     AccountConfig,
+    MediaTypeFlags,
     SourceConfig,
     SourcesConfig,
     is_instagram_post_url,
@@ -215,14 +222,36 @@ def _build_parser() -> argparse.ArgumentParser:
         "routed through its configured backend. An unconfigured account URL "
         "exits 2.",
     )
+    group.add_argument(
+        "--scan-account",
+        metavar="URL",
+        dest="scan_account",
+        help="Ad-hoc scan of one Instagram account URL without editing "
+        "data/sources.yaml. Combine with --limit and --backend. Exits 2 on "
+        "backend/env misconfiguration.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Only with --scan-account: cap on the number of recent posts to "
+        "discover. Integer in [1, 50]. Default 12.",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["anonymous", "hikerapi"],
+        default=None,
+        help="Only with --scan-account: discovery backend. Default 'anonymous'. "
+        "'hikerapi' requires the PLANAZO_IG_HIKER_API_KEY_* env vars.",
+    )
     parser.add_argument(
         "--verbose",
         action="store_true",
         default=False,
-        help="Print a step-by-step narrative log to stdout during --once "
-        "extraction. Layered on top of the JSONL sidecar for demo use; "
-        "cron ticks should leave this off to preserve the one-line-per-URL "
-        "output shape. See ADR 0017.",
+        help="Print a step-by-step narrative log to stdout during --once or "
+        "--scan-account extraction. Layered on top of the JSONL sidecar for "
+        "demo use; cron ticks should leave this off to preserve the "
+        "one-line-per-URL output shape. See ADR 0017.",
     )
     return parser
 
@@ -406,8 +435,14 @@ def _run_once_account(
     backends: dict[Literal["anonymous", "hikerapi"], InstagramDiscoveryProtocol],
     extractor: ExtractorCallable,
     audit_log_path: Path,
+    discovery_limit: int | None = None,
 ) -> SchedulerRunRecord:
-    """Diagnostic single-account invocation of `_process_source_url`."""
+    """Diagnostic single-account invocation of `_process_source_url`.
+
+    ``discovery_limit`` overrides `DISCOVERY_LIMIT` when set; used by
+    `--scan-account --limit N`. `--once <account-url>` passes `None` so
+    the tick default (12) applies.
+    """
     conn = _conn_factory()
     try:
         system_user = bootstrap_system_user(conn)
@@ -425,9 +460,70 @@ def _run_once_account(
             audit_log_path=audit_log_path,
             system_user_id=system_user.id,
             bypass_cadence_gate=True,
+            discovery_limit=discovery_limit,
         )
     finally:
         conn.close()
+
+
+_SCAN_ACCOUNT_LIMIT_MIN: Final[int] = 1
+_SCAN_ACCOUNT_LIMIT_MAX: Final[int] = 50
+
+
+def _run_scan_account(
+    *,
+    account_url: str,
+    limit: int,
+    backend: Literal["anonymous", "hikerapi"],
+    audit_log_path: Path,
+    verbose: bool,
+) -> int:
+    """Execute `--scan-account <url> --limit N --backend <b>` end-to-end.
+
+    Constructs an ephemeral `AccountConfig` + `SourceConfig` (mirroring the
+    shape `_run_once_account` expects), builds only the requested backend,
+    and threads `limit` through `_process_source_url.discovery_limit` so the
+    HikerAPI/anonymous client caps `list_recent_posts` at the operator's
+    number. Bypasses the cadence gate the same way `--once` does. Same
+    `SchedulerRunRecord` audit-log line the tick emits.
+
+    `hikerapi` backend requires the same env vars `--tick` reads: if none
+    are set, `HikerClient.from_env()` raises `RuntimeError` and we exit
+    `EXIT_CONFIG` with a typed stderr line — matching the discipline for
+    a mis-configured `--tick`.
+    """
+    ephemeral_source = SourceConfig(
+        default_cadence=_ZERO_CADENCE,
+        default_media_types=MediaTypeFlags(),
+    )
+    ephemeral_account = AccountConfig(url=account_url, backend=backend)
+
+    backends: dict[Literal["anonymous", "hikerapi"], InstagramDiscoveryProtocol]
+    if backend == "hikerapi":
+        try:
+            backends = {"hikerapi": HikerClient.from_env()}
+        except RuntimeError as exc:
+            _print_config_error(exc)
+            return EXIT_CONFIG
+    else:
+        backends = {"anonymous": AnonInstagramClient()}
+
+    extractor = _build_extractor()
+    narrative = NarrativeLogger(url=account_url) if verbose else None
+    if narrative is not None:
+        narrative.start()
+    run_extractor = _wrap_extractor_with_narrative(extractor, narrative)
+
+    record = _run_once_account(
+        account=ephemeral_account,
+        source=ephemeral_source,
+        backends=backends,
+        extractor=run_extractor,
+        audit_log_path=audit_log_path,
+        discovery_limit=limit,
+    )
+    _print_record(record)
+    return EXIT_OK
 
 
 # -----------------------------------------------------------------------------
@@ -504,6 +600,19 @@ def _dispatch(args: argparse.Namespace, *, audit_log_path: Path) -> Callable[[],
 
         return _tick
 
+    if args.scan_account is not None:
+
+        def _scan() -> int:
+            return _run_scan_account(
+                account_url=args.scan_account,
+                limit=args.limit if args.limit is not None else 12,
+                backend=args.backend if args.backend is not None else "anonymous",
+                audit_log_path=audit_log_path,
+                verbose=bool(args.verbose),
+            )
+
+        return _scan
+
     def _once() -> int:
         config = _load_config_for_cli()
         assert args.once is not None
@@ -522,6 +631,25 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    # `--limit` and `--backend` only pair with `--scan-account`. argparse cannot
+    # express this natively — enforce it after parsing so the operator gets a
+    # clear message rather than a silent no-op default. Both flags default to
+    # `None`; only-with-scan-account is detected by `args.<flag> is not None`
+    # (works for `--limit 5` and `--limit=5` alike).
+    if args.scan_account is None:
+        if args.limit is not None:
+            parser.error("--limit is only valid with --scan-account")
+        if args.backend is not None:
+            parser.error("--backend is only valid with --scan-account")
+    else:
+        if args.limit is not None and not (
+            _SCAN_ACCOUNT_LIMIT_MIN <= args.limit <= _SCAN_ACCOUNT_LIMIT_MAX
+        ):
+            parser.error(
+                f"--limit must be in [{_SCAN_ACCOUNT_LIMIT_MIN}, {_SCAN_ACCOUNT_LIMIT_MAX}]; "
+                f"got {args.limit}"
+            )
 
     audit_log_path = DEFAULT_AUDIT_LOG_PATH
     runner = _dispatch(args, audit_log_path=audit_log_path)
