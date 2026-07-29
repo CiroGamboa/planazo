@@ -62,6 +62,10 @@ class Event(BaseModel):
     image_url: str | None = None
     language: str | None = None
     recurring: bool = False
+    # Soft-delete column added by migration 008. `None` means the event is
+    # live and reachable by the Recommender; a non-NULL timestamp means the
+    # curator archived it. See ADR 0020.
+    archived_at: datetime | None = None
 
     @model_validator(mode="after")
     def _coordinates_are_a_complete_pair(self) -> Event:
