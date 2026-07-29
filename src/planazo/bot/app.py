@@ -8,11 +8,12 @@ imports `telegram`. It owns three things: building the `Application` with one
 `adapter_for` is the seam. It turns any PTB-free command coroutine into a PTB
 callback, so a new command is registered by naming its coroutine rather than
 by writing transport code again. The same seam wraps the one `MessageHandler`
-in the tree: `bot/chat.py`'s three-way dispatch over every non-command text
-update — an in-flight registration answer, a register-first notice, or a
-turn through the agent loop.
+in the tree: `bot/chat.py`'s four-way dispatch over every non-command text
+update — an in-flight registration answer, an answer to a pending `/find`
+clarification, a register-first notice, or a fresh turn through the agent
+loop.
 
-Every one of those six dispatches runs through one shared
+Every one of those seven dispatches runs through one shared
 `planazo.bot.queue.PerUserQueue`, keyed by `telegram_user_id` (ADR 0014): two
 messages from the same sender never run concurrently, while
 `build_application`'s `concurrent_updates=True` lets different senders' turns
@@ -39,7 +40,13 @@ from telegram.ext import (
 )
 
 from planazo.bot.chat import handle_plain_text
-from planazo.bot.commands import handle_help, handle_me, handle_prefs, handle_start
+from planazo.bot.commands import (
+    handle_find,
+    handle_help,
+    handle_me,
+    handle_prefs,
+    handle_start,
+)
 from planazo.bot.config import BotConfig, load_config, resolve
 from planazo.bot.models import IncomingMessage
 from planazo.bot.queue import DispatchOutcome, PerUserQueue
@@ -80,6 +87,7 @@ _HANDLERS: Final[Mapping[str, BotCommand]] = {
     "me": handle_me,
     "prefs": handle_prefs,
     "register": handle_register,
+    "find": handle_find,
 }
 
 
@@ -172,13 +180,18 @@ def adapter_for(
 
 def build_application(token: str, config: BotConfig) -> BotApplication:
     """Build the `Application` with one `CommandHandler` per command, plus one
-    `MessageHandler` wrapping `bot/chat.py`'s three-way plain-text dispatch.
+    `MessageHandler` wrapping `bot/chat.py`'s four-way plain-text dispatch.
 
     `filters.TEXT & ~filters.COMMAND` is what keeps the two kinds of update
     from shadowing each other: PTB's `filters.COMMAND` matches any update
     carrying a `BOT_COMMAND` entity regardless of whether a `CommandHandler`
     claims it, so excluding it here keeps a command update routing to its own
-    `CommandHandler` only, never to this one.
+    `CommandHandler` only, never to this one. Exactly one `MessageHandler` is
+    registered — two would race PTB over the same non-command text — so
+    `handle_plain_text` owns every plain-text route: a registration answer, a
+    `/find` clarification answer, the register-first notice, or a fresh turn
+    through the agent loop. It is added after the command handlers so a
+    command update reaches its own `CommandHandler` first.
 
     `.concurrent_updates(True)` raises PTB's own concurrency cap from its
     default of 1 to 256 (`SimpleUpdateProcessor(256)`) — different senders'

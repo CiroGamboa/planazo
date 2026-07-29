@@ -85,7 +85,7 @@ class RegistrationStep(BaseModel):
     """The identity field this step fills. Not cross-checked against any
     persisted schema here: a step naming a field `identity.models.ProfileField`
     does not know is caught in `bot/registration.py`, where the steps are
-    consumed, not at load time (`docs/adr/0013-registration-conversation-state.md`).
+    consumed, not at load time (`docs/adr/0018-registration-conversation-state.md`).
     This is a deliberate, permanent property of the loader — not a placeholder —
     so a step naming a field nothing downstream maps yet still loads."""
 

@@ -6,6 +6,7 @@ messages:
   cmd_me: {en: "show your account and how many preferences you have stored", es: "muestra tu cuenta y cuántas preferencias tienes guardadas"}
   cmd_prefs: {en: "view, set, or remove your preferences", es: "consulta, guarda o elimina tus preferencias"}
   cmd_register: {en: "start or continue your registration", es: "empieza o continúa tu registro"}
+  cmd_find: {en: "find events matching a free-text query, with multi-turn clarification", es: "busca eventos que coincidan con una consulta libre, con aclaración multi-turno"}
   command_line: {en: "{command} — {description}", es: "{command} — {description}"}
   start: {en: "Hi {display_name}! You are all set. Here is what I can do:\n\n{commands}", es: "¡Hola {display_name}! Ya estás listo. Esto es lo que puedo hacer:\n\n{commands}"}
   help: {en: "Here is what I can do:\n\n{commands}", es: "Esto es lo que puedo hacer:\n\n{commands}"}
@@ -23,7 +24,19 @@ messages:
   prefs_rejected: {en: "I did not save that:\n{reasons}", es: "No he guardado eso:\n{reasons}"}
   prefs_violation: {en: "{field}: {problem}", es: "{field}: {problem}"}
   prefs_read_error: {en: "I could not read your stored preferences safely, so none are shown. Try setting the value again.", es: "No he podido leer tus preferencias guardadas de forma segura, así que no se muestra ninguna. Intenta guardar el valor de nuevo."}
+  me_preferences_unavailable: {en: "Preferences could not be loaded (user_id={user_id}, handle={handle}). Please try again later.", es: "No se pudieron cargar tus preferencias (user_id={user_id}, handle={handle}). Inténtalo más tarde."}
   edited_command: {en: "I do not re-run an edited command: it would replay the old command against what is stored now, which can undo a later change. Send it again as a new message.", es: "No vuelvo a ejecutar un comando editado: repetiría el comando antiguo sobre lo que hay guardado ahora, lo que podría deshacer un cambio posterior. Envíalo de nuevo como un mensaje nuevo."}
+  find_usage: {en: "Send /find followed by what you are looking for. Example: /find music this weekend.", es: "Envía /find seguido de lo que buscas. Por ejemplo: /find música este fin de semana."}
+  find_recommendations: {en: "Here are events I found:\n\n{lines}", es: "Estos son los eventos que encontré:\n\n{lines}"}
+  find_recommendation_line: {en: "{n}. {title}\n   {when} · {venue} · {category} · {price}", es: "{n}. {title}\n   {when} · {venue} · {category} · {price}"}
+  find_recommendation_venue_missing: {en: "venue TBA", es: "lugar por confirmar"}
+  find_recommendation_price_free: {en: "free", es: "gratis"}
+  find_recommendation_price_eur: {en: "{amount} EUR", es: "{amount} EUR"}
+  find_clarification: {en: "{question}\n\nJust reply with your answer.", es: "{question}\n\nSolo responde con tu respuesta."}
+  find_detail: {en: "Details for event #{n}:\n\n{summary}", es: "Detalles del evento #{n}:\n\n{summary}"}
+  find_no_results: {en: "{message}", es: "{message}"}
+  find_no_results_default: {en: "No matching events found. Try broadening the query.", es: "No se han encontrado eventos. Prueba a ampliar la búsqueda."}
+  find_error: {en: "Sorry, something went wrong ({error_type}). Try again in a moment.", es: "Lo siento, algo salió mal ({error_type}). Prueba de nuevo en un momento."}
   register_display_name: {en: "What name should I use for you?", es: "¿Qué nombre quieres que use para ti?"}
   register_age: {en: "How old are you?", es: "¿Cuántos años tienes?"}
   register_location: {en: "Which city or neighbourhood are you in?", es: "¿En qué ciudad o barrio estás?"}

@@ -1,522 +1,217 @@
-import json
-from collections.abc import Callable, Iterator
-from pathlib import Path
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import openai
 import pytest
 
-from agentlib.core import CHEAP, MODELS, STRONG, Result
-from planazo.agents import cli, event_agent, loop
-from planazo.agents.loop import LoopResult
-from planazo.interfaces.runtime import LoopResult as RuntimeLoopResult
+from agentlib.core import CHEAP, STRONG
+from planazo.agents import cli
+from planazo.agents.event_agent import RecommenderResult
+from planazo.query.models import SearchIntent
 
 
-def make_result(**overrides: object) -> Result:
-    defaults: dict[str, object] = {
-        "text": "ok",
-        "model": CHEAP,
-        "status": "completed",
-        "stop_reason": None,
-        "truncated": False,
-        "input_tokens": 13,
-        "cached_tokens": 0,
-        "output_tokens": 5,
-        "reasoning_tokens": 0,
-        "cost_usd": 0.000009,
-        "reasoning_summary": None,
+def _intent() -> SearchIntent:
+    return SearchIntent(
+        start_utc=datetime(2026, 8, 1, tzinfo=UTC),
+        end_utc=datetime(2026, 8, 2, tzinfo=UTC),
+        city="Barcelona",
+    )
+
+
+def _result(**overrides: object) -> RecommenderResult:
+    values: dict[str, object] = {
+        "status": "no_results",
+        "answer": "Nothing matched.",
+        "stopped": "answered",
+        "steps": 1,
     }
-    defaults.update(overrides)
-    return Result(**defaults)  # type: ignore[arg-type]
+    values.update(overrides)
+    return RecommenderResult(**values)  # type: ignore[arg-type]
 
 
 @pytest.fixture(autouse=True)
-def _set_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A present key lets main() pass its pre-call check and reach the mocked
-    # LLM; the missing-key test deletes it explicitly.
+def configured_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENCODE_API_KEY", "test-key")
 
 
-def _tool_call_turns() -> tuple[Result, Result]:
-    """A tool-calling turn (save_event_candidate) followed by an answering turn."""
-    tool_call = {
-        "name": "save_event_candidate",
-        "arguments": {
-            "event_id": "evt-1",
-            "title": "AI Meetup",
-            "category": "tech",
-            "source": "meetup",
-            "start_time": "2026-08-01T19:00:00",
-            "location": "Barcelona",
-            "confidence": 0.9,
-        },
-        "call_id": "call_1",
-    }
-    output_item = {
-        "type": "function_call",
-        "name": "save_event_candidate",
-        "arguments": json.dumps(tool_call["arguments"]),
-        "call_id": "call_1",
-    }
-    turn_1 = make_result(text="", tool_calls=[tool_call], output_items=[output_item])
-    turn_2 = make_result(text="done", tool_calls=[], output_items=[])
-    return turn_1, turn_2
-
-
-def _confirm_tool_call_turns() -> tuple[Result, Result]:
-    """A tool-calling turn (confirm_and_create_calendar_event) followed by an answer."""
-    tool_call = {
-        "name": "confirm_and_create_calendar_event",
-        "arguments": {"event_id": "evt-1", "notify_invitees": "none"},
-        "call_id": "call_1",
-    }
-    output_item = {
-        "type": "function_call",
-        "name": "confirm_and_create_calendar_event",
-        "arguments": json.dumps(tool_call["arguments"]),
-        "call_id": "call_1",
-    }
-    turn_1 = make_result(text="", tool_calls=[tool_call], output_items=[output_item])
-    turn_2 = make_result(text="done", tool_calls=[], output_items=[])
-    return turn_1, turn_2
-
-
-def _redirect_stores(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    # Run the REAL tools (only loop.call is mocked); just steer their JSON
-    # into tmp files so the suite never writes into the repo's var/.
-    candidates_path = tmp_path / "candidates.json"
-    calendar_path = tmp_path / "calendar_events.json"
-    monkeypatch.setattr("tools.tools.CANDIDATES_PATH", candidates_path)
-    monkeypatch.setattr("tools.tools.CALENDAR_EVENTS_PATH", calendar_path)
-    return calendar_path
-
-
-def _seed_candidate(candidates_path: Path) -> None:
-    """Pre-seed a saved candidate so confirm_and_create_calendar_event can find it."""
-    candidates_path.parent.mkdir(parents=True, exist_ok=True)
-    candidates_path.write_text(
-        json.dumps(
-            [
-                {
-                    "id": 1,
-                    "event_id": "evt-1",
-                    "title": "AI Meetup",
-                    "category": "tech",
-                    "source": "meetup",
-                    "start_time": "2026-08-01T19:00:00",
-                    "location": "Barcelona",
-                    "confidence": 0.9,
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-
-def _fake_input(lines: list[str]) -> Callable[[str], str]:
-    iterator: Iterator[str] = iter(lines)
-
-    def _read(_prompt: str = "") -> str:
-        try:
-            return next(iterator)
-        except StopIteration as exc:
-            raise EOFError from exc
-
-    return _read
-
-
-def test_one_shot_prints_the_tool_trace_the_answer_and_the_tally(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
-    turn_1, turn_2 = _tool_call_turns()
-    monkeypatch.setattr(loop, "call", MagicMock(side_effect=[turn_1, turn_2]))
-    _redirect_stores(monkeypatch, tmp_path)
-
-    code = cli.main(["--calendar", "save the AI Meetup event"])
-
-    out = capsys.readouterr().out
-    assert code == 0
-    assert "step 1: save_event_candidate(" in out
-    # The real tool's return shape, straight through the trace line.
-    assert "'saved': {'id': 1, 'event_id': 'evt-1'" in out
-    assert "'total_candidates': 1" in out
-    assert "answer: done" in out
-    assert "steps: 2" in out
-    assert "stop reason: answered" in out
-
-
-def test_one_shot_with_an_immediate_answer_prints_no_step_line(
+def test_cli_interprets_then_passes_typed_intent_and_user_id(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(
-        loop, "call", MagicMock(return_value=make_result(text="42", tool_calls=[], output_items=[]))
-    )
-
-    code = cli.main(["what is 6*7?"])
-
-    out = capsys.readouterr().out
-    assert code == 0
-    assert "  step " not in out
-    assert "answer: 42" in out
-    assert "steps: 1" in out
-    assert "stop reason: answered" in out
-
-
-def test_strong_flag_forwards_the_strong_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    mock_call = MagicMock(return_value=make_result(tool_calls=[], output_items=[]))
-    monkeypatch.setattr(loop, "call", mock_call)
-
-    cli.main(["--strong", "hi"])
-
-    forwarded = mock_call.call_args.kwargs["model"]
-    assert forwarded == STRONG
-    assert forwarded in MODELS.values()
-
-
-def test_default_forwards_the_cheap_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    mock_call = MagicMock(return_value=make_result(tool_calls=[], output_items=[]))
-    monkeypatch.setattr(loop, "call", mock_call)
-
-    cli.main(["hi"])
-
-    forwarded = mock_call.call_args.kwargs["model"]
-    assert forwarded == CHEAP
-    assert forwarded in MODELS.values()
-
-
-def test_model_strong_by_name_forwards_the_strong_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    mock_call = MagicMock(return_value=make_result(tool_calls=[], output_items=[]))
-    monkeypatch.setattr(loop, "call", mock_call)
-
-    cli.main(["--model", "strong", "hi"])
-
-    forwarded = mock_call.call_args.kwargs["model"]
-    assert forwarded == STRONG
-    assert forwarded in MODELS.values()
-
-
-def test_conflicting_model_flags_are_a_usage_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    mock_call = MagicMock()
-    monkeypatch.setattr(loop, "call", mock_call)
-
-    with pytest.raises(SystemExit) as excinfo:
-        cli.main(["--strong", "--model", "cheap", "hi"])
-
-    assert excinfo.value.code == 2
-    mock_call.assert_not_called()
-
-
-def test_repl_runs_one_prompt_then_exits_cleanly_on_eof(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    mock_call = MagicMock(
-        return_value=make_result(text="hello there", tool_calls=[], output_items=[])
-    )
-    monkeypatch.setattr(loop, "call", mock_call)
-    monkeypatch.setattr("builtins.input", _fake_input(["hi"]))
-
-    code = cli.main([])
-
-    out = capsys.readouterr().out
-    assert code == 0
-    assert mock_call.call_count == 1
-    assert "answer: hello there" in out
-    assert "bye" in out
-
-
-def test_repl_exit_command_quits_without_calling_the_loop(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    mock_call = MagicMock()
-    monkeypatch.setattr(loop, "call", mock_call)
-    monkeypatch.setattr("builtins.input", _fake_input(["exit"]))
-
-    code = cli.main([])
-
-    out = capsys.readouterr().out
-    assert code == 0
-    mock_call.assert_not_called()
-    assert "bye" in out
-
-
-def test_missing_key_is_reported_before_the_loop_is_touched(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
-    mock_call = MagicMock()
-    monkeypatch.setattr(loop, "call", mock_call)
-
-    code = cli.main(["hi"])
-
-    out = capsys.readouterr().out
-    assert code == 1
-    assert "OPENCODE_API_KEY" in out
-    assert ".env" in out
-    mock_call.assert_not_called()
-
-
-def test_one_shot_provider_error_prints_a_one_liner_and_returns_non_zero(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(loop, "call", MagicMock(side_effect=openai.OpenAIError("invalid api key")))
-
-    code = cli.main(["hi"])
-
-    out = capsys.readouterr().out
-    assert code != 0
-    assert "invalid api key" in out
-    assert "Traceback" not in out
-
-
-def test_repl_provider_error_prints_and_continues_to_a_clean_exit(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(loop, "call", MagicMock(side_effect=openai.OpenAIError("invalid api key")))
-    monkeypatch.setattr("builtins.input", _fake_input(["hi"]))
-
-    code = cli.main([])
-
-    out = capsys.readouterr().out
-    assert code == 0
-    assert "invalid api key" in out
-    assert "bye" in out
-
-
-def test_unexpected_runtime_error_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(loop, "call", MagicMock(side_effect=RuntimeError("unexpected boom")))
-
-    with pytest.raises(RuntimeError, match="unexpected boom"):
-        cli.main(["hi"])
-
-
-def test_max_steps_run_reports_no_final_answer(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
-    tool_call = {
-        "name": "save_event_candidate",
-        "arguments": {
-            "event_id": "evt-1",
-            "title": "AI Meetup",
-            "category": "tech",
-            "source": "meetup",
-            "start_time": "2026-08-01T19:00:00",
-            "location": "Barcelona",
-            "confidence": 0.9,
-        },
-        "call_id": "call_1",
-    }
-    output_item = {
-        "type": "function_call",
-        "name": "save_event_candidate",
-        "arguments": json.dumps(tool_call["arguments"]),
-        "call_id": "call_1",
-    }
-    forever = make_result(text="", tool_calls=[tool_call], output_items=[output_item])
-    monkeypatch.setattr(loop, "call", MagicMock(return_value=forever))
-    _redirect_stores(monkeypatch, tmp_path)
-
-    code = cli.main(["--calendar", "--max-steps", "2", "loop forever"])
-
-    out = capsys.readouterr().out
-    assert code == 0
-    assert "(no final answer — hit max steps)" in out
-    assert "stop reason: max_steps" in out
-
-
-def test_truncated_run_reports_a_partial_answer(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    cut_off = make_result(text="the partial ans", tool_calls=[], output_items=[], truncated=True)
-    monkeypatch.setattr(loop, "call", MagicMock(return_value=cut_off))
-
-    code = cli.main(["explain everything"])
-
-    out = capsys.readouterr().out
-    assert code == 0
-    assert "partial answer (truncated by output cap): the partial ans" in out
-    assert "stop reason: truncated" in out
-    # The partial text must NOT render as a plain, trustworthy answer.
-    assert "answer: the partial ans" not in out
-
-
-def test_max_steps_below_one_is_a_usage_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    mock_call = MagicMock()
-    monkeypatch.setattr(loop, "call", mock_call)
-
-    with pytest.raises(SystemExit) as excinfo:
-        cli.main(["--max-steps", "0", "hi"])
-
-    assert excinfo.value.code == 2
-    mock_call.assert_not_called()
-
-
-def test_cli_prompts_for_approval_before_dispatching_irreversible_tool(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
-    turn_1, turn_2 = _confirm_tool_call_turns()
-    monkeypatch.setattr(loop, "call", MagicMock(side_effect=[turn_1, turn_2]))
-    calendar_path = _redirect_stores(monkeypatch, tmp_path)
-    _seed_candidate(tmp_path / "candidates.json")
-    fake_input = MagicMock(return_value="y")
-    monkeypatch.setattr("builtins.input", fake_input)
-
-    code = cli.main(["--calendar", "confirm the calendar event for evt-1"])
-
-    out = capsys.readouterr().out
-    assert code == 0
-    assert fake_input.call_count >= 1
-    prompt_call = fake_input.call_args.args[0]
-    assert "approval required" in prompt_call
-    assert "confirm_and_create_calendar_event" in prompt_call
-    assert calendar_path.exists()
-    persisted = json.loads(calendar_path.read_text())
-    assert persisted[0]["event_id"] == "evt-1"
-    assert "step 1: confirm_and_create_calendar_event(" in out
-    assert "answer: done" in out
-
-
-def test_cli_declines_when_user_answers_no(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
-    turn_1, turn_2 = _confirm_tool_call_turns()
-    monkeypatch.setattr(loop, "call", MagicMock(side_effect=[turn_1, turn_2]))
-    calendar_path = _redirect_stores(monkeypatch, tmp_path)
-    _seed_candidate(tmp_path / "candidates.json")
-    monkeypatch.setattr("builtins.input", MagicMock(return_value="n"))
-
-    code = cli.main(["--calendar", "confirm the calendar event for evt-1"])
-
-    out = capsys.readouterr().out
-    assert code == 0
-    assert not calendar_path.exists()
-    assert "'declined': True" in out
-    assert "'reason': 'user_declined_approval'" in out
-    assert "answer: done" in out
-
-
-def test_cli_does_not_prompt_for_reversible_tool(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    turn_1, turn_2 = _tool_call_turns()
-    monkeypatch.setattr(loop, "call", MagicMock(side_effect=[turn_1, turn_2]))
-    _redirect_stores(monkeypatch, tmp_path)
-    fake_input = MagicMock()
-    monkeypatch.setattr("builtins.input", fake_input)
-
-    code = cli.main(["--calendar", "save the AI Meetup event"])
+    intent = _intent()
+    interpret = MagicMock(return_value=intent)
+    run_once = MagicMock(return_value=_result())
+    monkeypatch.setattr(cli, "interpret", interpret)
+    monkeypatch.setattr(cli, "run_once", run_once)
+
+    code = cli.main(["--user-id", "7", "find events"])
 
     assert code == 0
-    fake_input.assert_not_called()
+    interpret.assert_called_once_with("find events")
+    assert run_once.call_args.args == (7, intent)
+    assert run_once.call_args.kwargs["model"] == CHEAP
+    assert "status: no_results" in capsys.readouterr().out
 
 
-def test_calendar_tools_are_unreachable_without_the_calendar_flag(
+def test_cli_forwards_model_and_calendar_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mock_run_loop = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))
-    monkeypatch.setattr(event_agent, "run_loop", mock_run_loop)
+    monkeypatch.setattr(cli, "interpret", MagicMock(return_value=_intent()))
+    run_once = MagicMock(return_value=_result())
+    monkeypatch.setattr(cli, "run_once", run_once)
 
-    code = cli.main(["hi"])
-
-    assert code == 0
-    assert set(mock_run_loop.call_args.kwargs["registry"]) == {"search_events"}
-
-
-def test_cli_declines_on_eof_at_approval_prompt(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
-    turn_1, turn_2 = _confirm_tool_call_turns()
-    monkeypatch.setattr(loop, "call", MagicMock(side_effect=[turn_1, turn_2]))
-    calendar_path = _redirect_stores(monkeypatch, tmp_path)
-    _seed_candidate(tmp_path / "candidates.json")
-    monkeypatch.setattr("builtins.input", MagicMock(side_effect=EOFError))
-
-    code = cli.main(["--calendar", "confirm the calendar event for evt-1"])
-
-    out = capsys.readouterr().out
-    assert code == 0
-    assert not calendar_path.exists()
-    assert "'declined': True" in out
-    assert "Traceback" not in out
-
-
-def test_cli_declines_on_keyboard_interrupt_at_approval_prompt(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
-    turn_1, turn_2 = _confirm_tool_call_turns()
-    monkeypatch.setattr(loop, "call", MagicMock(side_effect=[turn_1, turn_2]))
-    calendar_path = _redirect_stores(monkeypatch, tmp_path)
-    _seed_candidate(tmp_path / "candidates.json")
-    monkeypatch.setattr("builtins.input", MagicMock(side_effect=KeyboardInterrupt))
-
-    code = cli.main(["--calendar", "confirm the calendar event for evt-1"])
-
-    out = capsys.readouterr().out
-    assert code == 0
-    assert not calendar_path.exists()
-    assert "'declined': True" in out
-    assert "Traceback" not in out
-
-
-def test_user_id_flag_is_forwarded_to_run_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    mock_run_once = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))
-    monkeypatch.setattr(cli, "run_once", mock_run_once)
-
-    code = cli.main(["--user-id", "1", "hi"])
-
-    assert code == 0
-    assert mock_run_once.call_args.kwargs["user_id"] == 1
-
-
-def test_no_user_id_flag_forwards_no_identity(monkeypatch: pytest.MonkeyPatch) -> None:
-    mock_run_once = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))
-    monkeypatch.setattr(cli, "run_once", mock_run_once)
-
-    code = cli.main(["hi"])
-
-    assert code == 0
-    assert "user_id" not in mock_run_once.call_args.kwargs
-
-
-def test_user_id_below_one_is_a_usage_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    # argparse rejects it before composition. With a plain `type=int`, `0` would
-    # reach build_memory_tools and surface as an uncaught ValidationError
-    # traceback instead of a one-line usage message.
-    mock_call = MagicMock()
-    monkeypatch.setattr(loop, "call", mock_call)
-
-    with pytest.raises(SystemExit) as excinfo:
-        cli.main(["--user-id", "0", "hi"])
-
-    assert excinfo.value.code == 2
-    mock_call.assert_not_called()
-
-
-def test_cli_renders_preference_read_error_and_returns_one(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(
-        cli,
-        "run_once",
-        MagicMock(
-            return_value=LoopResult(
-                answer="Preferences could not be loaded safely; no model request was made.",
-                steps=0,
-                stopped="preference_read_error",
-            )
-        ),
+    assert (
+        cli.main(["--user-id", "7", "--strong", "--calendar", "--max-steps", "3", "find events"])
+        == 0
     )
 
-    code = cli.main(["hi"])
-
-    out = capsys.readouterr().out
-    assert code == 1
-    assert "configuration/data-safe failure" in out
-    assert "answer: Preferences could not" not in out
-    assert "stop reason: preference_read_error" in out
+    assert run_once.call_args.kwargs["model"] == STRONG
+    assert run_once.call_args.kwargs["calendar_enabled"] is True
+    assert run_once.call_args.kwargs["max_steps"] == 3
 
 
-def test_both_runtime_result_mirrors_accept_preference_read_error() -> None:
-    concrete = LoopResult(answer="safe", steps=0, stopped="preference_read_error")
-    interface = RuntimeLoopResult(answer="safe", steps=0, stopped="preference_read_error")
+@pytest.mark.parametrize(
+    ("answer", "expected"), [("y", True), ("yes", True), ("n", False), ("", False)]
+)
+def test_calendar_approval_prompt_is_explicit_and_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, answer: str, expected: bool
+) -> None:
+    monkeypatch.setattr("builtins.input", lambda _prompt: answer)
 
-    assert concrete.stopped == interface.stopped == "preference_read_error"
+    assert (
+        cli._terminal_approve("confirm_and_create_calendar_event", {"event_id": "evt-1"})
+        is expected
+    )
+
+
+def test_calendar_approval_prompt_declines_on_missing_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("builtins.input", MagicMock(side_effect=EOFError))
+
+    assert cli._terminal_approve("confirm_and_create_calendar_event", {}) is False
+
+
+def test_cli_provider_error_is_a_single_nonzero_result(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "interpret", MagicMock(return_value=_intent()))
+    monkeypatch.setattr(cli, "run_once", MagicMock(side_effect=openai.OpenAIError("provider down")))
+
+    assert cli.main(["--user-id", "7", "find events"]) == 1
+    assert capsys.readouterr().out.strip() == "provider down"
+
+
+def test_conflicting_model_flags_are_a_usage_error() -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.main(["--user-id", "7", "--strong", "--model", "cheap", "find events"])
+
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("result", "needle", "exit_code"),
+    [
+        (
+            _result(
+                status="error",
+                answer="safe",
+                stopped="not_started",
+                steps=0,
+                error_type="invalid_preference_data",
+            ),
+            "configuration/data-safe failure",
+            1,
+        ),
+        (
+            _result(
+                status="error",
+                answer="safe",
+                stopped="not_started",
+                steps=0,
+                error_type="missing_search_origin",
+            ),
+            "trusted search origin",
+            1,
+        ),
+        (
+            _result(
+                status="error",
+                answer="invalid payload",
+                error_type="invalid_search_output",
+            ),
+            "search error (invalid_search_output)",
+            1,
+        ),
+        (
+            _result(status="incomplete", answer="partial", stopped="truncated"),
+            "incomplete (truncated)",
+            0,
+        ),
+    ],
+)
+def test_cli_renders_typed_results_and_uses_error_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    result: RecommenderResult,
+    needle: str,
+    exit_code: int,
+) -> None:
+    monkeypatch.setattr(cli, "interpret", MagicMock(return_value=_intent()))
+    monkeypatch.setattr(cli, "run_once", MagicMock(return_value=result))
+
+    assert cli.main(["--user-id", "7", "find events"]) == exit_code
+    assert needle in capsys.readouterr().out
+
+
+def test_cli_renders_clarification_without_error_exit() -> None:
+    rendered = cli._render_result(
+        _result(
+            status="needs_clarification",
+            answer=None,
+            clarification={"question": "Which area?"},
+        )
+    )
+
+    assert "clarification needed: Which area?" in rendered
+
+
+def test_invalid_user_id_and_max_steps_are_usage_errors() -> None:
+    with pytest.raises(SystemExit) as user_id:
+        cli.main(["--user-id", "0", "find events"])
+    with pytest.raises(SystemExit) as max_steps:
+        cli.main(["--max-steps", "0", "find events"])
+
+    assert user_id.value.code == max_steps.value.code == 2
+
+
+def test_missing_key_returns_before_interpretation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    interpret = MagicMock()
+    monkeypatch.setattr(cli, "interpret", interpret)
+
+    assert cli.main(["--user-id", "7", "find events"]) == 1
+    interpret.assert_not_called()
+
+
+def test_repl_passes_each_nonempty_prompt_to_the_typed_boundary(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    inputs = iter(["find events", "quit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+    monkeypatch.setattr(cli, "interpret", MagicMock(return_value=_intent()))
+    run_once = MagicMock(return_value=_result())
+    monkeypatch.setattr(cli, "run_once", run_once)
+
+    assert cli.main(["--user-id", "7"]) == 0
+
+    assert run_once.call_args.args[0] == 7
+    assert "bye" in capsys.readouterr().out
+
+
+def test_cli_requires_an_explicit_developer_identity() -> None:
+    with pytest.raises(SystemExit) as missing_user:
+        cli.main(["find events"])
+
+    assert missing_user.value.code == 2

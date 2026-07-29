@@ -16,6 +16,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from pydantic import BaseModel, Field, model_validator
+
+from planazo.catalog.models import Event
+
 
 @dataclass(frozen=True)
 class LoopResult:
@@ -29,7 +33,91 @@ class LoopResult:
 
     answer: str | None
     steps: int
-    stopped: Literal["answered", "truncated", "max_steps", "preference_read_error"]
+    stopped: Literal[
+        "answered", "truncated", "max_steps", "preference_read_error", "missing_search_origin"
+    ]
+
+
+class ClarificationRequest(BaseModel):
+    """Runtime mirror of the Recommender's non-blocking clarification shape."""
+
+    question: str = Field(min_length=1, max_length=500)
+
+
+RecommenderStatus = Literal["ok", "no_results", "needs_clarification", "incomplete", "error"]
+RecommenderError = Literal[
+    "invalid_preference_data",
+    "preference_store_unavailable",
+    "missing_search_origin",
+    "search_store_unavailable",
+    "search_invalid_filter",
+    "search_tool_failure",
+    "invalid_search_output",
+    "search_not_completed",
+]
+RecommenderStop = Literal["answered", "truncated", "max_steps", "not_started"]
+
+
+class RecommenderResult(BaseModel):
+    """Runtime mirror of the public Recommender result boundary."""
+
+    status: RecommenderStatus
+    answer: str | None = Field(default=None, max_length=4_000)
+    stopped: RecommenderStop
+    steps: int = Field(ge=0, le=8)
+    candidates: tuple[Event, ...] = Field(default=(), max_length=100)
+    clarification: ClarificationRequest | None = None
+    error_type: RecommenderError | None = None
+    interpreter_fallback: bool = False
+
+    @model_validator(mode="after")
+    def _validate_outcome(self) -> RecommenderResult:
+        if self.status == "error":
+            if self.error_type is None or self.candidates or self.clarification is not None:
+                raise ValueError(
+                    "error results require one error and no candidates or clarification"
+                )
+        elif self.status == "needs_clarification":
+            if (
+                self.stopped != "answered"
+                or self.clarification is None
+                or self.error_type is not None
+                or self.candidates
+            ):
+                raise ValueError("clarification results require only one clarification request")
+        elif self.status == "incomplete":
+            if (
+                self.stopped not in {"truncated", "max_steps"}
+                or self.candidates
+                or self.clarification is not None
+                or self.error_type is not None
+            ):
+                raise ValueError("incomplete results cannot expose candidates or errors")
+        else:
+            if (
+                self.stopped != "answered"
+                or self.error_type is not None
+                or self.clarification is not None
+            ):
+                raise ValueError("successful results must be answered without an error")
+            if self.status == "ok" and not self.candidates:
+                raise ValueError("ok results require candidates")
+            if self.status == "no_results" and self.candidates:
+                raise ValueError("no_results cannot include candidates")
+        if self.stopped == "not_started":
+            if self.steps != 0 or self.status != "error":
+                raise ValueError("not_started is reserved for zero-step preflight errors")
+            if self.error_type not in {
+                "invalid_preference_data",
+                "preference_store_unavailable",
+                "missing_search_origin",
+            }:
+                raise ValueError("only preflight errors may be not_started")
+        elif self.status == "error" and self.steps == 0:
+            raise ValueError("started errors must record at least one step")
+        if self.interpreter_fallback and self.status not in {"ok", "no_results"}:
+            raise ValueError("interpreter_fallback is only a successful display signal")
+        return self
 
 
 @dataclass(frozen=True)

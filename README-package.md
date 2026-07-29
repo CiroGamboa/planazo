@@ -8,11 +8,12 @@ No agent framework, no API server, no frontend here (see `AGENTS.md` rule 5 and 
 
 ```bash
 uv sync                                                                  # install
-uv run planazo-agent --calendar "save a tech event evt-1 called AI Meetup at 2026-08-01T19:00:00 in Barcelona, confidence 0.9"  # one-shot
-uv run planazo-agent                                                     # interactive REPL
+uv run planazo-agent --user-id 1 --calendar "find tech events this weekend"  # one-shot
+uv run planazo-agent --user-id 1                                          # interactive REPL
 uv run planazo-monitor --since 24h                                       # grade recent runs
 uv run planazo-monitor --dry-run                                         # grade canned seed runs
 uv run planazo-monitor --dry-run --run-id seed-injection-near-miss       # one-call monitor smoke test
+uv run planazo-scheduler --tick                                          # one scheduled-ingestion tick (host-cron entry point)
 ```
 
 `agentlib` (the LLM wrapper) needs `OPENCODE_API_KEY` set in a `.env` file at the repo root; copy `../.env.example`. If the key is unset, the CLI prints one actionable line and exits without calling the provider; if the key is present but invalid or the provider errors, it prints a single-line message — never a traceback.
@@ -24,9 +25,9 @@ Options:
 - `--strong` and `--model {cheap,strong}` select the model role and are mutually exclusive; passing both is a usage error. The default is the cheap role.
 - `--max-steps N` caps the loop's steps (`N` must be >= 1).
 - `--calendar` adds the two calendar reference tools to the run's tool set.
-- `--user-id N` binds the run to one user (`N` must be >= 1): it adds the four memory tools bound to that id and pushes that user's stored preferences into the system message. It is unauthenticated — whatever id the shell supplies is used — so this CLI is an operator's surface, not a user-facing one ([ADR 0004](../docs/adr/0004-three-store-memory-model.md)).
+- `--user-id N` is required and binds the run to one user (`N` must be >= 1): it adds the four memory tools bound to that id and pushes that user's stored preferences into the system message. It is unauthenticated — whatever id the shell supplies is used — so this CLI is an operator's surface, not a user-facing one ([ADR 0004](../docs/adr/0004-three-store-memory-model.md)).
 
-Output shape: a per-step tool trace (`step N: tool(args) -> result`), then a separated final block with the answer (or a `(no final answer — hit max steps)` notice), the step count, and the stop reason.
+Output shape: a per-step tool trace (`step N: tool(args) -> result`), then a typed Recommender result with its answer or clarification, step count, stop reason, status, and candidate count. Preflight and search failures return a named nonzero result; incomplete runs never expose candidates.
 
 For a low-cost live monitor check, use `--dry-run --run-id <id>` to grade exactly one deterministic trace. The available ids are `seed-clean`, `seed-adherence-violation`, and `seed-injection-near-miss`; repeat `--run-id` to select more than one. A full `--dry-run` grades all three.
 
@@ -56,7 +57,7 @@ The first message from a Telegram account creates its `users` row, so there is n
 
 Replies are plain text with no `parse_mode`, so a preference value containing `*`, `_`, or `<` is echoed back verbatim instead of being read as formatting. An edited command is answered with a notice rather than re-run: replaying an old command against newer state can undo a later change. No LLM call originates in the bot layer — the commands are CRUD against the same SQLite store — and [ADR 0011](docs/adr/0011-telegram-bot-interface.md) records the layering, the `UserSurface` contract, and the threading rule any future handler that runs the agent loop must follow.
 
-Replies to one sender always arrive in the order that sender's messages were sent — a per-sender FIFO gate wraps every command and the plain-text handler alike. A message that arrives while another is still in flight for that sender gets an immediate acknowledgment, and each sender's backlog is bounded: past it, a further message gets a configured overflow reply instead of being queued. Different senders' turns run fully independently — one sender's slow reply never delays another's. See [ADR 0014](docs/adr/0014-per-user-message-serialization.md).
+Replies to one sender always arrive in the order that sender's messages were sent — a per-sender FIFO gate wraps every command and the plain-text handler alike. A message that arrives while another is still in flight for that sender gets an immediate acknowledgment, and each sender's backlog is bounded: past it, a further message gets a configured overflow reply instead of being queued. Different senders' turns run fully independently — one sender's slow reply never delays another's. See [ADR 0019](docs/adr/0019-per-user-message-serialization.md).
 
 ## Bot copy and config
 
@@ -66,13 +67,27 @@ Replies to one sender always arrive in the order that sender's messages were sen
 
 `search_events` is the one tool on every run, whatever the flags. It queries the SQLite domain store at `var/planazo.db` for stored events, filtered by `category`, `city`, and `start_after` (an empty string means "no filter on that field"), and returns `{"events": [...], "total": N}` or a typed `invalid_search_filter` error. Its writing counterpart, `save_event`, lives beside it in `planazo.storage.dao` for the extraction path; the domain store's shape and its two dao tiers are [ADR 0003](../docs/adr/0003-sqlite-domain-store.md).
 
-The other two groups are opt-in: the memory tools with `--user-id N`, the calendar reference tools with `--calendar`.
+The calendar reference tools remain opt-in with `--calendar`. Recommender runs
+also expose identity-bound `save_preference(key, value)` and non-blocking
+`ask_user(question)` tools: neither accepts a user id, preference values use
+the same trimmed one-line bounds as persisted rows, and only the first valid
+clarification question is returned to the calling surface.
 
 Every tool returns a typed `error_type` on bad input rather than persisting something partial. A tool that raises anyway (bug, disk error) is caught one layer up, inside `planazo.agents.loop.run_loop`'s dispatch, and fed back to the model as a `tool_failed` marker rather than crashing the run or looking like valid data.
 
+### Deterministic ranking
+
+`planazo.rank.rank_events(candidates, intent, preferences)` ranks only the
+validated candidates of an `ok` Recommender result. It is a pure deterministic
+projection: it does not call an LLM, tools, SQLite, memory, or Telegram. A
+future `/find` owner must branch on the Recommender status before calling it;
+non-OK results are not rankable. Reasons are bounded and never reveal raw
+coordinates; [ADR 0014](docs/adr/0014-deterministic-ranking-boundary.md)
+records this boundary.
+
 ### The memory tools
 
-`--user-id N` (or `run_once(user_id=N)`) adds four tools over the JSON docstore at `var/memory/`, built by `planazo.memory.api.build_memory_tools`:
+`run_once(user_id, intent)` always receives a validated identity and `SearchIntent`; `--user-id N` is the CLI's required developer identity boundary. It adds four tools over the JSON docstore at `var/memory/`, built by `planazo.memory.api.build_memory_tools`:
 
 - **`retrieve_memory(query, scope)`** — facts about the user whose cue overlaps `query`, as `{"facts": [...], "total": N}`.
 - **`save_memory(cue, content, scope)`** — one durable fact, filed under `cue` for later recall.
@@ -126,6 +141,35 @@ uv run planazo-sources-instagram --url https://instagram.com/p/ABC/             
 
 `docker compose up sources-instagram` defaults to `--dry-run` — it resolves the plan from `data/sources.yaml` and exits 0 without any network calls. Use `docker compose run --rm sources-instagram --url <URL>` to fetch one specific post; `--dry-run` and `--url` are mutually exclusive and exactly one is required per invocation. `INSTAGRAM_SESSION_ID` is optional — copy the `sessionid` cookie from a logged-in Instagram browser session into `.env` when a public-account fetch returns `auth_failed`, otherwise leave it unset. The CLI never writes anywhere; `--url` prints one line of `RawPost.model_dump_json()` (happy path) or the typed error dict — `{"error_type": "…", "message": "…", "url": "…"}` — to stdout. See [ADR 0006 — Instagram extraction approach](docs/adr/0006-instagram-extraction-approach.md).
 
+## Scheduled ingestion
+
+`planazo-scheduler` is the host-cron entry point for periodic ingestion: on every `--tick` it reads `data/sources.yaml`, walks the configured `posts:` + `accounts:` blocks, routes each account through `AccountConfig.backend` to one of two discovery backends (`anonymous` via `curl_cffi` + Meta's `web_profile_info`, or `hikerapi` via the paid multi-key HikerAPI pool), pre-checks discovered URLs against `events_exist_for_source_url` to skip already-persisted URLs, and dispatches survivors into `extract_once` under a seeded system user (`telegram_user_id="system"`). One `SchedulerRunRecord` line per source URL processed lands in `var/scheduler_runs.jsonl` for human tailing. See [ADR 0011 — Scheduled ingestion](docs/adr/0011-scheduled-ingestion.md) and [ADR 0014 — Instagram discovery backends](docs/adr/0014-instagram-discovery-backends.md).
+
+```bash
+uv run planazo-scheduler --tick                                          # one-shot tick over sources.yaml
+uv run planazo-scheduler --once https://www.instagram.com/p/ABC/         # diagnostic single-URL run (bypasses cadence)
+uv run planazo-scheduler --once https://www.instagram.com/reel/ABC/      # same, for a reel URL
+uv run planazo-scheduler --once https://www.instagram.com/acct/          # single-account run (must be in sources.yaml)
+uv run planazo-scheduler --once https://www.instagram.com/p/ABC/ --verbose  # add a step-by-step narrative log to stdout (see ADR 0017)
+```
+
+Exit codes: `0` when the tick completed (regardless of per-URL outcomes — operators read the JSONL log for per-URL health); `1` on an uncaught runtime exception; `2` on a config-time failure (malformed `sources.yaml`, missing `PLANAZO_IG_HIKER_API_KEY_*` when a `hikerapi`-backed account is configured, or an `--once <url>` call against an account URL that is not in `sources.yaml`).
+
+`hikerapi` accounts need one or more `PLANAZO_IG_HIKER_API_KEY[_N]` env vars set — every distinct value across the singular `PLANAZO_IG_HIKER_API_KEY` and any numbered `PLANAZO_IG_HIKER_API_KEY_1`, `_2`, ... peers becomes a pool member. On each HikerAPI call the client draws uniformly at random from the non-retired keys; a 401/403/429 retires the drawing key for five minutes and the request retries against a fresh draw.
+
+Wire the tick into cron every 15 minutes (adjust the path and cadence to your host):
+
+```
+# macOS: `crontab -e`; Linux: `sudo crontab -e -u planazo`
+*/15 * * * * cd /path/to/planazo && /usr/local/bin/uv run planazo-scheduler --tick >> var/scheduler.log 2>&1
+```
+
+Notes for the cron entry:
+
+- Use the absolute path to `uv` — cron's `PATH` is minimal and `uv` will not be found via `PATH` lookup unless the crontab is configured with `PATH=` at the top. `which uv` on the host that runs cron gives the path to paste.
+- `var/scheduler.log` accumulates cron stdout/stderr; rotate it with `logrotate` (Linux) or `newsyslog` (macOS) if the host runs the tick long enough for the file to matter. `var/scheduler_runs.jsonl` — the per-URL structured audit log — is the primary artifact and is never rotated automatically.
+- The default cadence in `sources.yaml` is 6 hours per account; a 15-minute cron interval means most ticks are no-ops that short-circuit on the cadence gate (each still writes one `gate_reason="cadence_not_ready"` record per configured URL).
+
 ## Memory model demos
 
 ```bash
@@ -155,7 +199,8 @@ Each script redirects both store roots (`memory.facts.MEMORY_ROOT`, `storage.db.
 │   ├── monitor/           out-of-band LLM-as-judge over run logs
 │   ├── storage/           db.py (connection + schema_v1.sql only)
 │   ├── config.py          shared env-check helper
-│   ├── sources/           RawPost + MediaAsset + config; Instagram adapter (Dockerized)
+│   ├── sources/           RawPost + MediaAsset + config; Instagram adapter (Dockerized); anon + hikerapi discovery clients
+│   ├── scheduler/         run_tick + planazo-scheduler CLI; scan_state repository; SchedulerRunRecord audit log
 │   └── agents/            loop.py (generic runtime), event_agent.py (composition root), cli.py
 ├── src/tools/
 │   ├── schema.py           schema_for() — derives a tool's JSON schema from its signature/docstring

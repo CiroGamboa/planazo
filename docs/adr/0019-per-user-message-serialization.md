@@ -1,10 +1,10 @@
-# 0014 — Per-user message serialization at the dispatch layer
+# 0019 — Per-user message serialization at the dispatch layer
 
 - **Status:** Accepted
 - **Date:** 2026-07-29
 - **Deciders:** system-architect-planner (planning #58)
-- **Relates to:** [`0011-telegram-bot-interface.md`](0011-telegram-bot-interface.md) (the threading contract and `concurrent_updates` default this ADR changes), [`0013-registration-conversation-state.md`](0013-registration-conversation-state.md) (names #58 as the consumer of "is this user's next message a registration answer" — that check now runs *inside* the serialized job, unchanged), [`../MVP-ARCHITECTURE.md`](../MVP-ARCHITECTURE.md#multi-agent-coordination) (§Multi-agent coordination → Shared memory; §Out of scope: no worker pool, no horizontal scaling).
-- **Known numbering risk:** tracked as [#80](https://github.com/CiroGamboa/planazo/issues/80) — do not re-file. `main`'s `docs/adr/` history briefly had two files numbered `0011`; **0014** is the next free number as of this writing (`0012` reserved in ADR 0011's own prose for a future Meetup/Eventbrite decision, `0013` taken by the registration ADR above), but a parallel branch could claim it first. Whoever merges second re-numbers.
+- **Relates to:** [`0011-telegram-bot-interface.md`](0011-telegram-bot-interface.md) (the threading contract and `concurrent_updates` default this ADR changes), [`0018-registration-conversation-state.md`](0018-registration-conversation-state.md) (names #58 as the consumer of "is this user's next message a registration answer" — that check now runs *inside* the serialized job, unchanged), [`../MVP-ARCHITECTURE.md`](../MVP-ARCHITECTURE.md#multi-agent-coordination) (§Multi-agent coordination → Shared memory; §Out of scope: no worker pool, no horizontal scaling).
+- **Numbering:** originally filed as `0014`, renumbered to **0019** when this milestone's integration branch merged `main` — `main` had meanwhile taken `0014` for `instagram-discovery-backends` and filled through `0017`. This is the "whoever merges second re-numbers" resolution [#80](https://github.com/CiroGamboa/planazo/issues/80) prescribes; #80 stays open for the duplicate numbers `main` still carries on its own (`0011` ×3, `0012` ×2, `0013` ×2, `0014` ×2).
 
 ## Context
 

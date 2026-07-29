@@ -22,6 +22,7 @@ value is echoed back verbatim rather than escaped.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from collections.abc import Mapping
 from typing import Final
@@ -31,8 +32,12 @@ from pydantic import ValidationError
 from planazo.bot.config import BotConfig, resolve
 from planazo.bot.models import IncomingMessage
 from planazo.bot.session import resolve_user, stored_id
+from planazo.catalog.models import Event
+from planazo.conversation.models import ConversationReply
+from planazo.conversation.service import handle_user_message
 from planazo.identity import delete_preference, get_preferences, set_preference
 from planazo.interfaces.surface import UserSurface
+from planazo.storage import db
 
 COMMANDS: Final[Mapping[str, str]] = {
     "/start": "cmd_start",
@@ -40,6 +45,7 @@ COMMANDS: Final[Mapping[str, str]] = {
     "/me": "cmd_me",
     "/prefs": "cmd_prefs",
     "/register": "cmd_register",
+    "/find": "cmd_find",
 }
 
 
@@ -152,7 +158,7 @@ async def handle_me(
     `config.default_locale`.
 
     Three mutually exclusive outcomes, checked in this order
-    (`docs/adr/0013-registration-conversation-state.md`):
+    (`docs/adr/0018-registration-conversation-state.md`):
     1. `profile_complete` is `False` — the whole reply is `me_not_registered`;
        no preference read happens at all, regardless of whether the sender's
        preference data is fine or corrupt. This is an absolute gate, not a
@@ -180,6 +186,18 @@ async def handle_me(
         if message.telegram_handle is None
         else resolve(config, "me_handle", locale, handle=message.telegram_handle)
     )
+    preferences = get_preferences(conn, user_id)
+    if preferences.error_type is not None:
+        await surface.reply(
+            resolve(
+                config,
+                "me_preferences_unavailable",
+                locale,
+                user_id=user_id,
+                handle=handle,
+            )
+        )
+        return
     await surface.reply(
         resolve(
             config,
@@ -228,3 +246,141 @@ async def handle_prefs(
         await surface.reply(_drop_preference(conn, user_id, parts[2], config, locale))
     else:
         await surface.reply(resolve(config, "prefs_usage", locale))
+
+
+def _strip_command_prefix(text: str) -> str:
+    """Return everything after the `/find` (or `/find@botname`) command token.
+
+    Group chats deliver `/find@planazo_bot query`; the suffix belongs
+    to the command token and must not shift the arguments behind it.
+    Matches `handle_prefs`'s positional parsing shape.
+    """
+    parts = text.split(None, 1)
+    if len(parts) < 2:
+        return ""
+    return parts[1].strip()
+
+
+def _format_price(config: BotConfig, price_cents: int) -> str:
+    """Render a `price_cents` value as a short display string via `resolve`."""
+    locale = config.default_locale
+    if price_cents == 0:
+        return resolve(config, "find_recommendation_price_free", locale)
+    amount = f"{price_cents / 100:.2f}"
+    return resolve(config, "find_recommendation_price_eur", locale, amount=amount)
+
+
+def _format_recommendation_line(config: BotConfig, index_one_based: int, event: Event) -> str:
+    """Render one Recommender candidate onto a numbered `find_recommendation_line`."""
+    locale = config.default_locale
+    venue = (
+        event.venue_name
+        if event.venue_name is not None
+        else resolve(config, "find_recommendation_venue_missing", locale)
+    )
+    when = event.start_utc.strftime("%Y-%m-%d %H:%M UTC")
+    return resolve(
+        config,
+        "find_recommendation_line",
+        locale,
+        n=index_one_based,
+        title=event.title,
+        when=when,
+        venue=venue,
+        category=event.category,
+        price=_format_price(config, event.price_cents),
+    )
+
+
+def format_reply(config: BotConfig, reply: ConversationReply) -> str:
+    """Project one `ConversationReply` onto the plain-text `.reply(...)` string.
+
+    Public because `bot/chat.py` renders the same `ConversationReply` when a
+    plain-text message answers a pending clarification — the tree has exactly
+    one plain-text `MessageHandler`, and it lives there.
+
+    The five `kind` branches map to the `find_*` message-ids in
+    `data/bot.yaml`. `no_results` reads `answer` when present and
+    falls back to the shipped default so the user always sees a
+    concrete explanation.
+    """
+    locale = config.default_locale
+    if reply.kind == "recommendations":
+        lines = "\n".join(
+            _format_recommendation_line(config, position, event)
+            for position, event in enumerate(reply.candidates, start=1)
+        )
+        return resolve(config, "find_recommendations", locale, lines=lines)
+    if reply.kind == "clarification":
+        question = reply.question if reply.question is not None else ""
+        return resolve(config, "find_clarification", locale, question=question)
+    if reply.kind == "detail":
+        # The detail card is the `answer` field the service already
+        # rendered (or a fallback via the Event's title).
+        summary = reply.answer if reply.answer else (reply.event.title if reply.event else "")
+        # Detail lookup does not track a stable 1-indexed n through
+        # the service surface — the surface renders the event only,
+        # so we drop the number here. `n=""` is intentional.
+        return resolve(config, "find_detail", locale, n="", summary=summary)
+    if reply.kind == "no_results":
+        message = (
+            reply.answer if reply.answer else resolve(config, "find_no_results_default", locale)
+        )
+        return resolve(config, "find_no_results", locale, message=message)
+    error_type = reply.error_type if reply.error_type is not None else "unknown_error"
+    return resolve(config, "find_error", locale, error_type=error_type)
+
+
+async def run_conversation_turn(user_id: int, text: str) -> ConversationReply:
+    """Run one `handle_user_message` turn off the event-loop thread.
+
+    The turn reaches the LLM provider and is synchronous, so running it on the
+    event-loop thread would stall every other sender's update — ADR 0011's
+    threading contract, load-bearing now that ADR 0019 sets
+    `concurrent_updates=True` precisely so different senders run concurrently.
+
+    It opens its own connection *inside* the worker thread rather than reusing
+    the adapter's: `sqlite3` binds a connection to the thread that created it
+    (`check_same_thread` defaults to `True`), so handing the adapter's
+    connection across the thread hop raises `ProgrammingError`. This mirrors
+    how the agent loop's own tools already open per-call connections.
+    """
+
+    def turn() -> ConversationReply:
+        conn = db.connect()
+        try:
+            return handle_user_message(conn, user_id, text)
+        finally:
+            conn.close()
+
+    return await asyncio.to_thread(turn)
+
+
+async def handle_find(
+    surface: UserSurface, conn: sqlite3.Connection, message: IncomingMessage, config: BotConfig
+) -> None:
+    """Route `/find <query>` through the conversation service.
+
+    Empty query (a bare `/find`) surfaces the usage text. Any other
+    text — including a numeric answer to a prior clarification — is
+    dispatched to `conversation.service.handle_user_message`, which
+    owns the multi-turn logic. The reply is formatted by
+    `format_reply` against the shipped message catalog.
+
+    The turn runs off the event-loop thread via `run_conversation_turn` (see
+    its docstring for why, and why it opens its own connection). A provider
+    failure is caught here and mapped to a configured reply rather than
+    surfacing the exception text.
+    """
+    text = _strip_command_prefix(message.text)
+    locale = config.default_locale
+    if not text:
+        await surface.reply(resolve(config, "find_usage", locale))
+        return
+    user_id = stored_id(resolve_user(conn, message))
+    try:
+        reply = await run_conversation_turn(user_id, text)
+    except Exception:
+        await surface.reply(resolve(config, "chat_provider_error", locale))
+        return
+    await surface.reply(format_reply(config, reply))

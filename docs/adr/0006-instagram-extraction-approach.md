@@ -37,6 +37,9 @@ One committed file describing many sources; today only `instagram:` is populated
 - **Per-source YAML files under `data/sources/*.yaml`.** Cheaper to open one file per source but fragments configuration across multiple files right when the design goal is "one shape, N sources".
 
 **4. Media-type strategy — `MediaAsset.url` only, no binary download in the adapter.**
+
+**§Decision 4 partially superseded by ADR 0013 (#66) — the multimodal hook downloads the reel video_url to a temp file and extracts JPEG frames for LLM input; the ADAPTER still emits URL-only MediaAsset entries.**
+
 Each `MediaAsset` carries the URL only — the adapter does not download binary content. The Extractor (M3) fetches media on demand when it needs to pass an image or video to the multimodal LLM. Per-post-type mapping:
 
 - `static_posts` — instaloader `Post.typename == "GraphImage"` → one `MediaAsset(kind="image")`. Must work.

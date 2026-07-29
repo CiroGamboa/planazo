@@ -18,9 +18,18 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 EventCategory = Literal["tech", "cultural", "music", "networking", "sports", "other"]
+
+
+class SearchOrigin(BaseModel):
+    """Validated geographic origin supplied only by application-owned code."""
+
+    model_config = ConfigDict(frozen=True)
+
+    latitude: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
 
 
 class SearchIntent(BaseModel):
@@ -38,8 +47,9 @@ class SearchIntent(BaseModel):
     end_utc: datetime
     categories: tuple[EventCategory, ...] = ()
     city: str = Field(min_length=1)
-    radius_km: float | None = Field(default=None, ge=0)
+    radius_km: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     budget_cents: int | None = Field(default=None, ge=0)
+    origin: SearchOrigin | None = None
     error_type: Literal["interpreter_fallback"] | None = None
 
     @field_validator("start_utc", "end_utc", mode="before")
@@ -91,3 +101,8 @@ class SearchIntent(BaseModel):
                 f"before start_utc ({self.start_utc.isoformat()})"
             )
         return self
+
+
+def with_search_origin(intent: SearchIntent, origin: SearchOrigin) -> SearchIntent:
+    """Return a validated copy of ``intent`` with an application-owned origin."""
+    return SearchIntent.model_validate({**intent.model_dump(), "origin": origin})

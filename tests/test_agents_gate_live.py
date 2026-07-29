@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -37,9 +38,9 @@ import pytest
 from dotenv import find_dotenv, load_dotenv
 
 from agentlib.core import CHEAP
-from planazo.agents.event_agent import run_once
-from planazo.agents.loop import LoopResult
+from planazo.agents.event_agent import RecommenderResult, run_once
 from planazo.approval import ApprovalGate
+from planazo.query.models import SearchIntent
 
 pytestmark = pytest.mark.live
 
@@ -49,6 +50,14 @@ _LIVE_PROMPT = (
 )
 
 _MAX_ATTEMPTS = 3
+
+
+def _intent() -> SearchIntent:
+    return SearchIntent(
+        start_utc=datetime(2026, 8, 1, tzinfo=UTC),
+        end_utc=datetime(2026, 8, 2, tzinfo=UTC),
+        city="Barcelona",
+    )
 
 
 def _real_key_present() -> bool:
@@ -100,7 +109,7 @@ def _redirect_stores(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 def _run_until_the_model_requests_the_gated_tool(
     approve: MagicMock, gate: ApprovalGate
-) -> LoopResult:
+) -> RecommenderResult:
     """Run the live prompt until the model actually requests the gated tool.
 
     Shared by both tests so their preconditions cannot drift apart. Retries the
@@ -116,7 +125,8 @@ def _run_until_the_model_requests_the_gated_tool(
     """
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         result = run_once(
-            _LIVE_PROMPT,
+            1,
+            _intent(),
             model=CHEAP,
             max_output_tokens=256,
             max_steps=3,

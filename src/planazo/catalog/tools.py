@@ -16,12 +16,19 @@ from pydantic import ValidationError
 
 from planazo.catalog.models import Event
 from planazo.catalog.repository import _event_from_row, insert_event, query_events
+from planazo.query.models import EventCategory
 from planazo.storage import db
+
+
+def _text_or_none(value: str) -> str | None:
+    """Empty-string sentinel ↔ `None`. Whitespace-only strings collapse too."""
+    stripped = value.strip()
+    return stripped or None
 
 
 def save_event(
     title: str,
-    category: str,
+    category: EventCategory,
     source: str,
     source_url: str,
     start_utc: str,
@@ -31,19 +38,64 @@ def save_event(
     price_cents: int = 0,
     geo_lat: float = 0.0,
     geo_lng: float = 0.0,
+    event_index_in_post: int = 0,
+    source_account: str = "",
+    venue_name: str = "",
+    venue_address: str = "",
+    organizer: str = "",
+    tags: list[str] | None = None,
+    description: str = "",
+    ticket_url: str = "",
+    image_url: str = "",
+    language: str = "",
+    recurring: bool = False,
 ) -> dict[str, object]:
     """Persist one normalized event to the shared event store.
 
     Call this AFTER an extraction or source step has produced an event with a
     resolved title, category, city, and ISO-8601 `start_utc`/`end_utc`, so it
-    becomes searchable through `search_events`. `source_url` is the event's
-    natural key: it must be the real page the event came from, and each URL can
-    be saved once — a second save of the same URL comes back as
+    becomes searchable through `search_events`. The natural key is the
+    composite `(source_url, event_index_in_post)`: `source_url` must be the
+    real page the event came from, and each `(source_url, event_index_in_post)`
+    pair can be saved once — a second save with the same pair comes back as
     `duplicate_event` with the id of the row that already exists, so read that
-    branch instead of retrying. Do NOT call this with raw, unnormalized scraped
-    text as `title` or `city`, and do NOT call it to look up events (it has no
+    branch instead of retrying. For a single post that announces multiple
+    distinct events, call this once per event with `event_index_in_post` =
+    `0`, `1`, `2`, ...; the composite `(source_url, event_index_in_post)` is
+    the natural key. Do NOT call this with raw, unnormalized scraped text as
+    `title` or `city`, and do NOT call it to look up events (it has no
     read-back behaviour).
+
+    `category` is constrained to the shared `EventCategory` literal set;
+    values outside `{"tech", "cultural", "music", "networking", "sports",
+    "other"}` come back as `invalid_event_data`.
+
+    Rich-domain fields (all optional, default empty):
+    - `source_account` — the source-account handle that posted the event
+      (Instagram, for example, exposes it as `author_handle` on
+      `fetch_instagram_post`'s return; copy that value into this field).
+    - `venue_name` — the named venue (e.g. `"Sala Apolo"`).
+    - `venue_address` — the venue's street/address.
+    - `organizer` — the promoter or event-executor identity, distinct from
+      the venue.
+    - `tags` — free-form tags/genres as a list of strings (empty means no
+      tags known); persisted as a JSON array under the same discipline as
+      `extra`.
+    - `description` — the LLM's paraphrase of the caption + flyer content;
+      never a byte-for-byte copy of a scraped caption (AGENTS.md rule 2).
+    - `ticket_url` — the canonical ticket-purchase URL when the post lists
+      one.
+    - `image_url` — the cover/flyer image URL for rendering downstream.
+    - `language` — ISO-639 code where determinable (`"es"`, `"ca"`, `"en"`).
+    - `recurring` — `True` marks the row as a recurring/series stub for
+      future use; leave `False` for single-instance events.
     """
+    if event_index_in_post < 0:
+        return {
+            "error_type": "invalid_event_data",
+            "message": (f"event_index_in_post must be non-negative, got {event_index_in_post}"),
+        }
+
     try:
         parsed_start = datetime.fromisoformat(start_utc)
         parsed_end = datetime.fromisoformat(end_utc)
@@ -51,6 +103,7 @@ def save_event(
         return {"error_type": "invalid_event_data", "message": f"invalid timestamp: {exc}"}
 
     try:
+        coordinates_are_default = geo_lat == 0.0 and geo_lng == 0.0
         event = Event(
             source=source,
             source_url=source_url,
@@ -60,9 +113,20 @@ def save_event(
             category=category,
             city=city,
             price_cents=price_cents,
-            geo_lat=geo_lat,
-            geo_lng=geo_lng,
+            geo_lat=None if coordinates_are_default else geo_lat,
+            geo_lng=None if coordinates_are_default else geo_lng,
             confidence=confidence,
+            event_index_in_post=event_index_in_post,
+            source_account=_text_or_none(source_account),
+            venue_name=_text_or_none(venue_name),
+            venue_address=_text_or_none(venue_address),
+            organizer=_text_or_none(organizer),
+            tags=list(tags) if tags else [],
+            description=_text_or_none(description),
+            ticket_url=_text_or_none(ticket_url),
+            image_url=_text_or_none(image_url),
+            language=_text_or_none(language),
+            recurring=recurring,
         )
     except ValidationError as exc:
         return {"error_type": "invalid_event_data", "message": str(exc)}
@@ -73,13 +137,17 @@ def save_event(
             event_db_id = insert_event(conn, event)
         except sqlite3.IntegrityError as exc:
             duplicate = conn.execute(
-                "SELECT id FROM events WHERE source_url = ?", (event.source_url,)
+                "SELECT id FROM events WHERE source_url = ? AND event_index_in_post = ?",
+                (event.source_url, event.event_index_in_post),
             ).fetchone()
             if duplicate is None:
                 return {"error_type": "invalid_event_data", "message": str(exc)}
             return {
                 "error_type": "duplicate_event",
-                "message": f"source_url {event.source_url!r} already has a row",
+                "message": (
+                    f"(source_url={event.source_url!r},"
+                    f" event_index_in_post={event.event_index_in_post}) already has a row"
+                ),
                 "event_db_id": int(duplicate["id"]),
             }
         # VERIFY: read the row back rather than trust the write just made.
@@ -93,7 +161,14 @@ def save_event(
 
 
 def search_events(
-    category: str = "", city: str = "", start_after: str = "", max_results: int = 20
+    category: str = "",
+    city: str = "",
+    start_after: str = "",
+    venue_name: str = "",
+    tag: str = "",
+    title_contains: str = "",
+    budget_cents_max: int = -1,
+    max_results: int = 20,
 ) -> dict[str, object]:
     """Search the shared event store for events matching the given filters.
 
@@ -105,6 +180,15 @@ def search_events(
     `max_results` events. An empty `events` list means nothing stored matches,
     not that the search failed. Do NOT call this to save an event (it has no
     write behaviour).
+
+    Extra filters (all optional; sentinel = no filter):
+    - `venue_name` — exact match on the venue name (empty = no filter).
+    - `tag` — a single tag; a row matches when its JSON `tags` array
+      contains this exact value (empty = no filter).
+    - `title_contains` — case-sensitive SQL `LIKE '%X%'` substring match on
+      `title` (empty = no filter).
+    - `budget_cents_max` — upper bound on `price_cents` (inclusive); pass
+      `-1` for no filter, `0` to search free events only.
     """
     parsed_start_after: datetime | None = None
     if start_after:
@@ -125,15 +209,35 @@ def search_events(
             "message": f"max_results must be at least 1, got {max_results}",
         }
 
-    conn = db.connect()
+    if budget_cents_max < -1:
+        return {
+            "error_type": "invalid_search_filter",
+            "message": (
+                f"budget_cents_max must be -1 (no filter) or non-negative, got {budget_cents_max}"
+            ),
+        }
+
     try:
-        found = query_events(
-            conn,
-            category=category or None,
-            city=city or None,
-            start_after=parsed_start_after,
-            max_results=max_results,
-        )
+        conn = db.connect()
+    except (OSError, sqlite3.Error) as exc:
+        return {"error_type": "search_store_unavailable", "message": type(exc).__name__}
+    try:
+        try:
+            found = query_events(
+                conn,
+                category=category or None,
+                city=city or None,
+                start_after=parsed_start_after,
+                venue_name=venue_name or None,
+                tag=tag or None,
+                title_contains=title_contains or None,
+                budget_cents_max=budget_cents_max if budget_cents_max >= 0 else None,
+                max_results=max_results,
+            )
+        except ValidationError as exc:
+            return {"error_type": "invalid_event_data", "message": str(exc)}
+        except (OSError, sqlite3.Error) as exc:
+            return {"error_type": "search_store_unavailable", "message": type(exc).__name__}
     finally:
         conn.close()
 

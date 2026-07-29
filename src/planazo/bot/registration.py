@@ -12,7 +12,7 @@ in-flight answer to; it is inert (no reply, no write) whenever nothing is
 pending. Both read
 `UserRecord.pending_registration_field` as the entire state machine — one
 column names the next step, `NULL` means nothing is in flight
-(`docs/adr/0013-registration-conversation-state.md`).
+(`docs/adr/0018-registration-conversation-state.md`).
 
 Every configured step's `profile_field` is checked against
 `identity.models.ProfileField`'s known values the first time this module

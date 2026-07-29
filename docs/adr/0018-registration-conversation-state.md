@@ -1,8 +1,10 @@
-# 0013 — Registration conversation state lives on the `users` row
+# 0018 — Registration conversation state lives on the `users` row
 
 - **Status:** Accepted
 - **Date:** 2026-07-28
 - **Deciders:** system-architect-planner (planning #56)
+- **Superseded by:** [`0015-storage-migrations-and-observability.md`](0015-storage-migrations-and-observability.md)'s **migration mechanism only** — the `schema_v2.sql` + `schema_migrations(version, applied_at)` machinery described in Decision and Consequences below was replaced, before this branch merged, by ADR 0015's generic `PRAGMA user_version` runner over `storage/migrations/NNN_*.sql`. The five columns this ADR decided on now ship as `007_registration_profile.sql`, and the atomicity guarantee it argued for is preserved (ADR 0015 wraps each migration file in one `BEGIN`/`COMMIT` alongside its `user_version` bump). **Everything else here stands:** registration state as five nullable `users` columns plus a `pending_registration_field` pointer, no second session concept, no separate table, and the flow's ownership of the sender's next plain-text message.
+- **Numbering:** originally filed as `0013`, renumbered to **0018** when this milestone's integration branch merged `main`, which had meanwhile taken `0013` for `extractor-side-frame-extraction` (see [#80](https://github.com/CiroGamboa/planazo/issues/80)).
 - **Relates to:** [`0003-sqlite-domain-store.md`](0003-sqlite-domain-store.md) (the schema this supplies the first real v2 change for), [`0008-domain-driven-module-layout.md`](0008-domain-driven-module-layout.md) (`identity/` owns `UserRecord`), [`0011-telegram-bot-interface.md`](0011-telegram-bot-interface.md) (no session table; create-on-first-contact), [`../MVP-ARCHITECTURE.md`](../MVP-ARCHITECTURE.md#7-storage--srcplanazostorage).
 
 ## Context

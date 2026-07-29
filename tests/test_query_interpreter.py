@@ -316,7 +316,7 @@ def test_tool_schema_is_derived_via_schema_for_not_hand_rolled() -> None:
     ]
 
 
-def test_no_source_module_outside_planazo_query_imports_the_interpreter() -> None:
+def test_only_the_cli_surface_imports_the_interpreter_outside_planazo_query() -> None:
     # The invariant this locks is tighter than "no `from planazo.query`":
     # `planazo.query.models` is a *data* module (SearchIntent, EventCategory)
     # that other bounded contexts legitimately import — the Recommender for
@@ -325,6 +325,12 @@ def test_no_source_module_outside_planazo_query_imports_the_interpreter() -> Non
     # *runtime* — `interpret`, `_record_search_intent`, `TOOL_SCHEMA`. Those
     # only ever reach the tree through `planazo.query.interpreter` (or
     # `planazo.query import interpret` from the package `__init__`).
+    #
+    # Two legitimate importers today: `agents/cli.py` (the terminal
+    # surface's `/find` REPL) and `conversation/service.py` (the
+    # multi-turn `/find` composition root the bot's `handle_find`
+    # calls — see ADR 0016). Both are surfaces above the Recommender
+    # that own the interpreter's one call per user turn.
     query_dir = Path(query_interpreter.__file__).resolve().parent
     src_root = query_dir.parent.parent  # src/
     offenders: list[tuple[Path, str]] = []
@@ -335,7 +341,12 @@ def test_no_source_module_outside_planazo_query_imports_the_interpreter() -> Non
         for pattern in ("planazo.query.interpreter", "from planazo.query import"):
             if pattern in text:
                 offenders.append((py, pattern))
-    assert offenders == [], f"interpreter runtime is imported outside its own module: {offenders}"
+    agents_dir = Path(event_agent.__file__).parent
+    conversation_dir = agents_dir.parent / "conversation"
+    assert offenders == [
+        (agents_dir / "cli.py", "planazo.query.interpreter"),
+        (conversation_dir / "service.py", "planazo.query.interpreter"),
+    ], f"unexpected interpreter-runtime import: {offenders}"
 
 
 def test_run_once_never_composes_the_interpreter_into_the_agent_registry(
@@ -347,7 +358,15 @@ def test_run_once_never_composes_the_interpreter_into_the_agent_registry(
     mock_run_loop = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))
     monkeypatch.setattr(event_agent, "run_loop", mock_run_loop)
 
-    event_agent.run_once("hi", user_id=1, calendar_enabled=True)
+    event_agent.run_once(
+        1,
+        SearchIntent(
+            start_utc=FROZEN_NOW,
+            end_utc=FROZEN_NOW + timedelta(hours=1),
+            city="Barcelona",
+        ),
+        calendar_enabled=True,
+    )
 
     registry = mock_run_loop.call_args.kwargs["registry"]
     assert "interpret" not in registry

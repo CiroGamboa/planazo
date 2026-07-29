@@ -235,9 +235,15 @@ Thumbs.db
 # Plans and personal notes never live in the tree
 plans/
 _private/
+scratch/
 
 # Runtime audit traces and generated monitor reports
 data/runs/
 data/monitor/
-# Demo evidence traces — regenerate with scripts/demo/*.py
-docs/evidence/
+# Demo evidence traces — regenerate with scripts/demo/*.py.
+# Milestone-level acceptance-evidence files are committed as historical
+# records (see `docs/evidence/m3.5-*` etc.); the demo-script traces stay
+# ephemeral.
+docs/evidence/*
+!docs/evidence/m3.5-scheduler-acceptance.md
+!docs/evidence/m37-instagram-demo.md

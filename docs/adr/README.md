@@ -24,3 +24,17 @@ Do **not** write an ADR for:
 2. Fill in Status / Context / Decision / Consequences.
 3. Reference the ADR from `AGENTS.md` or the relevant PR if it's load-bearing there.
 4. ADRs are immutable once accepted. To change a decision, write a new ADR that supersedes the old one and mark the old one `Status: Superseded by NNNN`.
+
+## Current accepted decisions
+
+- [0017 — Instagram demo narrative logs](0017-instagram-demo-narrative-logs.md)
+  defines the opt-in, stdout-only, structural-signals-only narrative logger the `planazo-scheduler --once --verbose` demo command wires into `extract_once`'s new `on_step` + `on_complete` observer seams.
+
+- [0016 — Multi-turn Recommender conversation](0016-multi-turn-recommender-conversation.md)
+  defines the DB-backed per-user scratchpad, preference-namespaced profile enrichment, and the `handle_user_message` composition root the bot's `/find` handler + any CLI helper call.
+
+- [0014 — Deterministic ranking boundary](0014-deterministic-ranking-boundary.md)
+  defines the pure post-Recommender public ranking contract.
+
+- [0013 — Recommender mutation and clarification boundaries](0013-recommender-mutation-and-clarification-boundaries.md)
+  defines the identity-bound preference writer and non-blocking clarification tool.

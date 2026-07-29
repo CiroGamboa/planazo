@@ -58,7 +58,9 @@ class LoopResult:
 
     answer: str | None
     steps: int
-    stopped: Literal["answered", "truncated", "max_steps", "preference_read_error"]
+    stopped: Literal[
+        "answered", "truncated", "max_steps", "preference_read_error", "missing_search_origin"
+    ]
 
 
 @dataclass(frozen=True)

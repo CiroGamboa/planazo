@@ -51,21 +51,35 @@ def _event_from_row(row: sqlite3.Row) -> Event:
         confidence=row["confidence"],
         extra=json.loads(row["extra"]),
         ingested_at=datetime.fromisoformat(row["ingested_at"]),
+        event_index_in_post=row["event_index_in_post"],
+        source_account=row["source_account"],
+        venue_name=row["venue_name"],
+        venue_address=row["venue_address"],
+        organizer=row["organizer"],
+        tags=json.loads(row["tags"]),
+        description=row["description"],
+        ticket_url=row["ticket_url"],
+        image_url=row["image_url"],
+        language=row["language"],
+        recurring=bool(row["recurring"]),
     )
 
 
 def insert_event(conn: sqlite3.Connection, event: Event) -> int:
     """Insert `event` and return its new row id.
 
-    `events.source_url` is UNIQUE, so a second insert of the same URL raises
-    `sqlite3.IntegrityError`. `save_event` is the tier that turns that into a
-    `duplicate_event` branch.
+    The composite `(source_url, event_index_in_post)` is UNIQUE, so a second
+    insert with the same pair raises `sqlite3.IntegrityError`. `save_event` is
+    the tier that turns that into a `duplicate_event` branch.
     """
     ingested_at = event.ingested_at or datetime.now(UTC)
     cursor = conn.execute(
-        "INSERT INTO events (source, source_url, title, start_utc, end_utc, category, city,"
-        " price_cents, geo_lat, geo_lng, confidence, extra, ingested_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO events ("
+        "source, source_url, title, start_utc, end_utc, category, city,"
+        " price_cents, geo_lat, geo_lng, confidence, extra, ingested_at,"
+        " event_index_in_post, source_account, venue_name, venue_address,"
+        " organizer, tags, description, ticket_url, image_url, language, recurring"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             event.source,
             event.source_url,
@@ -80,10 +94,52 @@ def insert_event(conn: sqlite3.Connection, event: Event) -> int:
             event.confidence,
             json.dumps(event.extra),
             ingested_at.isoformat(),
+            event.event_index_in_post,
+            event.source_account,
+            event.venue_name,
+            event.venue_address,
+            event.organizer,
+            json.dumps(event.tags),
+            event.description,
+            event.ticket_url,
+            event.image_url,
+            event.language,
+            int(event.recurring),
         ),
     )
     conn.commit()
     return _last_row_id(cursor)
+
+
+def events_exist_for_source_url(conn: sqlite3.Connection, url: str) -> list[int]:
+    """Return the persisted `event_index_in_post` slots for `url`, ascending.
+
+    Empty list ⇒ URL has never been persisted; non-empty ⇒ at least one slot
+    filled. The scheduler uses this to skip URLs that have already produced at
+    least one event, and the multi-event flow uses it to probe "is slot N
+    taken?" before issuing a `save_event` retry.
+    """
+    cursor = conn.execute(
+        "SELECT event_index_in_post FROM events WHERE source_url = ?"
+        " ORDER BY event_index_in_post ASC",
+        (url,),
+    )
+    return [int(row["event_index_in_post"]) for row in cursor.fetchall()]
+
+
+def get_event_by_id(conn: sqlite3.Connection, event_id: int) -> Event | None:
+    """Return the `events` row for `event_id`, or `None` if absent.
+
+    The primitive a history reader ("tell me about #N", the `/find`
+    detail view) uses to project one `recommendations.event_id` into
+    the full `Event` aggregate. A deleted or never-persisted id is a
+    successful empty read — matching the discipline of `query_events`
+    (an empty filter returns an empty list rather than raising).
+    """
+    row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+    if row is None:
+        return None
+    return _event_from_row(row)
 
 
 def query_events(
@@ -92,12 +148,19 @@ def query_events(
     category: str | None = None,
     city: str | None = None,
     start_after: datetime | None = None,
+    venue_name: str | None = None,
+    tag: str | None = None,
+    title_contains: str | None = None,
+    budget_cents_max: int | None = None,
     max_results: int = 20,
 ) -> list[Event]:
     """Return events matching every supplied filter, earliest start first.
 
     A `None` filter is simply not applied. Timestamps are stored as ISO-8601
-    text, which orders and compares chronologically for a single offset.
+    text, which orders and compares chronologically for a single offset. The
+    `tag` filter opens the `tags` JSON array with `json_each` and checks for
+    membership by value; `title_contains` runs a `LIKE '%X%'` scan;
+    `budget_cents_max` bounds `price_cents` from above (inclusive).
     """
     clauses: list[str] = []
     params: list[object] = []
@@ -110,6 +173,18 @@ def query_events(
     if start_after is not None:
         clauses.append("start_utc >= ?")
         params.append(start_after.isoformat())
+    if venue_name is not None:
+        clauses.append("venue_name = ?")
+        params.append(venue_name)
+    if tag is not None:
+        clauses.append("EXISTS (SELECT 1 FROM json_each(events.tags) WHERE json_each.value = ?)")
+        params.append(tag)
+    if title_contains is not None:
+        clauses.append("title LIKE ?")
+        params.append(f"%{title_contains}%")
+    if budget_cents_max is not None:
+        clauses.append("price_cents <= ?")
+        params.append(budget_cents_max)
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(max_results)
 

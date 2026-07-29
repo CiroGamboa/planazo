@@ -190,10 +190,19 @@ def _registered_handlers(config: BotConfig) -> list[object]:
 
 
 def _accepting(text: str, config: BotConfig) -> list[frozenset[str]]:
-    """The registered commands whose handler accepts `text`."""
+    """The registered commands whose handler accepts `text`.
+
+    Only `CommandHandler`s expose `.commands`; the transport shell
+    also registers one `MessageHandler` for the multi-turn
+    clarification-answer continuation. Filter to command handlers
+    so a message handler that legitimately accepts free text does
+    not raise when we read `.commands`.
+    """
     update = Update(update_id=1, message=make_message(text))
     return [
-        handler.commands for handler in _registered_handlers(config) if handler.check_update(update)
+        handler.commands
+        for handler in _registered_handlers(config)
+        if hasattr(handler, "commands") and handler.check_update(update)
     ]
 
 
@@ -225,6 +234,7 @@ def _stored_preferences() -> list[tuple[str, str]]:
         (f"/prefs@{BOT_USERNAME} remove city", "prefs"),
         ("/register", "register"),
         (f"/register@{BOT_USERNAME}", "register"),
+        ("/find techno tonight", "find"),
     ],
 )
 def test_each_command_routes_to_exactly_one_registered_handler(
@@ -237,7 +247,7 @@ def test_each_command_routes_to_exactly_one_registered_handler(
 
 
 def test_an_unknown_command_routes_nowhere(config: BotConfig) -> None:
-    assert _accepting("/find techno tonight", config) == []
+    assert _accepting("/nosuchcommand techno tonight", config) == []
 
 
 def test_the_registered_commands_are_the_ones_the_bot_advertises(config: BotConfig) -> None:
@@ -254,15 +264,18 @@ def test_the_registered_commands_are_the_ones_the_bot_advertises(config: BotConf
     assert registered == {command.removeprefix("/") for command in COMMANDS}
 
 
-def test_build_application_registers_five_commands_and_one_message_handler(
+def test_build_application_registers_six_commands_and_one_message_handler(
     config: BotConfig,
 ) -> None:
     application = build_application("1:A", config)
     handlers = application.handlers[0]
 
     assert list(application.handlers) == [0]
-    assert len(handlers) == 6
-    assert sum(isinstance(handler, CommandHandler) for handler in handlers) == 5
+    # Six `CommandHandler`s (start/help/me/prefs/register/find) plus exactly one
+    # `MessageHandler` — `bot/chat.py`'s four-way plain-text dispatch. Two
+    # `MessageHandler`s would race PTB over the same non-command text.
+    assert len(handlers) == 7
+    assert sum(isinstance(handler, CommandHandler) for handler in handlers) == 6
     assert sum(isinstance(handler, MessageHandler) for handler in handlers) == 1
 
 
