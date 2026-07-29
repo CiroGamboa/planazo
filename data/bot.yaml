@@ -28,7 +28,8 @@ messages:
   edited_command: {en: "I do not re-run an edited command: it would replay the old command against what is stored now, which can undo a later change. Send it again as a new message.", es: "No vuelvo a ejecutar un comando editado: repetiría el comando antiguo sobre lo que hay guardado ahora, lo que podría deshacer un cambio posterior. Envíalo de nuevo como un mensaje nuevo."}
   find_usage: {en: "Send /find followed by what you are looking for. Example: /find music this weekend.", es: "Envía /find seguido de lo que buscas. Por ejemplo: /find música este fin de semana."}
   find_recommendations: {en: "Here are events I found:\n\n{lines}", es: "Estos son los eventos que encontré:\n\n{lines}"}
-  find_recommendation_line: {en: "{n}. {title}\n   {when} · {venue} · {category} · {price}", es: "{n}. {title}\n   {when} · {venue} · {category} · {price}"}
+  find_recommendations_with_preface: {en: "{preface}\n\n{lines}", es: "{preface}\n\n{lines}"}
+  find_recommendation_line: {en: "{n}. {title}\n   {when} · {venue} · {category} · {price}\n   link: {link}", es: "{n}. {title}\n   {when} · {venue} · {category} · {price}\n   enlace: {link}"}
   find_recommendation_venue_missing: {en: "venue TBA", es: "lugar por confirmar"}
   find_recommendation_price_free: {en: "free", es: "gratis"}
   find_recommendation_price_eur: {en: "{amount} EUR", es: "{amount} EUR"}

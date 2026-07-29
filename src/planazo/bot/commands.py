@@ -271,7 +271,13 @@ def _format_price(config: BotConfig, price_cents: int) -> str:
 
 
 def _format_recommendation_line(config: BotConfig, index_one_based: int, event: Event) -> str:
-    """Render one Recommender candidate onto a numbered `find_recommendation_line`."""
+    """Render one Recommender candidate onto a numbered `find_recommendation_line`.
+
+    `link` prefers `event.ticket_url` when set and falls back to
+    `event.source_url`, which every `Event` row carries (`min_length=1` in
+    `catalog/models.py`) — so the line always ends with something the user
+    can click through to, never a rendered `None`.
+    """
     locale = config.default_locale
     venue = (
         event.venue_name
@@ -279,6 +285,7 @@ def _format_recommendation_line(config: BotConfig, index_one_based: int, event: 
         else resolve(config, "find_recommendation_venue_missing", locale)
     )
     when = event.start_utc.strftime("%Y-%m-%d %H:%M UTC")
+    link = event.ticket_url if event.ticket_url else event.source_url
     return resolve(
         config,
         "find_recommendation_line",
@@ -289,6 +296,7 @@ def _format_recommendation_line(config: BotConfig, index_one_based: int, event: 
         venue=venue,
         category=event.category,
         price=_format_price(config, event.price_cents),
+        link=link,
     )
 
 
@@ -302,7 +310,13 @@ def format_reply(config: BotConfig, reply: ConversationReply) -> str:
     The five `kind` branches map to the `find_*` message-ids in
     `data/bot.yaml`. `no_results` reads `answer` when present and
     falls back to the shipped default so the user always sees a
-    concrete explanation.
+    concrete explanation. `recommendations` reads `answer` too — when
+    the Recommender's own LLM answer is set and non-empty it renders
+    as a preface above the numbered list via
+    `find_recommendations_with_preface`; when it is `None` or empty
+    the plain `find_recommendations` template renders unchanged (the
+    "more results" follow-up in `conversation/service.py` never sets
+    `answer`, so that path is unaffected).
     """
     locale = config.default_locale
     if reply.kind == "recommendations":
@@ -310,6 +324,14 @@ def format_reply(config: BotConfig, reply: ConversationReply) -> str:
             _format_recommendation_line(config, position, event)
             for position, event in enumerate(reply.candidates, start=1)
         )
+        if reply.answer:
+            return resolve(
+                config,
+                "find_recommendations_with_preface",
+                locale,
+                preface=reply.answer,
+                lines=lines,
+            )
         return resolve(config, "find_recommendations", locale, lines=lines)
     if reply.kind == "clarification":
         question = reply.question if reply.question is not None else ""

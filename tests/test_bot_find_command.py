@@ -144,6 +144,70 @@ async def test_find_recommendations_renders_numbered_list(
 
 
 @pytest.mark.asyncio
+async def test_find_recommendations_line_prefers_ticket_url_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+    conn: sqlite3.Connection,
+    surface: RecordingSurface,
+    config: BotConfig,
+) -> None:
+    event = _event().model_copy(update={"ticket_url": "https://tickets.example.com/jazz"})
+
+    def fake_handle(*args: object, **kwargs: object) -> ConversationReply:
+        return ConversationReply(kind="recommendations", candidates=(event,))
+
+    monkeypatch.setattr(commands, "handle_user_message", fake_handle)
+
+    await handle_find(surface, conn, _msg(), config)
+
+    (reply,) = surface.replies
+    assert "https://tickets.example.com/jazz" in reply
+    assert "seed://event/1" not in reply
+
+
+@pytest.mark.asyncio
+async def test_find_recommendations_line_falls_back_to_source_url(
+    monkeypatch: pytest.MonkeyPatch,
+    conn: sqlite3.Connection,
+    surface: RecordingSurface,
+    config: BotConfig,
+) -> None:
+    """`_event()` has no `ticket_url` — the line falls back to `source_url`."""
+
+    def fake_handle(*args: object, **kwargs: object) -> ConversationReply:
+        return ConversationReply(kind="recommendations", candidates=(_event(),))
+
+    monkeypatch.setattr(commands, "handle_user_message", fake_handle)
+
+    await handle_find(surface, conn, _msg(), config)
+
+    (reply,) = surface.replies
+    assert "seed://event/1" in reply
+
+
+@pytest.mark.asyncio
+async def test_find_recommendations_with_answer_renders_preface_above_the_list(
+    monkeypatch: pytest.MonkeyPatch,
+    conn: sqlite3.Connection,
+    surface: RecordingSurface,
+    config: BotConfig,
+) -> None:
+    def fake_handle(*args: object, **kwargs: object) -> ConversationReply:
+        return ConversationReply(
+            kind="recommendations",
+            candidates=(_event(),),
+            answer="Here is one great match for tonight.",
+        )
+
+    monkeypatch.setattr(commands, "handle_user_message", fake_handle)
+
+    await handle_find(surface, conn, _msg(), config)
+
+    (reply,) = surface.replies
+    assert reply.startswith("Here is one great match for tonight.")
+    assert "\n\n1." in reply
+
+
+@pytest.mark.asyncio
 async def test_find_clarification_renders_question(
     monkeypatch: pytest.MonkeyPatch,
     conn: sqlite3.Connection,
@@ -199,6 +263,31 @@ async def test_find_no_results_renders_default_when_answer_absent(
     (reply,) = surface.replies
     # The shipped en-locale default message.
     assert "No matching events" in reply
+
+
+@pytest.mark.asyncio
+async def test_find_no_results_renders_the_answer_verbatim_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+    conn: sqlite3.Connection,
+    surface: RecordingSurface,
+    config: BotConfig,
+) -> None:
+    """Regression: `no_results` must keep rendering the LLM's `answer`
+    unchanged through `find_no_results` — only the `ok` branch gains a
+    preface template; this branch's rendering is untouched by that change.
+    """
+
+    def fake_handle(*args: object, **kwargs: object) -> ConversationReply:
+        return ConversationReply(
+            kind="no_results", answer="No events matched your budget this week."
+        )
+
+    monkeypatch.setattr(commands, "handle_user_message", fake_handle)
+
+    await handle_find(surface, conn, _msg(), config)
+
+    (reply,) = surface.replies
+    assert reply == "No events matched your budget this week."
 
 
 @pytest.mark.asyncio

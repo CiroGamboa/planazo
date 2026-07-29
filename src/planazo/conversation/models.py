@@ -77,7 +77,9 @@ ConversationReplyKind = Literal["clarification", "recommendations", "detail", "n
   service persisted `pending_clarification`; the caller renders the
   `question` field.
 - `recommendations` — the Recommender surfaced 1..N candidates. The
-  caller renders `candidates` as a numbered list.
+  caller renders `candidates` as a numbered list, with `answer` — the
+  Recommender's own bounded natural-language summary, when set — as
+  a preface above it.
 - `detail` — the user asked "tell me about #N" while a
   `last_recommendation_run_id` was active. The caller renders `event`
   as a detail card.
@@ -95,9 +97,11 @@ class ConversationReply(BaseModel):
     A discriminated union in shape rather than syntax: the caller
     branches on `kind` and reads only the fields relevant to that
     branch. Everything else defaults to `None` / empty. `answer` is a
-    free-form field callers use for `no_results` explanations; the
-    other branches carry structured artifacts (`candidates`, `event`,
-    `question`).
+    free-form field callers use for `no_results` explanations and, on
+    `recommendations`, an optional preface above `candidates` (see
+    `conversation.service._project_recommendations`); `detail` also
+    reads it as the rendered summary. `clarification` and `error`
+    carry only their own structured fields (`question`, `error_type`).
 
     `candidates` is `tuple[Event, ...]` for immutability at the
     boundary — same shape as `RecommenderResult.candidates`. `event`

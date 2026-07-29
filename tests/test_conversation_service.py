@@ -193,6 +193,26 @@ def test_fresh_query_with_no_state_runs_interpret_and_run_once(
     assert persisted.pending_clarification is None
 
 
+def test_project_recommendations_truncates_an_overlong_answer() -> None:
+    """Boundary test for issue #111: `_project_recommendations` truncates the
+    Recommender's own answer to `_RECOMMENDATIONS_PREFACE_CAP` rather than
+    passing it straight through to `ConversationReply`, whose own `answer`
+    field caps at 2,000 chars — a real over-length `RecommenderResult.answer`
+    (allowed up to 4,000) must truncate, not raise `ValidationError`.
+    """
+    event = _event(title="Concert C")
+    overlong = "x" * 3000
+    result = RecommenderResult(
+        status="ok", answer=overlong, stopped="answered", steps=1, candidates=(event,)
+    )
+
+    reply = service._project_recommendations(result)
+
+    assert reply.kind == "recommendations"
+    assert reply.answer == overlong[: service._RECOMMENDATIONS_PREFACE_CAP]
+    assert len(reply.answer) == service._RECOMMENDATIONS_PREFACE_CAP
+
+
 def test_needs_clarification_persists_pending_and_returns_kind_clarification(
     monkeypatch: pytest.MonkeyPatch, conn: sqlite3.Connection, user_id: int
 ) -> None:
