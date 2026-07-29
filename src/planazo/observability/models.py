@@ -308,11 +308,15 @@ class LLMDecision(BaseModel):
         boundary rather than persisting a row whose shape violates the
         four-way invariant.
         """
-        if self.decision_kind == "save_event":
+        # `save_event` (Extractor) and `archive`/`merge`/`update_category`
+        # (Curator, ADR 0020) share the same shape: a required pointer to
+        # the affected `events` row and no `error_type`.
+        pointer_kinds = ("save_event", "archive", "merge", "update_category")
+        if self.decision_kind in pointer_kinds:
             if self.event_db_id is None:
-                raise ValueError("decision_kind='save_event' requires event_db_id")
+                raise ValueError(f"decision_kind={self.decision_kind!r} requires event_db_id")
             if self.error_type is not None:
-                raise ValueError("decision_kind='save_event' requires error_type=None")
+                raise ValueError(f"decision_kind={self.decision_kind!r} requires error_type=None")
         elif self.decision_kind in ("needs_clarification", "error"):
             if self.error_type is None:
                 raise ValueError(f"decision_kind={self.decision_kind!r} requires error_type")
