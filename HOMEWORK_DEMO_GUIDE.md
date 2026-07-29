@@ -56,7 +56,25 @@ system.
 
 ```text
 planazo/
-├── src/planazo/       Application code, divided into bounded contexts
+├── src/planazo/       Application code
+│   ├── agents/        Agent loop, Recommender, CLI, and extraction delegation
+│   ├── bot/           Telegram channel and per-user queue
+│   ├── query/         Validated search intent and trusted origin
+│   ├── catalog/       SQLite event models, repository, and search tools
+│   ├── rank/          Deterministic ranking
+│   ├── identity/      Users and preferences
+│   ├── memory/        JSONL facts/notes and Markdown rules
+│   ├── extraction/    Typed extraction contracts
+│   ├── sources/       External-source adapters
+│   ├── scheduler/     Timed ingestion and silence records
+│   ├── curator/       Privileged catalog-maintenance agent
+│   ├── approval/      Explicit approval gate
+│   ├── calendar/      Calendar draft/action contracts
+│   ├── monitor/       Independent run evaluation
+│   ├── observability/ Durable audit records
+│   ├── conversation/  Multi-turn clarification state
+│   ├── storage/       SQLite setup and migrations
+│   └── interfaces/    Shared runtime protocols
 ├── tests/             Automated behaviour and contract tests
 ├── docs/              Architecture, ADR decisions, and demo evidence
 ├── data/              Versioned rules and source configuration
@@ -70,36 +88,21 @@ planazo/
 └── README-package.md  Setup instructions and package-level orientation
 ```
 
-### `src/planazo/`: the application contexts
-
-| Folder | Contains | Use it to answer |
-| --- | --- | --- |
-| [agents](src/planazo/agents/) | The hand-written agent loop, Recommender composition, CLI, and extraction delegation. | “Where is the agent loop?” |
-| [bot](src/planazo/bot/) | Telegram application, incoming-message surface, configuration, and per-user queue. | “How does a real user talk to it?” |
-| [query](src/planazo/query/) | Validated `SearchIntent` and trusted search-origin models. | “How do you turn a request into safe search data?” |
-| [catalog](src/planazo/catalog/) | Event schema, SQLite repository, and typed search/save tools. | “Where are events stored and searched?” |
-| [rank](src/planazo/rank/) | Deterministic event scoring and user-facing reasons. | “Does the LLM decide the ranking?” |
-| [identity](src/planazo/identity/) | User and persisted preference records. | “Where are user preferences kept?” |
-| [memory](src/planazo/memory/) | JSONL facts/notes, Markdown-rule loading, and identity-bound memory tools. | “How do facts, rules, and shared memory differ?” |
-| [extraction](src/planazo/extraction/) | Typed extraction contracts and multimedia-profile validation. | “How is messy source content made safe?” |
-| [sources](src/planazo/sources/) | Instagram source adapters and source-config validation. | “Where do external event posts enter?” |
-| [scheduler](src/planazo/scheduler/) | Timed ingestion, silence/gate decisions, and scheduler audit records. | “What runs without a Telegram message?” |
-| [curator](src/planazo/curator/) | Privileged daily catalog-maintenance agent and its dry-run/audit paths. | “What is the admin subagent?” |
-| [approval](src/planazo/approval/) and [calendar](src/planazo/calendar/) | The explicit approval gate and calendar draft/action contracts. | “How are real external actions controlled?” |
-| [monitor](src/planazo/monitor/) and [observability](src/planazo/observability/) | Independent run evaluation plus durable, sanitized run/decision/recommendation records. | “How do you monitor and audit the agents?” |
-| [conversation](src/planazo/conversation/) | Multi-turn clarification state and follow-up handling. | “How does the bot remember an unfinished request?” |
-| [storage](src/planazo/storage/) and [interfaces](src/planazo/interfaces/) | SQLite migrations/connection setup and shared runtime protocol surfaces. | “Where are persistence and compatibility contracts defined?” |
-
-### Supporting folders
-
-| Folder | What it is for |
+| Folder | Contains / useful demo question |
 | --- | --- |
-| [tests](tests/) | The fastest proof that a claimed behavior is enforced. Test names mirror the contexts above. |
-| [docs/adr](docs/adr/) | Numbered Architecture Decision Records: the reason behind load-bearing choices. |
-| [docs/evidence](docs/evidence/) | Reproducible scheduler and curator demo evidence. |
-| [data/rules](data/rules/) | Operator-authored rules that are safely pushed into Recommender context. |
-| [data/sources.yaml](data/sources.yaml) | Validated source configuration used by scheduled ingestion. |
-| [.claude](.claude/) | The repository’s planning, review, and implementation workflow—not application runtime code. |
+| [agents](src/planazo/agents/) | Hand-written loop, Recommender, CLI, and delegation — “Where is the agent loop?” |
+| [bot](src/planazo/bot/) | Telegram surface, configuration, and queue — “How does a real user talk to it?” |
+| [query](src/planazo/query/), [catalog](src/planazo/catalog/), and [rank](src/planazo/rank/) | Safe intent, SQLite events, and deterministic ranking — “How is a request searched and ranked?” |
+| [identity](src/planazo/identity/) and [memory](src/planazo/memory/) | Preferences plus JSONL facts/notes and Markdown rules — “How do facts, rules, and shared memory differ?” |
+| [extraction](src/planazo/extraction/) and [sources](src/planazo/sources/) | Typed extraction contracts and external-source adapters — “How is messy source content made safe?” |
+| [scheduler](src/planazo/scheduler/) and [curator](src/planazo/curator/) | Timed ingestion/silence records and the privileged admin agent — “What runs without a message?” |
+| [approval](src/planazo/approval/) and [calendar](src/planazo/calendar/) | Approval gate and calendar contracts — “How are external actions controlled?” |
+| [monitor](src/planazo/monitor/) and [observability](src/planazo/observability/) | Independent evaluation and durable audit records — “How do you monitor agents?” |
+| [conversation](src/planazo/conversation/), [storage](src/planazo/storage/), and [interfaces](src/planazo/interfaces/) | Multi-turn state, persistence setup, and compatibility protocols. |
+| [tests](tests/) | Behaviour and contract proof; test names mirror the folders above. |
+| [docs](docs/), including [ADRs](docs/adr/) and [evidence](docs/evidence/) | Current architecture, immutable design decisions, and reproducible demo evidence. |
+| [data](data/), including [rules](data/rules/) and [sources.yaml](data/sources.yaml) | Operator-authored rules and validated scheduled-source configuration. |
+| [.claude](.claude/), [.github](.github/), [scripts](scripts/), and [docker](docker/) | Team workflow, GitHub automation, developer scripts, and source-adapter containers. |
 
 ## Safety decisions in one picture
 
