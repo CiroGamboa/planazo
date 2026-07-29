@@ -27,6 +27,7 @@ from planazo.curator.models import (
     CuratorRunRecord,
     CuratorState,
 )
+from planazo.curator.notifier import notify_admins_of_tick
 from planazo.curator.repository import (
     append_run_record,
     get_state,
@@ -85,6 +86,12 @@ def run_curator(
         tick_result=tick_result,
         audit_log_path=audit_log_path,
     )
+    # Rule 4 — the notifier itself catches every failure; wrap here as
+    # belt-and-braces in case a future refactor changes that contract.
+    try:
+        notify_admins_of_tick(tick_result)
+    except Exception as exc:
+        logger.warning("curator.notifier: notify_admins_of_tick raised %s", type(exc).__name__)
     return tick_result
 
 
