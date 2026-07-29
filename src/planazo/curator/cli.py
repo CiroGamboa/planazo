@@ -132,8 +132,20 @@ def _print_narrative_step(record: StepRecord) -> None:
         print(f"[{record.step:02d}] archive_event(event_id={event_id}) -> {status}")
     elif tool == "merge_events":
         keep_id = arguments.get("keep_event_id")
-        archive_ids = arguments.get("archive_event_ids", [])
-        count = len(archive_ids) if isinstance(archive_ids, list) else 0
+        # Prefer the result's `archived_event_ids` on a successful merge —
+        # the LLM may have sent a bare int/string that the tool coerced;
+        # arguments alone would misrepresent what actually got archived.
+        archived_result = result.get("archived_event_ids") if isinstance(result, dict) else None
+        if isinstance(archived_result, list):
+            count = len(archived_result)
+        else:
+            archive_arg = arguments.get("archive_event_ids", [])
+            if isinstance(archive_arg, list):
+                count = len(archive_arg)
+            elif isinstance(archive_arg, int | str):
+                count = 1
+            else:
+                count = 0
         print(
             f"[{record.step:02d}] merge_events(keep={keep_id}, archive={count} id(s)) -> {status}"
         )

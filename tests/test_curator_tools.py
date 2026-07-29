@@ -438,6 +438,76 @@ def test_merge_events_refuses_missing_keeper(tmp_db: sqlite3.Connection) -> None
     assert get_event_by_id(tmp_db, dup) is not None
 
 
+def test_merge_events_coerces_bare_int_archive_id(tmp_db: sqlite3.Connection) -> None:
+    """LLM auto-unboxes single-element lists — accept bare int too."""
+    keeper = insert_event(tmp_db, make_event(source_url="https://keep/1"))
+    dup = insert_event(tmp_db, make_event(source_url="https://dup/1"))
+    tools = build_curator_tools(dry_run=False)
+
+    # Bare int, not a list.
+    outcome = tools["merge_events"](
+        keep_event_id=keeper, archive_event_ids=dup, reason="LLM sent bare int"
+    )
+
+    assert outcome["status"] == "ok"
+    assert outcome["archived_event_ids"] == [dup]
+
+
+def test_merge_events_coerces_string_archive_id(tmp_db: sqlite3.Connection) -> None:
+    """LLM sometimes sends a bare integer-as-string; coerce it."""
+    keeper = insert_event(tmp_db, make_event(source_url="https://keep/2"))
+    dup = insert_event(tmp_db, make_event(source_url="https://dup/2"))
+    tools = build_curator_tools(dry_run=False)
+
+    outcome = tools["merge_events"](
+        keep_event_id=keeper,
+        archive_event_ids=str(dup),  # e.g. "26" instead of [26]
+        reason="LLM sent int-as-string",
+    )
+
+    assert outcome["status"] == "ok"
+    assert outcome["archived_event_ids"] == [dup]
+
+
+def test_merge_events_coerces_list_of_string_ids(tmp_db: sqlite3.Connection) -> None:
+    """LLM sometimes sends list of int-strings; coerce them."""
+    keeper = insert_event(tmp_db, make_event(source_url="https://keep/3"))
+    dup_a = insert_event(tmp_db, make_event(source_url="https://dup/3a"))
+    dup_b = insert_event(tmp_db, make_event(source_url="https://dup/3b"))
+    tools = build_curator_tools(dry_run=False)
+
+    outcome = tools["merge_events"](
+        keep_event_id=keeper,
+        archive_event_ids=[str(dup_a), str(dup_b)],
+        reason="LLM sent list of int-strings",
+    )
+
+    assert outcome["status"] == "ok"
+    assert set(outcome["archived_event_ids"]) == {dup_a, dup_b}
+
+
+def test_merge_events_refuses_non_numeric_string(tmp_db: sqlite3.Connection) -> None:
+    keeper = insert_event(tmp_db, make_event(source_url="https://keep/4"))
+    tools = build_curator_tools(dry_run=False)
+
+    outcome = tools["merge_events"](
+        keep_event_id=keeper, archive_event_ids="not-a-number", reason="bad"
+    )
+
+    assert outcome["error_type"] == "invalid_event_id"
+
+
+def test_merge_events_refuses_dict_archive_ids(tmp_db: sqlite3.Connection) -> None:
+    keeper = insert_event(tmp_db, make_event(source_url="https://keep/5"))
+    tools = build_curator_tools(dry_run=False)
+
+    outcome = tools["merge_events"](
+        keep_event_id=keeper, archive_event_ids={"nope": 1}, reason="bad shape"
+    )
+
+    assert outcome["error_type"] == "invalid_event_id"
+
+
 def test_merge_events_refuses_already_archived_target(tmp_db: sqlite3.Connection) -> None:
     keeper = insert_event(tmp_db, make_event(source_url="https://keep/1"))
     dup = insert_event(tmp_db, make_event(source_url="https://dup/1"))

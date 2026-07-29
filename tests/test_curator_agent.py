@@ -180,6 +180,33 @@ def test_run_curator_once_collects_write_errors(
     assert any("already_archived" in err for err in result.errors)
 
 
+def test_run_curator_once_collects_tool_failed_markers(
+    tmp_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run_loop` synthesizes `{"tool_failed": True, "error": "..."}` when a
+    write tool raises. `_collect_write_errors` must surface these in
+    `CuratorRunResult.errors` — the real-API smoke on 2026-07-29 caught
+    this via LLM sending malformed args that tripped a TypeError."""
+    trace = [
+        _step(
+            1,
+            "merge_events",
+            {"keep_event_id": 1, "archive_event_ids": "26", "reason": "bad shape"},
+            {
+                "tool_failed": True,
+                "error": "TypeError: 'in <string>' requires string as left operand, not int",
+            },
+        ),
+    ]
+    _stub_run_loop(monkeypatch, scripted_trace=trace)
+
+    result = run_curator_once(record_runs=False)
+
+    assert len(result.errors) == 1
+    assert "tool_failed" in result.errors[0]
+    assert "TypeError" in result.errors[0]
+
+
 def test_run_curator_once_dry_run_marks_result_and_skips_llm_decisions(
     tmp_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
 ) -> None:
