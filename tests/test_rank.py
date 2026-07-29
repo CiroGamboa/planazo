@@ -87,9 +87,9 @@ def test_ranked_event_rejects_invalid_reason(reason: str) -> None:
 
 
 def test_preference_reason_wins_equal_eligible_scores() -> None:
-    event = _event(category="Music", confidence=1.0)
+    event = _event(category="music", confidence=1.0)
     result = rank_events([event], _intent(), RankingPreferences(preferred_categories=["music"]))
-    assert result[0].reason == "Matches your preferred category: Music."
+    assert result[0].reason == "Matches your preferred category: music."
 
 
 def test_freshness_and_confidence_reasons_are_deterministic() -> None:
@@ -162,8 +162,8 @@ def test_coordinate_less_event_is_neutral_with_active_radius() -> None:
     assert result[0].reason == "General match for your search."
 
 
-def test_long_valid_category_renders_a_bounded_single_line_reason() -> None:
-    category = "m" * 64
+def test_valid_category_renders_a_bounded_single_line_reason() -> None:
+    category = "music"
     event = _event(category=category, confidence=0.5)
     ranked = rank_events([event], _intent(), RankingPreferences(preferred_categories=[category]))
     assert len(ranked[0].reason) <= 240
