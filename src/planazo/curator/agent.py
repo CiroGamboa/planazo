@@ -412,7 +412,26 @@ def _count_write_outcomes(trace: list[StepRecord]) -> dict[str, int]:
 
 
 def _collect_write_errors(trace: list[StepRecord]) -> list[str]:
-    """Collect `error_type: message` strings for every failed write-tool call."""
+    """Collect `error_type: message` strings for every failed write-tool call.
+
+    Two failure shapes land in the trace:
+
+    1. Typed error dicts the tool itself returned:
+       `{"error_type": "not_found", "message": "..."}`. Curator-tool
+       validation branches (invalid_reason, invalid_event_id,
+       invalid_merge_group, not_found, already_archived, etc).
+
+    2. `tool_failure_result` markers `run_loop` synthesizes when the
+       tool RAISED an exception (before curator T3, this was mostly
+       theoretical; a real-API smoke on 2026-07-29 showed the LLM
+       occasionally sending malformed args that trip our internal
+       validation and raise TypeError before we can build the typed
+       branch). Shape: `{"tool_failed": True, "error": "TypeError: ..."}`.
+       See `planazo.agents.loop.tool_failure_result`.
+
+    Both shapes should surface as one error string in `CuratorRunRecord.errors`
+    so the audit log accurately reflects what went wrong per tick.
+    """
     errors: list[str] = []
     for record in trace:
         if record.tool not in {"archive_event", "merge_events", "update_event_category"}:
@@ -420,8 +439,11 @@ def _collect_write_errors(trace: list[StepRecord]) -> list[str]:
         if not isinstance(record.result, dict):
             continue
         error_type = record.result.get("error_type")
-        if error_type is None:
+        if error_type is not None:
+            message = record.result.get("message", "")
+            errors.append(format_stored_text(f"{error_type}: {message}", RATIONALE_CAP))
             continue
-        message = record.result.get("message", "")
-        errors.append(format_stored_text(f"{error_type}: {message}", RATIONALE_CAP))
+        if record.result.get("tool_failed") is True:
+            raw_error = record.result.get("error", "")
+            errors.append(format_stored_text(f"tool_failed: {raw_error}", RATIONALE_CAP))
     return errors

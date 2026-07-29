@@ -499,9 +499,46 @@ def _archive_event_impl(event_id: int, reason: str, *, dry_run: bool) -> dict[st
     return {"status": "ok", "archived_event_id": event_id}
 
 
+def _coerce_archive_event_ids(value: object) -> list[int] | dict[str, object]:
+    """Normalize LLM-provided `archive_event_ids` into a `list[int]` or return an error dict.
+
+    LLM providers commonly auto-unbox a single-element list, sending
+    `archive_event_ids='26'` (a string) or `archive_event_ids=26` (a
+    bare int) instead of the schema-correct `[26]`. Coerce those into
+    `[26]` here so a well-formed merge intent isn't lost to marshalling
+    quirks. Anything genuinely malformed (a dict, a nested list, a
+    non-numeric string) still returns a typed `invalid_event_id` error.
+    """
+    if isinstance(value, list):
+        coerced: list[int] = []
+        for entry in value:
+            try:
+                coerced.append(int(entry))
+            except (TypeError, ValueError):
+                return {
+                    "error_type": "invalid_event_id",
+                    "message": (f"archive_event_ids entries must be integers, got {entry!r}"),
+                }
+        return coerced
+    if isinstance(value, int) and not isinstance(value, bool):
+        return [value]
+    if isinstance(value, str):
+        try:
+            return [int(value.strip())]
+        except ValueError:
+            return {
+                "error_type": "invalid_event_id",
+                "message": f"archive_event_ids string {value!r} is not an integer",
+            }
+    return {
+        "error_type": "invalid_event_id",
+        "message": (f"archive_event_ids must be list[int] or an int, got {type(value).__name__}"),
+    }
+
+
 def _merge_events_impl(
     keep_event_id: int,
-    archive_event_ids: list[int],
+    archive_event_ids: list[int] | object,
     reason: str,
     *,
     dry_run: bool,
@@ -514,6 +551,10 @@ def _merge_events_impl(
             "error_type": "invalid_event_id",
             "message": f"keep_event_id must be >= 1, got {keep_event_id}",
         }
+    coerced = _coerce_archive_event_ids(archive_event_ids)
+    if isinstance(coerced, dict):
+        return coerced
+    archive_event_ids = coerced
     if not archive_event_ids:
         return {
             "error_type": "invalid_merge_group",
