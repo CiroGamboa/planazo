@@ -20,35 +20,48 @@ the write path can move independently of the read path — which lands in
 a later ticket for the `/find` history view (#23).
 """
 
-from planazo.observability.logging import AgentRunLogger, LLMDecisionLogger
+from planazo.observability.logging import (
+    AgentRunLogger,
+    LLMDecisionLogger,
+    RecommendationLogger,
+)
 from planazo.observability.models import (
     FINAL_ANSWER_CAP,
     RATIONALE_CAP,
+    RECOMMENDATION_REASON_CAP,
     USER_QUERY_CAP,
     AgentRunRecord,
     DecisionKind,
     LLMDecision,
+    RecommendationRecord,
     format_stored_text,
 )
 from planazo.observability.repository import (
     query_agent_runs,
     query_llm_decisions,
+    query_recommendations,
     record_agent_run,
     record_llm_decision,
+    record_recommendations,
 )
 
 __all__ = [
     "FINAL_ANSWER_CAP",
     "RATIONALE_CAP",
+    "RECOMMENDATION_REASON_CAP",
     "USER_QUERY_CAP",
     "AgentRunLogger",
     "AgentRunRecord",
     "DecisionKind",
     "LLMDecision",
     "LLMDecisionLogger",
+    "RecommendationLogger",
+    "RecommendationRecord",
     "format_stored_text",
     "query_agent_runs",
     "query_llm_decisions",
+    "query_recommendations",
     "record_agent_run",
     "record_llm_decision",
+    "record_recommendations",
 ]

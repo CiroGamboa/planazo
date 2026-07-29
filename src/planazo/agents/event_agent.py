@@ -49,6 +49,7 @@ from planazo.observability import (
     AgentRunRecord,
     LLMDecision,
     LLMDecisionLogger,
+    RecommendationLogger,
     format_stored_text,
 )
 from planazo.query.models import SearchIntent
@@ -513,6 +514,37 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
         # `llm_decisions.run_id` is FK to `agent_runs.run_id`. Disabling
         # `record_runs` disables both surfaces alongside the JSONL writer.
         _record_llm_decisions_best_effort(run_id=logger.run_id, result=result, recorded_at=ended_at)
+    recommender_result = _build_recommender_result(
+        intent=intent,
+        result=result,
+        clarification=clarification,
+        search_trace=search_trace,
+    )
+    if logger is not None and recommender_result.status in {"ok", "no_results"}:
+        # M3.7 T1 recommendations audit — writes AFTER `record_agent_run`
+        # because `recommendations.run_id` is FK to `agent_runs.run_id`.
+        # Gated on `status in {"ok", "no_results"}` because those are the
+        # only branches that carry a settled candidate list (empty is
+        # legal for `no_results`; the empty-sequence branch inside the
+        # logger short-circuits without opening a connection). The same
+        # `record_runs` seam disables this surface alongside the other
+        # two writers.
+        _record_recommendations_best_effort(
+            run_id=logger.run_id,
+            candidates=recommender_result.candidates,
+            recorded_at=ended_at,
+        )
+    return recommender_result
+
+
+def _build_recommender_result(
+    *,
+    intent: SearchIntent,
+    result: LoopResult,
+    clarification: ClarificationRequest | None,
+    search_trace: list[StepRecord],
+) -> RecommenderResult:
+    """Project the loop's outcome onto the validated `RecommenderResult` shape."""
     successful_searches: list[Event] = []
     for record in search_trace:
         error = _search_error(record.result)
@@ -652,3 +684,24 @@ def _record_llm_decisions_best_effort(
             recorded_at=recorded_at,
         )
     LLMDecisionLogger(conn_factory=db.connect).record_many([decision])
+
+
+def _record_recommendations_best_effort(
+    *, run_id: str, candidates: tuple[Event, ...], recorded_at: datetime
+) -> None:
+    """Persist one `recommendations` row per candidate the Recommender surfaced.
+
+    Composition-root sibling of `_record_agent_run_best_effort` /
+    `_record_llm_decisions_best_effort`. Today the Recommender does not
+    invoke the deterministic ranker (`rank_events`), so candidates land
+    with `score=None`, `reason=None`; the ordering is preserved via
+    `rank_position` = index in the tuple, and a follow-up ticket that
+    wires the ranker will populate the two columns.
+
+    `candidates` is `RecommenderResult.candidates` — an empty tuple is
+    legal (`no_results`), in which case the logger's own empty-sequence
+    short-circuit skips the DB round trip. `RecommendationLogger` swallows
+    every exception (Rule 4) — the Recommender's answer is the primary
+    flow, and observability failures never affect it.
+    """
+    RecommendationLogger(conn_factory=db.connect).record(run_id, candidates, now=recorded_at)

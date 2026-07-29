@@ -26,10 +26,16 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from datetime import datetime
 
+from planazo.catalog.models import Event
 from planazo.observability.models import AgentRunRecord, LLMDecision
-from planazo.observability.repository import record_agent_run, record_llm_decision
+from planazo.observability.repository import (
+    record_agent_run,
+    record_llm_decision,
+    record_recommendations,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,3 +129,54 @@ class LLMDecisionLogger:
                 conn.close()
         except Exception as exc:
             logger.warning("llm_decision_logger write failed: %s", exc)
+
+
+class RecommendationLogger:
+    """Best-effort observer that persists 0..N `recommendations` rows per Recommender loop.
+
+    Constructed once per composition root with a `conn_factory` that
+    yields a fresh `sqlite3.Connection`. The Recommender hands the
+    ordered candidate list at loop completion; the writer opens one
+    connection, inserts every row atomically through `record_recommendations`,
+    closes the connection, and returns.
+
+    Rule 4 hook: writer failures never propagate. Every exception from
+    the `conn_factory` call, from `record_recommendations` (an FK
+    violation from an orphan `run_id` if `agent_runs` write failed, a
+    disk-full error), or from `conn.close()` in the `finally` is logged
+    at WARNING and swallowed. Batch-atomic: a mid-batch failure rolls
+    the whole batch back — a partial candidate set with the top-ranked
+    candidate missing would be worse than none for a `/find` history
+    reader, because the ordering is only meaningful when complete.
+
+    An empty candidate list is a no-op — no connection is opened,
+    matching the shape of `LLMDecisionLogger.record_many`.
+    """
+
+    def __init__(self, conn_factory: Callable[[], sqlite3.Connection]) -> None:
+        self._conn_factory = conn_factory
+
+    def record(
+        self,
+        run_id: str,
+        ranked_events: Sequence[Event],
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        """Persist every candidate in `ranked_events` best-effort.
+
+        An empty sequence is a no-op — no connection is opened. The
+        primitive's atomic transaction means either every row lands or
+        none of them do; the outer try/except catches every failure
+        surface (connect, insert, close) and logs one WARNING.
+        """
+        if not ranked_events:
+            return
+        try:
+            conn = self._conn_factory()
+            try:
+                record_recommendations(conn, run_id, ranked_events, now=now)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning("recommendation_logger write failed: %s", exc)

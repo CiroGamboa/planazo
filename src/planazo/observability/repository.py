@@ -29,11 +29,19 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Sequence
+from datetime import UTC, datetime
 
 from pydantic import ValidationError
 
+from planazo.catalog.models import Event
 from planazo.monitor.models import AgentName
-from planazo.observability.models import AgentRunRecord, DecisionKind, LLMDecision
+from planazo.observability.models import (
+    AgentRunRecord,
+    DecisionKind,
+    LLMDecision,
+    RecommendationRecord,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -236,3 +244,139 @@ def query_llm_decisions(
         params,
     ).fetchall()
     return [decision for row in rows if (decision := _decision_from_row(row)) is not None]
+
+
+def record_recommendations(
+    conn: sqlite3.Connection,
+    run_id: str,
+    ranked_events: Sequence[Event],
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Insert one `recommendations` row per candidate in `ranked_events`.
+
+    `ranked_events` is the ordered sequence the Recommender surfaced —
+    index 0 is the top-ranked candidate, `rank_position` is the index
+    itself. Today (M3.7 T1) the Recommender does not invoke the
+    deterministic ranker, so `score` and `reason` are persisted as
+    `NULL` for every row; the follow-up ticket that wires `rank_events`
+    at the composition root switches to `RankedEvent` and populates
+    both columns.
+
+    All rows share one `recorded_at` timestamp — the batch is a single
+    atomic decision on the composition-root side. `now=None` reads
+    `datetime.now(UTC)` at call time.
+
+    Every row commits inside one transaction (single `conn.commit()`
+    after the batch), so a mid-batch `IntegrityError` from an orphan
+    `run_id` or a since-deleted `event_id` rolls the whole batch back —
+    a `recommendations` row set is only useful atomically alongside its
+    parent `agent_runs` row. Returns the count of rows inserted (0 for
+    an empty sequence — no-op, no transaction opened). The best-effort
+    suppression lives one layer up in `RecommendationLogger`, same
+    discipline as `AgentRunLogger` / `LLMDecisionLogger`.
+    """
+    if not ranked_events:
+        return 0
+    stamped_at = (now or datetime.now(UTC)).isoformat()
+    rows = [
+        (run_id, event.id, position, None, None, stamped_at)
+        for position, event in enumerate(ranked_events)
+    ]
+    conn.executemany(
+        "INSERT INTO recommendations"
+        " (run_id, event_id, rank_position, score, reason, recorded_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def _recommendation_from_row(row: sqlite3.Row) -> RecommendationRecord | None:
+    """Rehydrate one `RecommendationRecord` from a `sqlite3.Row`, or `None` if unrecoverable.
+
+    Mirrors `_record_from_row`'s graceful discipline: a row whose stored
+    shape no longer matches the current Pydantic aggregate (a `reason`
+    with a raw control byte injected by a diagnostic tool, a negative
+    `rank_position` from a raw-SQL bypass) is skipped with one WARNING
+    naming the `run_id`, so the reader stays usable for the healthy
+    rows around a bad one.
+    """
+    try:
+        return RecommendationRecord.model_validate(dict(row))
+    except ValidationError as exc:
+        logger.warning(
+            "query_recommendations: skipping row run_id=%s that failed re-validation: %s",
+            row["run_id"],
+            exc.errors(),
+        )
+        return None
+
+
+def query_recommendations(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str | None = None,
+    user_id: int | None = None,
+    limit: int = 100,
+) -> list[RecommendationRecord]:
+    """Return persisted `recommendations`, newest run first, rank ascending within a run.
+
+    `run_id=None` returns rows across every run. `user_id=None` returns
+    rows across every user. When `user_id` is supplied the query joins
+    `agent_runs` to filter — the "history for one user" shape a `/find`
+    reader will use. Rows are ordered by the parent `agent_runs.started_at`
+    DESC (newest run first) then `rank_position` ASC (top candidate
+    first within each run); `limit` caps the total row count.
+
+    When `run_id` is filtered (no `user_id`), the `idx_recommendations_run_rank`
+    composite index backs the WHERE-then-ORDER-BY plan — an
+    `EXPLAIN QUERY PLAN` test locks that choice, matching the pattern
+    established for `idx_agent_runs_user_started` / `idx_llm_decisions_run`.
+    """
+    if limit < 1:
+        raise ValueError(f"query_recommendations limit must be >= 1, got {limit}")
+
+    clauses: list[str] = []
+    params: list[object] = []
+    if user_id is not None:
+        # `user_id` lives on `agent_runs`; join to filter, and let the
+        # server-side sort span both tables to preserve "newest run first,
+        # rank ascending within a run" across the join.
+        join = " JOIN agent_runs ON agent_runs.run_id = recommendations.run_id"
+        if run_id is not None:
+            clauses.append("recommendations.run_id = ?")
+            params.append(run_id)
+        clauses.append("agent_runs.user_id = ?")
+        params.append(user_id)
+        where = f" WHERE {' AND '.join(clauses)}"
+        order = " ORDER BY agent_runs.started_at DESC, recommendations.rank_position ASC"
+        select_cols = (
+            "recommendations.run_id, recommendations.event_id,"
+            " recommendations.rank_position, recommendations.score,"
+            " recommendations.reason, recommendations.recorded_at"
+        )
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT {select_cols} FROM recommendations{join}{where}{order} LIMIT ?",
+            params,
+        ).fetchall()
+    else:
+        if run_id is not None:
+            clauses.append("run_id = ?")
+            params.append(run_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        # No `user_id` join → order by `recorded_at DESC` (newest run
+        # first — every row in one batch shares its timestamp) then
+        # `rank_position ASC`. When `run_id` is supplied the composite
+        # `(run_id, rank_position)` index picks up the ORDER BY
+        # `rank_position` clause directly.
+        order = " ORDER BY recorded_at DESC, rank_position ASC"
+        params.append(limit)
+        rows = conn.execute(
+            "SELECT run_id, event_id, rank_position, score, reason, recorded_at"
+            f" FROM recommendations{where}{order} LIMIT ?",
+            params,
+        ).fetchall()
+    return [rec for row in rows if (rec := _recommendation_from_row(row)) is not None]

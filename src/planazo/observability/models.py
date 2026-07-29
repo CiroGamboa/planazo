@@ -57,6 +57,17 @@ not a whole conversation transcript. 500 leaves headroom above the
 compact enough to store many thousands of rows without bloating the DB.
 """
 
+RECOMMENDATION_REASON_CAP: Final[int] = 500
+"""Maximum length of the sanitized `RecommendationRecord.reason` field.
+
+Matches `RATIONALE_CAP`: the ranker's per-candidate `reason` is bounded
+by `MAX_REASON_CHARS = 240` at `RankedEvent`'s construction site, so 500
+gives comfortable headroom above that cap while keeping the corpus a
+`/find` history reader will query against compact. A ranker that emits
+longer strings than 240 still fits; nothing above 500 does, matching the
+discipline `LLMDecision.rationale` established.
+"""
+
 FINAL_ANSWER_CAP: Final[int] = 2000
 """Maximum length of the sanitized `AgentRunRecord.final_answer` field.
 
@@ -292,3 +303,58 @@ class LLMDecision(BaseModel):
             if self.error_type is not None:
                 raise ValueError("decision_kind='answered' requires error_type=None")
         return self
+
+
+class RecommendationRecord(BaseModel):
+    """One `recommendations` row — one candidate the Recommender surfaced.
+
+    Field-for-field mirror of the SQL schema in
+    `planazo/storage/migrations/005_recommendations.sql`. A completed
+    Recommender loop with `RecommenderResult.status in {"ok",
+    "no_results"}` produces 0..N of these — one per candidate for `ok`,
+    zero for `no_results`.
+
+    `event_id` is nullable because the FK is `ON DELETE SET NULL`: a
+    future retention sweep that deletes stale `events` rows must not
+    cascade-delete the audit rows documenting that we once recommended
+    them. `score` and `reason` are nullable because today (M3.7 T1) the
+    Recommender does not invoke the deterministic ranker — `run_once`
+    returns filtered but unranked candidates, so persistence lands with
+    `score=None`, `reason=None`. The columns exist for the follow-up
+    ticket that wires `rank_events` at the composition root.
+
+    `reason` is DB-inside per AGENTS.md Rule 2's rationale hook: full
+    ranker reasoning is allowed subject to `RECOMMENDATION_REASON_CAP` +
+    `format_stored_text` sanitization enforced at construction. The
+    field validator's regex re-check is defense-in-depth against a
+    caller that bypassed the sanitizer — same discipline as
+    `LLMDecision.rationale` / `AgentRunRecord.user_query`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = Field(min_length=1)
+    event_id: int | None = None
+    rank_position: int = Field(ge=0)
+    score: float | None = None
+    reason: str | None = Field(default=None, max_length=RECOMMENDATION_REASON_CAP)
+    recorded_at: datetime
+
+    @field_validator("reason")
+    @classmethod
+    def _validate_sanitized_reason(cls, value: str | None) -> str | None:
+        """Reject an unsanitized `reason` at the field boundary.
+
+        `None` is a legitimate value (see class docstring — today the
+        ranker is not wired). A non-None value must pass the shared
+        `_SANITIZED_TEXT_PATTERN` regex, same defense-in-depth shape as
+        `LLMDecision.rationale`.
+        """
+        if value is None:
+            return value
+        if not _SANITIZED_TEXT_PATTERN.fullmatch(value):
+            raise ValueError(
+                "RecommendationRecord.reason must be sanitized — build it "
+                "with observability.models.format_stored_text"
+            )
+        return value
