@@ -116,7 +116,12 @@ def _print_narrative_step(record: StepRecord) -> None:
     arguments = record.arguments if isinstance(record.arguments, dict) else {}
     result = record.result if isinstance(record.result, dict) else {}
 
-    if tool in {"list_stale_events", "list_duplicate_candidates", "list_low_confidence_events"}:
+    if tool in {
+        "list_stale_events",
+        "list_duplicate_candidates",
+        "list_fuzzy_duplicate_candidates",
+        "list_low_confidence_events",
+    }:
         total = result.get("total") if isinstance(result, dict) else None
         print(f"[{record.step:02d}] {tool}(...) -> {total} row(s)")
         return
