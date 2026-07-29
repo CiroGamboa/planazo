@@ -36,7 +36,7 @@ from agentlib.core import CHEAP
 from planazo.agents.loop import LoopResult, StepRecord, run_loop
 from planazo.catalog import Event, filter_events_for_intent
 from planazo.catalog import search_events as catalog_search_events
-from planazo.identity import PreferenceReadResult, PreferenceRecord, get_preferences, set_preference
+from planazo.identity import PreferenceReadResult, get_preferences
 from planazo.memory.api import build_memory_tools
 from planazo.memory.rules import load_rules
 from planazo.monitor.logging import RunStepLogger
@@ -304,13 +304,21 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
     writes anything.
 
     Supplying `user_id` adds the four memory tools (`retrieve_memory`,
-    `save_memory`, `retrieve_notes`, `save_note`) plus `dispatch_extraction`,
-    each bound to that identity by a closure. `user_id` is never a tool
-    parameter, so no prompt and no tool-call argument can point them at
-    another user's private facts or forge the delegator on an extraction.
-    `dispatch_extraction` reaches the Extractor through a lazy import inside
-    this function so `event_agent.py`'s static import graph never touches
-    `planazo.sources.instagram` (ADR 0005 §Trust boundary).
+    `save_memory`, `retrieve_notes`, `save_note`), each bound to that
+    identity by a closure. `user_id` is never a tool parameter, so no
+    prompt and no tool-call argument can point them at another user's
+    private facts.
+
+    The Recommender's tool set is deliberately narrow (ADR 0021):
+    `search_events` (read), the four memory tools (ADR 0004), and
+    `ask_user` (clarification). It does NOT include `save_preference`
+    or `dispatch_extraction` — those writers were retracted from the
+    Recommender's registration after `save_preference` was observed
+    firing as a side effect of answering a search query
+    (`answers.txt` message 3). `save_preference` remains callable
+    from `/prefs set` and from the clarification-answer path;
+    `dispatch_extraction` remains reachable from the Extractor and
+    the scheduler.
 
     The two calendar reference tools are opt-in through `calendar_enabled`.
     When they are enabled:
@@ -396,42 +404,6 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
     clarification: ClarificationRequest | None = None
     search_trace: list[StepRecord] = []
 
-    def save_preference(key: str, value: str) -> dict[str, object]:
-        """Save one durable filter preference for this bound user.
-
-        Use this only for a user preference that should apply to later event
-        searches. The user identity is fixed by the run and is never a tool
-        argument. Keys and values are trimmed, single-line literals with the
-        same bounds used by the persisted preference boundary.
-        """
-        try:
-            candidate = PreferenceRecord(user_id=user_id, key=key, value=value)
-        except ValidationError as exc:
-            return {"error_type": "invalid_preference", "message": str(exc)}
-        try:
-            conn = db.connect()
-        except (OSError, sqlite3.Error) as exc:
-            return {
-                "error_type": "preference_store_unavailable",
-                "message": f"Preference store unavailable: {type(exc).__name__}",
-            }
-        try:
-            try:
-                saved = set_preference(conn, user_id, candidate.key, candidate.value)
-                verified = get_preferences(conn, user_id)
-            except sqlite3.IntegrityError:
-                return {"error_type": "unknown_user", "message": "The bound user does not exist."}
-            except (OSError, sqlite3.Error) as exc:
-                return {
-                    "error_type": "preference_store_unavailable",
-                    "message": f"Preference store unavailable: {type(exc).__name__}",
-                }
-        finally:
-            conn.close()
-        if verified.error_type is not None:
-            return {"error_type": verified.error_type, "message": verified.message}
-        return {"saved": saved.model_dump(mode="json")}
-
     def ask_user(question: str) -> dict[str, object]:
         """Ask one non-blocking clarification question for the calling surface.
 
@@ -452,23 +424,17 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
         clarification = requested
         return {"clarification_requested": True}
 
-    mutation_schemas = [schema_for(save_preference), schema_for(ask_user)]
+    # ADR 0021: only `ask_user` remains as a Recommender mutation tool.
+    # `save_preference` and `dispatch_extraction` were retracted from
+    # the Recommender's tool set (see docstring above). Both remain
+    # callable from their legitimate callers (bot /prefs, clarification
+    # answer path, scheduler, Extractor).
+    mutation_schemas = [schema_for(ask_user)]
     mutation_registry: dict[str, Callable[..., dict[str, object]]] = {
-        "save_preference": save_preference,
         "ask_user": ask_user,
     }
     tool_schemas = tool_schemas + mutation_schemas
     registry = {**registry, **mutation_registry}
-    # Lazy import: `planazo.extraction.tools` top-imports the Extractor,
-    # which top-imports `planazo.sources.instagram`. Reaching it here
-    # keeps that chain out of `event_agent.py`'s static import graph
-    # (ADR 0005 §Trust boundary), verified by the AST guard in
-    # `tests/test_trust_boundary.py`.
-    from planazo.extraction.tools import build_dispatch_extraction
-
-    extraction_schemas, extraction_registry = build_dispatch_extraction(user_id)
-    tool_schemas = tool_schemas + extraction_schemas
-    registry = {**registry, **extraction_registry}
     if run_context.get("calendar_enabled", False):
         tool_schemas = tool_schemas + calendar_tools.TOOL_SCHEMAS
         registry = {**registry, **calendar_tools.TOOL_REGISTRY}
