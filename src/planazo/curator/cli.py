@@ -1,22 +1,26 @@
 """`planazo-curator` — cron entry point for the catalog curator agent.
 
-One subcommand, `--tick`, drives one curator pass end-to-end. See
-[ADR 0020](../../../docs/adr/0020-catalog-curator-agent.md) for the
-charter.
+Two subcommands, mutually exclusive:
 
-Modifiers:
+- `--tick` — drive one LLM curator pass end-to-end (soft-delete stale
+  events, merge duplicates, correct mis-classified categories). See
+  [ADR 0020](../../../docs/adr/0020-catalog-curator-agent.md).
+- `--rotate-archived DAYS` — retention sweep. Physically DELETE events
+  whose `archived_at` is older than `DAYS` days. No LLM turn; a pure
+  SQL DELETE over already-soft-deleted rows. See `curator/retention.py`.
 
-- `--dry-run` — the LLM sees the same tool interfaces but the write
-  tools return `{"status": "dry_run", ...}` instead of mutating the DB.
-  `agent_runs` still records the tick (so the run is auditable), but
-  `llm_decisions` does not fire for the dry-run write tools — nothing
-  was actually decided into DB state. The JSONL audit log marks the
-  record with `dry_run: true`.
+Modifiers (apply to both modes where sensible):
+
+- `--dry-run` — for `--tick`, the LLM sees the same tool interfaces
+  but writes return `{"status": "dry_run", ...}`; `agent_runs` still
+  records the tick. For `--rotate-archived`, the SQL DELETE is
+  skipped and the operator sees the list of rows that WOULD have been
+  deleted.
 - `--verbose` — a stdout narrative stream describing each tool call
-  the LLM made. Off by default (cron runs stay one-line-per-tick).
-  Mirrors the shape of `planazo-scheduler --verbose`. See ADR 0017 for
-  the Rule-2 discipline: no captions or event descriptions ever cross
-  into the narrative; only ids, counts, and Literal-valued fields.
+  the LLM made (for `--tick`) or the list of rows queued for delete
+  (for `--rotate-archived`). Off by default. See ADR 0017 for the
+  Rule-2 discipline: no captions or event descriptions ever cross into
+  the narrative; only ids, counts, and Literal-valued fields.
 
 Exit-code taxonomy (mirrors `planazo-scheduler`):
 
@@ -24,13 +28,12 @@ Exit-code taxonomy (mirrors `planazo-scheduler`):
   the LLM's per-decision outcomes. Operators read `var/curator_runs.jsonl`
   and `data/monitor/*.md` for per-decision health.
 - **`1`** — uncaught exception. Any exception that escapes `run_curator`
-  — Pydantic validation on the record boundary, DB corruption,
-  filesystem unwritable, LLM driver blow-up. One-liner to stderr with
-  the exception class + a 120-char-truncated message (Rule 2 discipline
-  extends to the exception-hoist path).
-- **`2`** — configuration-time failure. Reserved; the curator has no
-  boot-time YAML today, but the code path is here for future
-  `data/curator.yaml`-style config additions.
+  or `run_retention` — Pydantic validation on the record boundary, DB
+  corruption, filesystem unwritable, LLM driver blow-up. One-liner to
+  stderr with the exception class + a 120-char-truncated message (Rule
+  2 discipline extends to the exception-hoist path).
+- **`2`** — configuration-time failure. `--rotate-archived` outside
+  `[MIN_RETENTION_DAYS, MAX_RETENTION_DAYS]` exits `2` at argparse.
 """
 
 from __future__ import annotations
@@ -42,6 +45,12 @@ from typing import Final
 
 from planazo.agents.loop import LoopResult, StepRecord
 from planazo.curator.models import DEFAULT_AUDIT_LOG_PATH
+from planazo.curator.retention import (
+    MAX_RETENTION_DAYS,
+    MIN_RETENTION_DAYS,
+    RetentionResult,
+    run_retention,
+)
 from planazo.curator.service import run_curator
 
 __all__ = ["main"]
@@ -62,11 +71,21 @@ def _build_parser() -> argparse.ArgumentParser:
             "correct mis-classified categories. See ADR 0020."
         ),
     )
-    parser.add_argument(
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
         "--tick",
         action="store_true",
-        required=True,
-        help="Run one curator pass. Exit 0 on completion, 1 on uncaught exception.",
+        help="Run one LLM curator pass. Exit 0 on completion, 1 on uncaught exception.",
+    )
+    group.add_argument(
+        "--rotate-archived",
+        type=int,
+        dest="rotate_archived",
+        metavar="DAYS",
+        help=(
+            "Retention sweep: physically DELETE archived events older than DAYS. "
+            f"DAYS must be in [{MIN_RETENTION_DAYS}, {MAX_RETENTION_DAYS}]."
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -142,16 +161,40 @@ def main(argv: list[str] | None = None) -> int:
 
     `argv=None` reads `sys.argv[1:]`; tests inject a list.
     """
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
 
     audit_log_path: Path = DEFAULT_AUDIT_LOG_PATH
     verbose = bool(args.verbose)
+    dry_run = bool(args.dry_run)
+
+    if args.rotate_archived is not None:
+        return _run_rotate(
+            parser=parser,
+            retention_days=args.rotate_archived,
+            dry_run=dry_run,
+            audit_log_path=audit_log_path,
+            verbose=verbose,
+        )
+
+    return _run_tick(
+        dry_run=dry_run,
+        audit_log_path=audit_log_path,
+        verbose=verbose,
+    )
+
+
+def _run_tick(
+    *,
+    dry_run: bool,
+    audit_log_path: Path,
+    verbose: bool,
+) -> int:
     on_step = _print_narrative_step if verbose else None
     on_complete = _print_narrative_complete if verbose else None
-
     try:
         tick_result = run_curator(
-            dry_run=bool(args.dry_run),
+            dry_run=dry_run,
             audit_log_path=audit_log_path,
             on_step=on_step,
             on_complete=on_complete,
@@ -170,6 +213,56 @@ def main(argv: list[str] | None = None) -> int:
         f" dry_run={tick_result.dry_run}"
     )
     return EXIT_OK
+
+
+def _run_rotate(
+    *,
+    parser: argparse.ArgumentParser,
+    retention_days: int,
+    dry_run: bool,
+    audit_log_path: Path,
+    verbose: bool,
+) -> int:
+    if not MIN_RETENTION_DAYS <= retention_days <= MAX_RETENTION_DAYS:
+        parser.error(
+            f"--rotate-archived must be in [{MIN_RETENTION_DAYS}, "
+            f"{MAX_RETENTION_DAYS}], got {retention_days}"
+        )
+    try:
+        result = run_retention(
+            retention_days=retention_days,
+            dry_run=dry_run,
+            audit_log_path=audit_log_path,
+        )
+    except Exception as exc:
+        _print_uncaught_error(exc)
+        return EXIT_UNCAUGHT
+
+    if verbose:
+        _print_rotate_preview(result)
+
+    print(
+        f"rotate: run_id={result.run_id[:8]}"
+        f" retention_days={result.retention_days}"
+        f" purgeable={len(result.preview)}"
+        f" deleted={result.deleted}"
+        f" dry_run={result.dry_run}"
+    )
+    return EXIT_OK
+
+
+def _print_rotate_preview(result: RetentionResult) -> None:
+    """List (in Rule-2-safe form) each event that would be / was deleted.
+
+    Only ids + `archived_at` timestamps + categories cross the boundary
+    — no titles, descriptions, or venue names.
+    """
+    if not result.preview:
+        print("[--] no purgeable rows at cutoff.")
+        return
+    for event in result.preview:
+        archived_at = event.archived_at.isoformat() if event.archived_at is not None else "?"
+        print(f"[id={event.id}] archived_at={archived_at} category={event.category}")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -198,6 +198,49 @@ def restore_event(conn: sqlite3.Connection, event_id: int) -> bool:
     return cursor.rowcount > 0
 
 
+def list_purgeable_archived_events(
+    conn: sqlite3.Connection, *, cutoff: datetime, limit: int = 500
+) -> list[Event]:
+    """Return archived events with `archived_at < cutoff`, oldest-archived first.
+
+    The read shape retention rotation uses in dry-run mode: report what
+    would be hard-deleted so the operator can eyeball the list before
+    committing. `limit` caps the response so a catalog with millions of
+    archived rows doesn't blow up the demo output; the actual purge
+    doesn't respect this cap.
+    """
+    rows = conn.execute(
+        "SELECT * FROM events"
+        " WHERE archived_at IS NOT NULL AND archived_at < ?"
+        " ORDER BY archived_at ASC LIMIT ?",
+        (cutoff.isoformat(), limit),
+    ).fetchall()
+    return [_event_from_row(row) for row in rows]
+
+
+def purge_archived_events_older_than(conn: sqlite3.Connection, *, cutoff: datetime) -> int:
+    """Physically DELETE archived events with `archived_at < cutoff`.
+
+    Returns the number of rows removed. Only touches rows that have
+    already been soft-deleted (`archived_at IS NOT NULL`) — a live row
+    (NULL `archived_at`) is never at risk. This is the retention sweep
+    the curator's `--rotate-archived N` mode calls after N days have
+    passed.
+
+    Commits on success. Foreign keys with `ON DELETE SET NULL` on
+    `llm_decisions.event_db_id` and `recommendations.event_id` mean the
+    audit trail loses its pointer but the rationale/`reason` text stays
+    — an operator can still see "curator archived event 42 with reason
+    X" even after the hard delete.
+    """
+    cursor = conn.execute(
+        "DELETE FROM events WHERE archived_at IS NOT NULL AND archived_at < ?",
+        (cutoff.isoformat(),),
+    )
+    conn.commit()
+    return cursor.rowcount
+
+
 def update_event_category(conn: sqlite3.Connection, event_id: int, new_category: str) -> bool:
     """Set `events.category = ?` for a live row; return `True` on match.
 
