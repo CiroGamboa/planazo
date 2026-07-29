@@ -80,7 +80,9 @@ duplicates, and correcting mis-classified categories.
 
 Read tools (call these first):
 - list_stale_events(limit): events past their end_utc.
-- list_duplicate_candidates(limit): groups by normalized title + date + venue.
+- list_duplicate_candidates(limit): groups by normalized title + date + venue (exact match).
+- list_fuzzy_duplicate_candidates(similarity_threshold=0.6, limit): groups by \
+date + venue where titles are similar-but-not-identical (Jaccard token overlap).
 - list_low_confidence_events(threshold=0.4, limit): extractor-uncertain rows.
 
 Write tools (require a `reason` <= 500 chars):
@@ -163,6 +165,7 @@ def run_curator_once(
     tool_schemas: list[dict[str, Any]] = [
         schema_for(tools["list_stale_events"]),
         schema_for(tools["list_duplicate_candidates"]),
+        schema_for(tools["list_fuzzy_duplicate_candidates"]),
         schema_for(tools["list_low_confidence_events"]),
         schema_for(tools["archive_event"]),
         schema_for(tools["merge_events"]),

@@ -20,8 +20,11 @@ from planazo.catalog import Event, get_event_by_id, insert_event
 from planazo.catalog.repository import soft_delete_event
 from planazo.curator.tools import (
     REASON_CAP,
+    _jaccard,
+    _tokenize_title,
     build_curator_tools,
     list_duplicate_candidates,
+    list_fuzzy_duplicate_candidates,
     list_low_confidence_events,
     list_stale_events,
 )
@@ -543,12 +546,281 @@ def test_update_event_category_refuses_missing_id(tmp_db: sqlite3.Connection) ->
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# list_fuzzy_duplicate_candidates + tokenizer / Jaccard helpers
+# ---------------------------------------------------------------------------
+
+
+def test_tokenize_title_lowercases_and_strips_punct() -> None:
+    tokens = _tokenize_title("Techno Night! @ Sala Apolo (2026)")
+
+    assert "techno" in tokens
+    assert "night" in tokens
+    assert "@" not in tokens  # stripped
+    assert "2026" in tokens
+
+
+def test_tokenize_title_empty_string_returns_empty_set() -> None:
+    assert _tokenize_title("") == frozenset()
+
+
+def test_jaccard_identical_titles_returns_one() -> None:
+    assert _jaccard("Techno Night at Apolo", "Techno Night at Apolo") == 1.0
+
+
+def test_jaccard_disjoint_titles_returns_zero() -> None:
+    assert _jaccard("Techno Night", "Jazz Brunch") == 0.0
+
+
+def test_jaccard_partial_overlap_returns_expected_ratio() -> None:
+    # {"techno", "night"} & {"techno", "party"} = {"techno"} → 1/3
+    ratio = _jaccard("Techno Night", "Techno Party")
+    assert abs(ratio - (1 / 3)) < 1e-6
+
+
+def test_jaccard_returns_zero_when_one_side_empty() -> None:
+    assert _jaccard("", "Techno Night") == 0.0
+    assert _jaccard("Techno Night", "") == 0.0
+
+
+def test_list_fuzzy_duplicate_candidates_groups_similar_titles(
+    tmp_db: sqlite3.Connection,
+) -> None:
+    when = datetime(2026, 8, 1, 20, 0, tzinfo=UTC)
+    same_venue = "Sala Apolo"
+    id_a = insert_event(
+        tmp_db,
+        make_event(
+            source_url="https://venue/a",
+            title="Techno Night at Sala Apolo",
+            start_utc=when,
+            end_utc=when + timedelta(hours=2),
+            venue_name=same_venue,
+            category="music",
+        ),
+    )
+    id_b = insert_event(
+        tmp_db,
+        make_event(
+            source_url="https://promoter/b",
+            title="🔥 Techno Night - Live DJ Set at Apolo",
+            start_utc=when + timedelta(minutes=15),
+            end_utc=when + timedelta(hours=3),
+            venue_name=same_venue,
+            category="music",
+        ),
+    )
+
+    result = list_fuzzy_duplicate_candidates(similarity_threshold=0.3)
+
+    assert result["total"] == 1
+    groups = result["groups"]
+    assert isinstance(groups, list)
+    ids = {event["event_id"] for event in groups[0]["events"]}
+    assert ids == {id_a, id_b}
+    assert groups[0]["max_similarity"] >= 0.3
+
+
+def test_list_fuzzy_duplicate_candidates_excludes_all_exact_matches(
+    tmp_db: sqlite3.Connection,
+) -> None:
+    """Groups where every title normalizes identically are `list_duplicate_candidates`' job."""
+    when = datetime(2026, 8, 1, 20, 0, tzinfo=UTC)
+    insert_event(
+        tmp_db,
+        make_event(
+            source_url="https://a/1",
+            title="Techno Night",
+            start_utc=when,
+            end_utc=when + timedelta(hours=2),
+            venue_name="Apolo",
+            category="music",
+        ),
+    )
+    insert_event(
+        tmp_db,
+        make_event(
+            source_url="https://b/1",
+            title="techno night",  # exact match after lower(trim)
+            start_utc=when + timedelta(minutes=30),
+            end_utc=when + timedelta(hours=3),
+            venue_name="Apolo",
+            category="music",
+        ),
+    )
+
+    result = list_fuzzy_duplicate_candidates()
+
+    # No fuzzy group — the two titles collapse to the same normalized form.
+    assert result["total"] == 0
+
+
+def test_list_fuzzy_duplicate_candidates_ignores_archived(
+    tmp_db: sqlite3.Connection,
+) -> None:
+    when = datetime(2026, 8, 1, 20, 0, tzinfo=UTC)
+    id_live = insert_event(
+        tmp_db,
+        make_event(
+            source_url="https://a/1",
+            title="Techno Night at Apolo",
+            start_utc=when,
+            end_utc=when + timedelta(hours=2),
+            venue_name="Apolo",
+            category="music",
+        ),
+    )
+    id_archived = insert_event(
+        tmp_db,
+        make_event(
+            source_url="https://b/1",
+            title="🔥 Techno Night Live Set Apolo",
+            start_utc=when + timedelta(minutes=15),
+            end_utc=when + timedelta(hours=3),
+            venue_name="Apolo",
+            category="music",
+        ),
+    )
+    soft_delete_event(tmp_db, id_archived)
+
+    result = list_fuzzy_duplicate_candidates()
+
+    # Only one live row remains — no group possible.
+    assert result["total"] == 0
+    # Sanity — the live row is still there.
+    from planazo.catalog import get_event_by_id
+
+    assert get_event_by_id(tmp_db, id_live) is not None
+
+
+def test_list_fuzzy_duplicate_candidates_respects_different_venue(
+    tmp_db: sqlite3.Connection,
+) -> None:
+    when = datetime(2026, 8, 1, 20, 0, tzinfo=UTC)
+    insert_event(
+        tmp_db,
+        make_event(
+            source_url="https://a/1",
+            title="Techno Night with Live DJ",
+            start_utc=when,
+            end_utc=when + timedelta(hours=2),
+            venue_name="Apolo",
+            category="music",
+        ),
+    )
+    insert_event(
+        tmp_db,
+        make_event(
+            source_url="https://b/1",
+            title="Techno Night with Live DJ",
+            start_utc=when + timedelta(minutes=30),
+            end_utc=when + timedelta(hours=3),
+            venue_name="Razzmatazz",  # DIFFERENT venue
+            category="music",
+        ),
+    )
+
+    result = list_fuzzy_duplicate_candidates()
+
+    # Even though titles overlap heavily, different venues → no fuzzy group.
+    assert result["total"] == 0
+
+
+def test_list_fuzzy_duplicate_candidates_respects_different_date(
+    tmp_db: sqlite3.Connection,
+) -> None:
+    apolo = "Apolo"
+    day_one = datetime(2026, 8, 1, 20, 0, tzinfo=UTC)
+    day_two = datetime(2026, 8, 2, 20, 0, tzinfo=UTC)
+    insert_event(
+        tmp_db,
+        make_event(
+            source_url="https://a/1",
+            title="Techno Night at Apolo",
+            start_utc=day_one,
+            end_utc=day_one + timedelta(hours=2),
+            venue_name=apolo,
+            category="music",
+        ),
+    )
+    insert_event(
+        tmp_db,
+        make_event(
+            source_url="https://b/1",
+            title="🔥 Techno Night at Apolo",
+            start_utc=day_two,
+            end_utc=day_two + timedelta(hours=2),
+            venue_name=apolo,
+            category="music",
+        ),
+    )
+
+    result = list_fuzzy_duplicate_candidates()
+
+    # Different dates → no fuzzy group.
+    assert result["total"] == 0
+
+
+def test_list_fuzzy_duplicate_candidates_respects_threshold(
+    tmp_db: sqlite3.Connection,
+) -> None:
+    when = datetime(2026, 8, 1, 20, 0, tzinfo=UTC)
+    apolo = "Apolo"
+    insert_event(
+        tmp_db,
+        make_event(
+            source_url="https://a/1",
+            title="Techno Night",
+            start_utc=when,
+            end_utc=when + timedelta(hours=2),
+            venue_name=apolo,
+            category="music",
+        ),
+    )
+    insert_event(
+        tmp_db,
+        make_event(
+            source_url="https://b/1",
+            title="Techno Party",
+            start_utc=when + timedelta(minutes=30),
+            end_utc=when + timedelta(hours=3),
+            venue_name=apolo,
+            category="music",
+        ),
+    )
+    # Jaccard is ~0.33 ({techno, night} vs {techno, party} = 1/3).
+
+    # High threshold refuses the pair.
+    high_result = list_fuzzy_duplicate_candidates(similarity_threshold=0.5)
+    assert high_result["total"] == 0
+
+    # Low threshold catches it.
+    low_result = list_fuzzy_duplicate_candidates(similarity_threshold=0.3)
+    assert low_result["total"] == 1
+
+
+def test_list_fuzzy_duplicate_candidates_rejects_out_of_range_threshold() -> None:
+    assert (
+        list_fuzzy_duplicate_candidates(similarity_threshold=-0.1)["error_type"]
+        == "invalid_search_filter"
+    )
+    assert (
+        list_fuzzy_duplicate_candidates(similarity_threshold=1.5)["error_type"]
+        == "invalid_search_filter"
+    )
+
+
+def test_list_fuzzy_duplicate_candidates_rejects_bad_limit() -> None:
+    assert list_fuzzy_duplicate_candidates(limit=0)["error_type"] == "invalid_search_filter"
+
+
 def test_build_curator_tools_returns_expected_registry() -> None:
     tools = build_curator_tools(dry_run=False)
 
     assert set(tools.keys()) == {
         "list_stale_events",
         "list_duplicate_candidates",
+        "list_fuzzy_duplicate_candidates",
         "list_low_confidence_events",
         "archive_event",
         "merge_events",

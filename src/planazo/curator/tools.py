@@ -203,6 +203,183 @@ def list_duplicate_candidates(limit: int = 50) -> dict[str, object]:
     return {"groups": groups, "total": len(groups)}
 
 
+def _tokenize_title(title: str) -> frozenset[str]:
+    """Lowercase-split-strip-punct tokenization for Jaccard similarity.
+
+    Simple and dependency-free: lowercase, split on whitespace, strip a
+    conservative punctuation set from each token, drop empty tokens.
+    Not language-aware — matches the ADR 0020 §Out of scope note that
+    fuzzy dedup starts with exact-Python tokens and defers full NLP.
+    """
+    stripped: set[str] = set()
+    for token in title.lower().split():
+        clean = token.strip(".,!?()[]{}\"'`:;@-—…")
+        if clean:
+            stripped.add(clean)
+    return frozenset(stripped)
+
+
+def _jaccard(a: str, b: str) -> float:
+    """Token-set Jaccard similarity between two titles in `[0.0, 1.0]`.
+
+    Returns `0.0` when either title tokenizes to the empty set — the
+    caller treats that as "no similarity signal".
+    """
+    a_tokens = _tokenize_title(a)
+    b_tokens = _tokenize_title(b)
+    if not a_tokens or not b_tokens:
+        return 0.0
+    intersection = a_tokens & b_tokens
+    union = a_tokens | b_tokens
+    return len(intersection) / len(union)
+
+
+def list_fuzzy_duplicate_candidates(
+    similarity_threshold: float = 0.6,
+    limit: int = 50,
+) -> dict[str, object]:
+    """List groups sharing venue + date whose titles are similar-but-not-identical.
+
+    Complementary to `list_duplicate_candidates`, which requires titles
+    to match after `lower(trim(...))`. This tool covers the softer case
+    where two accounts announce the same event with slightly different
+    wording — a common Instagram pattern where the venue account posts
+    "Techno Night @ Sala Apolo" and the promoter posts "🔥 Techno Night
+    - Live DJ Set". Same date, same venue, different-but-similar
+    titles.
+
+    Grouping key is `(start_utc::date, coalesce(venue_name, ""))`. Two
+    events land in the same fuzzy-duplicate group if their titles have
+    token-set Jaccard similarity `>= similarity_threshold`. The
+    tokenizer is dependency-free: lowercase, split on whitespace, strip
+    conservative punctuation.
+
+    Groups where every title pair also matches exactly are excluded —
+    those are already covered by `list_duplicate_candidates`. Use this
+    tool AFTER `list_duplicate_candidates` to catch the softer cases;
+    then decide with `merge_events` which id to keep. When in doubt,
+    prefer `archive_event` on one row over `merge_events` — a bad
+    merge affects two rows, a bad archive only one.
+
+    `similarity_threshold` in `[0.0, 1.0]`; default 0.6 is roughly
+    "same event, different marketing". Values outside range are
+    `invalid_search_filter`. `limit` bounds returned groups (up to 20
+    rows per group).
+
+    Return shape:
+      {"groups": [{"group_key",
+                   "events": [{"event_id", "title", "start_utc",
+                               "venue_name", "source_url", "confidence"}, ...],
+                   "max_similarity": <float>}, ...],
+       "total": <group count>}
+    """
+    if not 0.0 <= similarity_threshold <= 1.0:
+        return {
+            "error_type": "invalid_search_filter",
+            "message": f"similarity_threshold must be in [0.0, 1.0], got {similarity_threshold}",
+        }
+    if limit < 1:
+        return {
+            "error_type": "invalid_search_filter",
+            "message": f"limit must be >= 1, got {limit}",
+        }
+    try:
+        conn = db.connect()
+    except (OSError, sqlite3.Error) as exc:
+        return {"error_type": "curator_store_unavailable", "message": type(exc).__name__}
+    try:
+        try:
+            # Fetch all live events grouped by (start_date, venue) where the
+            # bucket has more than one row — those are the fuzzy-match
+            # candidates. Sort by bucket size DESC so the LLM sees the
+            # biggest clusters first.
+            bucket_rows = conn.execute(
+                "SELECT substr(start_utc, 1, 10) AS start_date,"
+                " COALESCE(venue_name, '') AS venue,"
+                " COUNT(*) AS n"
+                " FROM events"
+                " WHERE archived_at IS NULL"
+                " GROUP BY start_date, venue"
+                " HAVING n > 1"
+                " ORDER BY n DESC"
+            ).fetchall()
+            groups: list[dict[str, object]] = []
+            for bucket in bucket_rows:
+                if len(groups) >= limit:
+                    break
+                members = conn.execute(
+                    "SELECT id, title, start_utc, venue_name, source_url, confidence"
+                    " FROM events"
+                    " WHERE archived_at IS NULL"
+                    " AND substr(start_utc, 1, 10) = ?"
+                    " AND COALESCE(venue_name, '') = ?"
+                    " ORDER BY confidence DESC, id ASC LIMIT 20",
+                    (bucket["start_date"], bucket["venue"]),
+                ).fetchall()
+                titles = [row["title"] for row in members]
+                if not _bucket_has_fuzzy_pair(titles, similarity_threshold):
+                    continue
+                if _bucket_is_all_exact_matches(titles):
+                    # Already covered by list_duplicate_candidates.
+                    continue
+                max_similarity = _bucket_max_similarity(titles)
+                groups.append(
+                    {
+                        "group_key": f"{bucket['start_date']}|{bucket['venue']}",
+                        "events": [
+                            {
+                                "event_id": int(m["id"]),
+                                "title": m["title"],
+                                "start_utc": m["start_utc"],
+                                "venue_name": m["venue_name"],
+                                "source_url": m["source_url"],
+                                "confidence": m["confidence"],
+                            }
+                            for m in members
+                        ],
+                        "max_similarity": round(max_similarity, 3),
+                    }
+                )
+        except (OSError, sqlite3.Error) as exc:
+            return {"error_type": "curator_store_unavailable", "message": type(exc).__name__}
+    finally:
+        conn.close()
+
+    return {"groups": groups, "total": len(groups)}
+
+
+def _bucket_has_fuzzy_pair(titles: list[str], threshold: float) -> bool:
+    """True iff at least one title pair in `titles` has Jaccard >= threshold."""
+    for i in range(len(titles)):
+        for j in range(i + 1, len(titles)):
+            if _jaccard(titles[i], titles[j]) >= threshold:
+                return True
+    return False
+
+
+def _bucket_is_all_exact_matches(titles: list[str]) -> bool:
+    """True iff every title in `titles` normalizes to the same string.
+
+    Matches the exact-match key `list_duplicate_candidates` uses:
+    `lower(trim(title))`.
+    """
+    if not titles:
+        return False
+    normalized = {t.strip().lower() for t in titles}
+    return len(normalized) == 1
+
+
+def _bucket_max_similarity(titles: list[str]) -> float:
+    """Maximum pairwise Jaccard across `titles`. Empty or one-item lists → 0."""
+    best = 0.0
+    for i in range(len(titles)):
+        for j in range(i + 1, len(titles)):
+            score = _jaccard(titles[i], titles[j])
+            if score > best:
+                best = score
+    return best
+
+
 def list_low_confidence_events(threshold: float = 0.4, limit: int = 50) -> dict[str, object]:
     """List live events with `confidence < threshold` — candidates for review.
 
@@ -584,6 +761,7 @@ def build_curator_tools(*, dry_run: bool = False) -> dict[str, Callable[..., dic
     return {
         "list_stale_events": list_stale_events,
         "list_duplicate_candidates": list_duplicate_candidates,
+        "list_fuzzy_duplicate_candidates": list_fuzzy_duplicate_candidates,
         "list_low_confidence_events": list_low_confidence_events,
         "archive_event": _make_archive_event(dry_run),
         "merge_events": _make_merge_events(dry_run),
