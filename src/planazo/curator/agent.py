@@ -80,7 +80,9 @@ duplicates, and correcting mis-classified categories.
 
 Read tools (call these first):
 - list_stale_events(limit): events past their end_utc.
-- list_duplicate_candidates(limit): groups by normalized title + date + venue.
+- list_duplicate_candidates(limit): groups by normalized title + date + venue (exact match).
+- list_fuzzy_duplicate_candidates(similarity_threshold=0.6, limit): groups by \
+date + venue where titles are similar-but-not-identical (Jaccard token overlap).
 - list_low_confidence_events(threshold=0.4, limit): extractor-uncertain rows.
 
 Write tools (require a `reason` <= 500 chars):
@@ -95,13 +97,21 @@ sports, other. Anything else is rejected.
 Guidelines:
 1. Start with list_stale_events. Archive any event whose end_utc is a \
 full day past.
-2. Then list_duplicate_candidates. Within a group, pick the row with \
-highest confidence as keep_event_id; merge the rest.
-3. Then list_low_confidence_events. If the title maps to a clear \
+2. Then list_duplicate_candidates for exact-title duplicates. Within a \
+group, pick the row with highest confidence as keep_event_id; merge \
+the rest.
+3. Then list_fuzzy_duplicate_candidates for near-duplicates the exact \
+matcher missed (same date + venue, similar titles). Only merge when \
+you are confident the group describes one event; when in doubt, \
+archive one row instead of merging.
+4. Then list_low_confidence_events. If the title maps to a clear \
 category, call update_event_category. If the row is spam or non-event \
 content, archive it.
-4. Every write requires a `reason` explaining the decision.
-5. Stop when reads return no actionable rows or you have made \
+5. Always call every read tool at least once per tick — a tool \
+returning zero rows is a healthy signal, not a stop condition. Only \
+stop after all four read tools have been called.
+6. Every write requires a `reason` explaining the decision.
+7. Stop after all four read tools have been called OR you have made \
 approximately 10 writes.
 
 You have {MAX_STEPS} steps total. Read calls count as steps."""
@@ -163,6 +173,7 @@ def run_curator_once(
     tool_schemas: list[dict[str, Any]] = [
         schema_for(tools["list_stale_events"]),
         schema_for(tools["list_duplicate_candidates"]),
+        schema_for(tools["list_fuzzy_duplicate_candidates"]),
         schema_for(tools["list_low_confidence_events"]),
         schema_for(tools["archive_event"]),
         schema_for(tools["merge_events"]),
