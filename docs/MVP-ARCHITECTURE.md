@@ -147,7 +147,8 @@ The layers below each map to one bounded context (annotated per layer). Numberin
 
 ### 1. Telegram bot — `src/planazo/bot/`
 
-- **`bot/app.py`** — entrypoint; builds the `python-telegram-bot` `Application`, registers one `CommandHandler` per command plus one `MessageHandler` wrapping `bot/chat.py`'s three-way plain-text dispatch, converts each `Update` into an `IncomingMessage`, and runs long polling.
+- **`bot/app.py`** — entrypoint; builds the `python-telegram-bot` `Application` with `concurrent_updates=True` so different senders' turns run concurrently, registers one `CommandHandler` per command plus one `MessageHandler` wrapping `bot/chat.py`'s three-way plain-text dispatch, converts each `Update` into an `IncomingMessage`, dispatches every one of those six handlers through one shared per-sender queue before running any of them, and runs long polling.
+- **`bot/queue.py`** — `PerUserQueue`, the per-sender FIFO gate `bot/app.py` dispatches every handler through: a `busy` flag, a waiting counter, and a `deque` of FIFO turn events per `telegram_user_id`, the bound and its two replies configured in `data/bot.yaml` ([ADR 0014](adr/0014-per-user-message-serialization.md)).
 - **`bot/surface.py`** — `TelegramSurface`, the reply channel bound to a `Bot` and a `chat_id`; the implementation of `planazo.interfaces.surface.UserSurface`. Plain text, no `parse_mode`.
 - **`bot/models.py`** — `IncomingMessage`, the Pydantic v2 projection of one update that the command layer consumes.
 - **`bot/session.py`** — resolves the Telegram `user_id` to the internal `users.id` (create-on-first-contact). This is the multi-user seam.
@@ -157,7 +158,7 @@ The layers below each map to one bounded context (annotated per layer). Numberin
 - **`bot/config.py`** — Pydantic-validated config loader, mirroring `sources/config.py`. Reads `data/bot.yaml` at startup: the locale-keyed message catalog every reply resolves against, and the ordered registration-step declarations `bot/registration.py` executes. Loaded once at startup; a malformed file stops the process before Telegram polling starts.
 - **`bot/approve.py`** — supplies `ApprovalGate.approve` via an inline keyboard `[Approve] [Decline]`, mirrors `_terminal_approve` in `src/planazo/agents/cli.py`. Lands with #22.
 
-Only `app.py` and `surface.py` import `telegram`; `models.py`, `session.py`, `commands.py`, `registration.py`, and `chat.py` are transport-neutral, which is what lets every command be exercised offline against real SQLite and a recording surface.
+Only `app.py` and `surface.py` import `telegram`; `models.py`, `session.py`, `commands.py`, `registration.py`, `chat.py`, and `queue.py` are transport-neutral, which is what lets every command be exercised offline against real SQLite and a recording surface.
 
 The bot layer is deliberately dumb — no LLM call originates inside it, guarded by the source-text scan in `tests/test_bot_no_llm.py`. `bot/chat.py` is the layer's one caller into the agent loop: a fully registered sender's free text reaches `planazo.agents.event_agent.run_once`, and it is that call's own graph — not anything in `bot/` — which reaches the LLM provider. Swapping in a richer dispatcher later — the structured `/find` path (#23), multi-turn history, per-user rate limiting — is a change to `bot/chat.py`, not a rewrite of `commands.py` or `registration.py`.
 
@@ -573,6 +574,7 @@ Accepted ADRs describe current state; planned ADRs are reserved for their own ti
 | 0010 | [`extensibility-interfaces`](adr/0010-extensibility-interfaces.md) | `Protocol` classes at the four swap seams — `UserSurface`, `EventSource`, `Repository[T]`, `AgentLoop` — in `src/planazo/interfaces/`. |
 | 0011 | [`telegram-bot-interface`](adr/0011-telegram-bot-interface.md) | Bot layer, no-LLM-in-bot invariant, PTB-free command signature, session mapping, the `UserSurface` shape, and the approval seam's threading contract. Supersedes ADR 0010's `UserSurface` declaration only. |
 | 0012 | `event-sources-meetup-eventbrite` | Conditional — only if either ships past POC. |
+| 0014 | [`per-user-message-serialization`](adr/0014-per-user-message-serialization.md) | Per-sender FIFO gate (`PerUserQueue`) wraps every handler dispatch in `bot/app.py`, keyed by `telegram_user_id`; `concurrent_updates` raised from PTB's default of 1 to 256 so different senders run concurrently. |
 
 Until each ADR lands, its section here reads as "planned — ADR NNNN"; when it lands, the entry is edited in place to link the accepted ADR.
 
