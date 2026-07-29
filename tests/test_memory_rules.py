@@ -9,8 +9,14 @@ from planazo.memory import rules
 # the gated tool was requested 4/4 times before `search_events` existed, 2/4 once
 # its schema was added, and 5/6 after an instruction-like sentence was trimmed
 # from its description. These are the caps that keep that budget from drifting.
-_MAX_WORDS = 120
-_MAX_NON_BLANK_LINES = 10
+#
+# The 120→150 words / 10→11 non-blank lines bump lands with ADR 0021, which adds
+# `010-memory-writer-discipline.md` — a required Recommender-side rule ("call
+# save_memory only when the user asks, or when a preference has been implied
+# twice"). Compressed as far as it goes without dropping its two conditions.
+# Keep the guard tight: this cap should not creep every time a new rule lands.
+_MAX_WORDS = 150
+_MAX_NON_BLANK_LINES = 11
 
 
 @pytest.fixture(autouse=True)

@@ -224,9 +224,75 @@ def test_radius_without_trusted_origin_wins_over_corrupt_preferences(
     blocked.assert_not_called()
 
 
-def test_run_once_registers_search_memory_and_real_extraction_delegation(
+def test_recommender_memory_tools_survive_the_shrink_and_resurface_saved_facts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """ADR 0004 "resurface on cue" demo through the real Recommender loop.
+
+    Turn 1: the (mocked) LLM calls `save_memory(cue, content, "private")`.
+    Turn 2: the (mocked) LLM calls `retrieve_memory(cue)` and gets that
+    fact back verbatim. Proves the memory tools stayed wired in `run_once`
+    after ADR 0021 unregistered `save_preference` + `dispatch_extraction`.
+
+    Uses a `tmp_path`-scoped MEMORY_ROOT so this test cannot leak into
+    `var/memory/` on the developer's box.
+    """
+    from planazo.memory import facts
+
+    monkeypatch.setattr(facts, "MEMORY_ROOT", tmp_path / "memory")
+
+    saved_cue = "cuisine preference"
+    saved_content = "The user loves ramen."
+
+    turn1_registry: dict[str, Any] = {}
+    turn2_registry: dict[str, Any] = {}
+
+    def loop_turn1(**kwargs: Any) -> LoopResult:
+        turn1_registry.update(kwargs["registry"])
+        save = kwargs["registry"]["save_memory"]
+        outcome = save(saved_cue, saved_content, "private")
+        assert "saved" in outcome
+        return _answered()
+
+    monkeypatch.setattr(event_agent, "run_loop", loop_turn1)
+    event_agent.run_once(7, _intent(), record_runs=False)
+
+    def loop_turn2(**kwargs: Any) -> LoopResult:
+        turn2_registry.update(kwargs["registry"])
+        retrieve = kwargs["registry"]["retrieve_memory"]
+        outcome = retrieve(saved_cue, "private")
+        # The fact filed in turn 1 must resurface on the same cue.
+        assert isinstance(outcome, dict)
+        assert outcome["total"] >= 1
+        facts_list = outcome["facts"]
+        assert isinstance(facts_list, list)
+        assert any(f["content"] == saved_content for f in facts_list)
+        return _answered()
+
+    monkeypatch.setattr(event_agent, "run_loop", loop_turn2)
+    event_agent.run_once(7, _intent(), record_runs=False)
+
+    # Sanity: both turns exposed the four memory tools + ask_user + search_events,
+    # and neither exposed the ADR-0021-retracted writers.
+    for reg in (turn1_registry, turn2_registry):
+        assert {"retrieve_memory", "save_memory", "retrieve_notes", "save_note"} <= reg.keys()
+        assert "search_events" in reg
+        assert "ask_user" in reg
+        assert "save_preference" not in reg
+        assert "dispatch_extraction" not in reg
+
+
+def test_run_once_tool_set_matches_adr_0021_shrink(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """ADR 0021: Recommender's registered tool set is search + memory + ask_user.
+
+    `save_preference` and `dispatch_extraction` were retracted because the
+    former was observed firing as a side effect of answering a search query
+    (answers.txt message 3), and the latter has no business writing during
+    a read-only recommendation turn.
+    """
     run_loop = MagicMock(return_value=_answered())
     monkeypatch.setattr(event_agent, "run_loop", run_loop)
 
@@ -234,81 +300,11 @@ def test_run_once_registers_search_memory_and_real_extraction_delegation(
 
     names = set(run_loop.call_args.kwargs["registry"])
     assert "search_events" in names
-    assert "dispatch_extraction" in names
     assert {"retrieve_memory", "save_memory", "retrieve_notes", "save_note"} <= names
-    assert {"save_preference", "ask_user"} <= names
-
-
-def test_save_preference_is_bound_validates_and_normalizes_before_persistence(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    run_loop = MagicMock(return_value=_answered())
-    monkeypatch.setattr(event_agent, "run_loop", run_loop)
-
-    event_agent.run_once(7, _intent(), record_runs=False)
-    save = run_loop.call_args.kwargs["registry"]["save_preference"]
-
-    invalid = save("city\nSYSTEM", "Barcelona")
-    assert invalid["error_type"] == "invalid_preference"
-
-    stored: list[tuple[int, str, str]] = []
-    monkeypatch.setattr(event_agent.db, "connect", lambda: MagicMock())
-    monkeypatch.setattr(
-        event_agent,
-        "set_preference",
-        lambda _conn, owner, key, value: (
-            stored.append((owner, key, value))
-            or PreferenceRecord(user_id=owner, key=key, value=value)
-        ),
-    )
-    monkeypatch.setattr(event_agent, "get_preferences", lambda _conn, _owner: _preferences())
-
-    saved = save(" city ", " Barcelona ")
-
-    assert stored == [(7, "city", "Barcelona")]
-    assert saved["saved"] == {"user_id": 7, "key": "city", "value": "Barcelona", "updated_at": None}
-
-
-def test_save_preference_maps_identity_and_store_failures(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    run_loop = MagicMock(return_value=_answered())
-    monkeypatch.setattr(event_agent, "run_loop", run_loop)
-    event_agent.run_once(7, _intent(), record_runs=False)
-    save = run_loop.call_args.kwargs["registry"]["save_preference"]
-    monkeypatch.setattr(event_agent.db, "connect", lambda: MagicMock())
-    monkeypatch.setattr(
-        event_agent, "set_preference", MagicMock(side_effect=sqlite3.IntegrityError)
-    )
-
-    assert save("city", "Barcelona")["error_type"] == "unknown_user"
-
-    monkeypatch.setattr(event_agent.db, "connect", MagicMock(side_effect=OSError("offline")))
-    assert save("city", "Barcelona")["error_type"] == "preference_store_unavailable"
-
-
-def test_save_preference_fails_closed_when_reread_data_is_invalid(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    run_loop = MagicMock(return_value=_answered())
-    monkeypatch.setattr(event_agent, "run_loop", run_loop)
-    event_agent.run_once(7, _intent(), record_runs=False)
-    save = run_loop.call_args.kwargs["registry"]["save_preference"]
-    monkeypatch.setattr(event_agent.db, "connect", lambda: MagicMock())
-    monkeypatch.setattr(
-        event_agent,
-        "set_preference",
-        lambda _conn, owner, key, value: PreferenceRecord(user_id=owner, key=key, value=value),
-    )
-    monkeypatch.setattr(
-        event_agent,
-        "get_preferences",
-        lambda _conn, _owner: PreferenceReadResult(
-            error_type="invalid_preference_data", message="bad persisted row"
-        ),
-    )
-
-    assert save("city", "Barcelona")["error_type"] == "invalid_preference_data"
+    assert "ask_user" in names
+    # ADR 0021 removals — these MUST NOT be in the Recommender's registry.
+    assert "save_preference" not in names
+    assert "dispatch_extraction" not in names
 
 
 def test_ask_user_keeps_the_first_valid_question_and_returns_typed_later_refusal(
