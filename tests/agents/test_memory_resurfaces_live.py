@@ -8,24 +8,23 @@ Run explicitly:
 
 Requires a real `OPENCODE_API_KEY`.
 
-This is the test that proves issue #113's actual point: that
-`data/rules/010-memory-usage.md`, pushed with no code change via
-`memory.rules.load_rules()`, is enough to make a real model call
-`save_memory` and `retrieve_memory` on its own initiative, not just a
-scripted mock. The mocked-plumbing side of the same claim lives in
+This is the test that proves `data/rules/010-memory-usage.md`, pushed with
+no code change via `memory.rules.load_rules()`, is enough to make a real
+model call `save_memory` and `retrieve_memory` on its own initiative, not
+just a scripted mock. The mocked-plumbing side of the same claim lives in
 `tests/agents/test_memory_resurfaces.py`.
 
-Why the "durable preference" is seeded via `identity.set_preference` rather
-than passed as free text: `event_agent.run_once(user_id, intent)` has no raw
-user-message parameter at all — the Recommender loop's user turn is always
-the fixed `RECOMMENDER_WORK_MESSAGE`. The only per-run channel that carries
-"something this user has told the system" into the Recommender's pushed
-context is the preferences block `_preferences_text` renders (see
-`planazo/conversation/service.py::_handle_clarification_answer`, which is the
-real production path that turns a user's free-text answer into exactly such
-a row). Seeding one directly is the live-test equivalent of "the user told
-the bot this in an earlier turn" without re-implementing the interpreter or
-the conversation service here — both are out of this ticket's scope.
+`event_agent.run_once` now accepts a `text` run_context key — the user's raw
+message this turn, pushed as bounded context alongside the validated intent
+(`docs/adr/0022-user-text-push-context.md`). This test drives that channel
+directly with an explicit remember-ask, which the merged rule allows
+`save_memory` to act on in a single turn.
+
+Known limitation, not covered here: the rule's other trigger — "the same
+preference has been implied twice this conversation" — needs at least one
+earlier turn's raw wording to still be visible on a later turn.
+`run_once`'s `text` key only ever carries the *current* turn's message; no
+cross-turn buffer exists yet, so that clause is not exercised by this test.
 """
 
 from __future__ import annotations
@@ -40,7 +39,6 @@ from dotenv import find_dotenv, load_dotenv
 from agentlib.core import CHEAP
 from planazo.agents.event_agent import RecommenderResult, run_once
 from planazo.agents.loop import StepRecord
-from planazo.identity import set_preference
 from planazo.memory import facts
 from planazo.query.models import SearchIntent
 from planazo.storage import db
@@ -48,8 +46,7 @@ from planazo.storage import db
 pytestmark = pytest.mark.live
 
 _MAX_ATTEMPTS = 3
-_PREFERENCE_KEY = "venue_preference"
-_PREFERENCE_VALUE = "avoids loud, crowded venues and prefers something quieter"
+_REMEMBER_ASK_TEXT = "Please remember that I don't like loud, crowded venues."
 
 
 def _real_key_present() -> bool:
@@ -72,12 +69,11 @@ def _load_real_env() -> None:
 @pytest.fixture
 def isolated_stores(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> int:
     """Point every store at a fresh tmp tree; leave `rules.RULES_DIR` at its
-    committed default so the real `data/rules/*.md` (including the new
+    committed default so the real `data/rules/*.md` (including
     `010-memory-usage.md`) is what actually reaches the model.
 
     Mirrors `test_recommender_limit_live.py`'s `isolated_catalog` fixture.
-    Returns the seeded user's id, with `_PREFERENCE_KEY` already on file —
-    the stand-in for "the user told the bot this in an earlier turn."
+    Returns the seeded user's id.
     """
     monkeypatch.setattr(facts, "MEMORY_ROOT", tmp_path / "memory")
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "planazo.db")
@@ -88,7 +84,6 @@ def isolated_stores(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> int:
 
         user = get_or_create_user(conn, "tg-live-memory-1", "Live Memory Test User")
         assert user.id is not None
-        set_preference(conn, user.id, _PREFERENCE_KEY, _PREFERENCE_VALUE)
         return user.id
     finally:
         conn.close()
@@ -127,6 +122,7 @@ def _run_until_save_memory_is_called(
             max_output_tokens=400,
             on_step=steps.append,
             run_log_dir=tmp_path / f"turn1-{attempt}",
+            text=_REMEMBER_ASK_TEXT,
         )
         if any(step.tool == "save_memory" for step in steps):
             print(f"\n[live memory] save_memory called on attempt {attempt}/{_MAX_ATTEMPTS}")
@@ -135,7 +131,7 @@ def _run_until_save_memory_is_called(
     pytest.fail(
         f"model never called save_memory in {_MAX_ATTEMPTS} attempts — a model-behaviour "
         "observation, not necessarily a defect here; check whether data/rules/010-memory-"
-        "usage.md's wording or the preferences push is what needs tightening."
+        "usage.md's wording or the text push is what needs tightening."
     )
 
 
@@ -145,8 +141,8 @@ def test_a_real_model_saves_and_later_resurfaces_a_durable_preference(
 ) -> None:
     user_id = isolated_stores
 
-    # --- Turn 1: the pushed preferences block states a durable constraint;
-    # per data/rules/010-memory-usage.md, the model should cue it into memory.
+    # --- Turn 1: an explicit remember-ask in the raw message; per
+    # data/rules/010-memory-usage.md, the model should call save_memory.
     turn_1_result, turn_1_steps = _run_until_save_memory_is_called(user_id, tmp_path)
     save_call = next(step for step in turn_1_steps if step.tool == "save_memory")
     print(f"\n[live memory] save_memory args: {save_call.arguments}")

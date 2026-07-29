@@ -10,13 +10,20 @@ from planazo.memory import rules
 # its schema was added, and 5/6 after an instruction-like sentence was trimmed
 # from its description. These are the caps that keep that budget from drifting.
 #
-# The 120→150 words / 10→11 non-blank lines bump lands with ADR 0021, which adds
-# `010-memory-writer-discipline.md` — a required Recommender-side rule ("call
-# save_memory only when the user asks, or when a preference has been implied
-# twice"). Compressed as far as it goes without dropping its two conditions.
-# Keep the guard tight: this cap should not creep every time a new rule lands.
-_MAX_WORDS = 150
-_MAX_NON_BLANK_LINES = 11
+# The 212→218 words / 14→13 non-blank lines edit is round three of
+# `020-recommendation-answer-shape.md`. Round two spelled out the app's
+# literal rendered template (`N. Title` / `date/time · venue · category ·
+# price` / `link: URL`) as an example of what not to reproduce — live
+# testing showed the model echoing that literal placeholder text verbatim
+# instead of treating it as illustrative, and separately dodging "no
+# bullets/numbering" by cramming the same per-event name+date+venue+price+
+# link pairing into one un-bulleted paragraph. This version drops the
+# copyable example and bans the underlying content pairing directly ("never
+# pair a name with its date/venue/price/link") so there is no format-only
+# loophole and nothing to echo. Keep the guard tight: this cap should not
+# creep every time a new rule lands.
+_MAX_WORDS = 218
+_MAX_NON_BLANK_LINES = 13
 
 
 @pytest.fixture(autouse=True)
