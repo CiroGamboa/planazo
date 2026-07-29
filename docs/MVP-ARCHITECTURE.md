@@ -138,6 +138,7 @@ Under `src/planazo/`, each domain concept lives in a self-contained folder that 
 | `rank/` | Deterministic ranker (LLM re-ranker deferred) | `RankingPreferences`, `RankedEvent`, `rank_events` — landed by M4 |
 | `monitor/` | Out-of-band LLM-as-judge grader | `RunStep`, `RunSession`, `Verdict`, `GradedRun` |
 | `observability/` | Per-loop SQLite audit rows in `agent_runs` + per-decision rationale rows in `llm_decisions` — write-side only, wired best-effort at composition roots alongside the JSONL sidecars | `AgentRunRecord`, `LLMDecision`, `format_stored_text`, `record_agent_run`/`query_agent_runs`, `record_llm_decision`/`query_llm_decisions`, `AgentRunLogger`, `LLMDecisionLogger` |
+| `conversation/` | Per-user multi-turn scratchpad + the composition-root service that turns the stateless Recommender loop into a stateful `/find` conversation — reads state, dispatches to `interpret + run_once`, upserts state after every turn (see [ADR 0016](adr/0016-multi-turn-recommender-conversation.md)) | `ConversationState`, `PendingClarification`, `ConversationReply`, `get_state`/`upsert_state`, `handle_user_message` |
 
 **Shared kernel** — `agentlib/` (LLM wrapper) and `tools/schema.py` (function-signature reflection). Product-agnostic; imported by every context; may not import any context.
 
@@ -248,6 +249,7 @@ Schema:
 | `scan_state(source_url PK, last_scanned_at, last_success_at, consecutive_failures)` | Per-source-URL scheduler bookkeeping — post entries and account entries share the table (`source_url` is the honest name for both). `next_run_after(cadence, last_scanned_at)` drives the cadence gate; `consecutive_failures` drives the failure-skip gate (ADR 0011 §D9). Read + upserted every `planazo-scheduler --tick`. |
 | `agent_runs(id, run_id UNIQUE, agent_kind CHECK IN ('recommender', 'extractor'), user_id FK, user_query, final_answer, stopped, steps_count, started_at, ended_at)` | One row per completed Recommender or Extractor loop, written best-effort at the composition roots alongside the JSONL sidecars. `user_query` and `final_answer` are sanitized via `observability/models.py::format_stored_text`. Backs future per-user history reads (`/find` history, #23) via the composite index `idx_agent_runs_user_started(user_id, started_at)`. |
 | `llm_decisions(id, run_id FK -> agent_runs.run_id, decision_kind CHECK IN ('save_event', 'needs_clarification', 'error', 'answered'), event_db_id FK -> events.id ON DELETE SET NULL, error_type, rationale, recorded_at)` | Zero-to-N rows per `agent_runs` — one per terminal LLM decision. The Extractor emits `save_event` / `needs_clarification` / `error` rows from its tool-call trace; the Recommender emits one `answered` row (or an `error` row on `truncated` / `max_steps`). `rationale` is DB-inside per Rule 2 (full LLM reasoning allowed subject to `RATIONALE_CAP=500` + `format_stored_text` sanitization). Written best-effort via `observability/logging.py::LLMDecisionLogger` alongside `AgentRunLogger`; disabled together by the Recommender's `record_runs=False` seam. Indexed on `run_id` (per-run join) and `decision_kind` (corpus-analysis shape M4's ranker will read). |
+| `conversation_state(user_id PK FK -> users.id, pending_clarification JSON, last_recommendation_run_id, updated_at)` | The per-user multi-turn scratchpad the `/find` service reads and upserts on every message. One row per user (`PRIMARY KEY user_id`). `pending_clarification` carries the JSON-serialised `PendingClarification` (Recommender question + `SearchIntent` snapshot) when a clarification is in flight and NULL otherwise; `last_recommendation_run_id` points at the most recent `agent_runs.run_id` that surfaced candidates — powers "tell me about #N" + "more results" follow-ups. Indexed on `updated_at` for future operator activity queries. Governed by [ADR 0016](adr/0016-multi-turn-recommender-conversation.md). |
 
 ```mermaid
 erDiagram
@@ -331,6 +333,13 @@ erDiagram
     users ||--o{ agent_runs : owns
     agent_runs ||--o{ llm_decisions : produces
     events ||--o{ llm_decisions : referenced_by
+    users ||--o| conversation_state : has
+    conversation_state {
+        int user_id PK
+        json pending_clarification
+        string last_recommendation_run_id
+        datetime updated_at
+    }
 ```
 
 Unit tests run against real SQLite in two tiers, matching how the two dao tiers open connections: the connection-parameterized primitives share one `:memory:` connection held across every call in a test, and the self-contained `save_event`/`search_events` wrappers — which open and close their own connection per call — run against a `tmp_path` file so state carries between calls.
@@ -618,6 +627,7 @@ Accepted ADRs describe current state; planned ADRs are reserved for their own ti
 | 0013 | [`extractor-side-frame-extraction`](adr/0013-extractor-side-frame-extraction.md) | Reel multimodal input: the extractor downloads the reel `video_url` to a temp file, extracts `MAX_REEL_FRAMES=3` evenly-spaced JPEG frames via `ffmpeg`, and sends them as base64 `input_image` parts alongside the thumbnail; silent degrade to thumbnail-only on `FrameExtractionError`. Extends ADR 0005's delegation-brief effort budget with the reel-frame arm; partially supersedes ADR 0006 §Decision 4 (extractor now downloads binaries; the adapter still emits URL-only `MediaAsset` entries). |
 | 0014 | [`instagram-discovery-backends`](adr/0014-instagram-discovery-backends.md) | Two-backend discovery split routed by `AccountConfig.backend`: `anonymous` (`curl_cffi` + Meta `web_profile_info`) and `hikerapi` (paid HikerAPI, multi-key pool with uniform random selection + 5-minute retirement window). Discovery lives in the `scheduler/` bounded context, not on `InstagramSource`. Partially supersedes ADR 0011's Context claim of an adapter-side `list_recent_posts`, ADR 0011 §Decision 3 (`scan_state` primary key renamed `account_url` → `source_url`), and ADR 0011 §Decision 8 (audit-log field set extended with `source_kind`, `backend`, `started_at`, `ended_at`; grain changed to per source URL). |
 | 0015 | [`storage-migrations-and-observability`](adr/0015-storage-migrations-and-observability.md) | Versioned `PRAGMA user_version` migration framework at `src/planazo/storage/migrations/`, applied in per-file transactions; `events` table grown to the full domain model (ten new columns + `EventCategory` Literal) in one migration; new `observability/` bounded context persists one `agent_runs` row per completed loop and 0..N `llm_decisions` rows per loop, best-effort at composition roots. Rationale text stays DB-inside per Rule 2 (redaction happens on the way out, not into DB). Down migrations, retention rotation, and JSONL → SQLite convergence deferred. Refines ADR 0003's schema-evolution follow-up. |
+| 0016 | [`multi-turn-recommender-conversation`](adr/0016-multi-turn-recommender-conversation.md) | New `conversation/` bounded context: `conversation_state` migration (one row per user, upserted every message), `ConversationState` + `PendingClarification` + `ConversationReply` aggregates, and the `handle_user_message` composition root the bot's `/find` handler + a future CLI helper share. Clarification answers land as `pref:clarified.<derived_key>` preference rows; "more results" filters client-side; "tell me about #N" reads `recommendations` via `run_id`. Reuses `interpret + run_once` — no new LLM seam. |
 
 Until each ADR lands, its section here reads as "planned — ADR NNNN"; when it lands, the entry is edited in place to link the accepted ADR.
 

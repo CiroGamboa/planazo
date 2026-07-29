@@ -127,6 +127,21 @@ def events_exist_for_source_url(conn: sqlite3.Connection, url: str) -> list[int]
     return [int(row["event_index_in_post"]) for row in cursor.fetchall()]
 
 
+def get_event_by_id(conn: sqlite3.Connection, event_id: int) -> Event | None:
+    """Return the `events` row for `event_id`, or `None` if absent.
+
+    The primitive a history reader ("tell me about #N", the `/find`
+    detail view) uses to project one `recommendations.event_id` into
+    the full `Event` aggregate. A deleted or never-persisted id is a
+    successful empty read — matching the discipline of `query_events`
+    (an empty filter returns an empty list rather than raising).
+    """
+    row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+    if row is None:
+        return None
+    return _event_from_row(row)
+
+
 def query_events(
     conn: sqlite3.Connection,
     *,

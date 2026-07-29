@@ -325,6 +325,12 @@ def test_only_the_cli_surface_imports_the_interpreter_outside_planazo_query() ->
     # *runtime* — `interpret`, `_record_search_intent`, `TOOL_SCHEMA`. Those
     # only ever reach the tree through `planazo.query.interpreter` (or
     # `planazo.query import interpret` from the package `__init__`).
+    #
+    # Two legitimate importers today: `agents/cli.py` (the terminal
+    # surface's `/find` REPL) and `conversation/service.py` (the
+    # multi-turn `/find` composition root the bot's `handle_find`
+    # calls — see ADR 0016). Both are surfaces above the Recommender
+    # that own the interpreter's one call per user turn.
     query_dir = Path(query_interpreter.__file__).resolve().parent
     src_root = query_dir.parent.parent  # src/
     offenders: list[tuple[Path, str]] = []
@@ -335,8 +341,11 @@ def test_only_the_cli_surface_imports_the_interpreter_outside_planazo_query() ->
         for pattern in ("planazo.query.interpreter", "from planazo.query import"):
             if pattern in text:
                 offenders.append((py, pattern))
+    agents_dir = Path(event_agent.__file__).parent
+    conversation_dir = agents_dir.parent / "conversation"
     assert offenders == [
-        (Path(event_agent.__file__).parent / "cli.py", "planazo.query.interpreter")
+        (agents_dir / "cli.py", "planazo.query.interpreter"),
+        (conversation_dir / "service.py", "planazo.query.interpreter"),
     ], f"unexpected interpreter-runtime import: {offenders}"
 
 

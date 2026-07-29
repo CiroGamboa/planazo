@@ -30,6 +30,10 @@ from pydantic import ValidationError
 from planazo.bot.config import BotConfig, resolve
 from planazo.bot.models import IncomingMessage
 from planazo.bot.session import resolve_user
+from planazo.catalog.models import Event
+from planazo.conversation.models import ConversationReply
+from planazo.conversation.repository import get_state
+from planazo.conversation.service import handle_user_message
 from planazo.identity import UserRecord, delete_preference, get_preferences, set_preference
 from planazo.interfaces.surface import UserSurface
 
@@ -38,6 +42,7 @@ COMMANDS: Final[Mapping[str, str]] = {
     "/help": "cmd_help",
     "/me": "cmd_me",
     "/prefs": "cmd_prefs",
+    "/find": "cmd_find",
 }
 
 
@@ -210,3 +215,123 @@ async def handle_prefs(
         await surface.reply(_drop_preference(conn, user_id, parts[2], config))
     else:
         await surface.reply(resolve(config, "prefs_usage", config.default_locale))
+
+
+def _strip_command_prefix(text: str) -> str:
+    """Return everything after the `/find` (or `/find@botname`) command token.
+
+    Group chats deliver `/find@planazo_bot query`; the suffix belongs
+    to the command token and must not shift the arguments behind it.
+    Matches `handle_prefs`'s positional parsing shape.
+    """
+    parts = text.split(None, 1)
+    if len(parts) < 2:
+        return ""
+    return parts[1].strip()
+
+
+def _format_price(config: BotConfig, price_cents: int) -> str:
+    """Render a `price_cents` value as a short display string via `resolve`."""
+    locale = config.default_locale
+    if price_cents == 0:
+        return resolve(config, "find_recommendation_price_free", locale)
+    amount = f"{price_cents / 100:.2f}"
+    return resolve(config, "find_recommendation_price_eur", locale, amount=amount)
+
+
+def _format_recommendation_line(config: BotConfig, index_one_based: int, event: Event) -> str:
+    """Render one Recommender candidate onto a numbered `find_recommendation_line`."""
+    locale = config.default_locale
+    venue = (
+        event.venue_name
+        if event.venue_name is not None
+        else resolve(config, "find_recommendation_venue_missing", locale)
+    )
+    when = event.start_utc.strftime("%Y-%m-%d %H:%M UTC")
+    return resolve(
+        config,
+        "find_recommendation_line",
+        locale,
+        n=index_one_based,
+        title=event.title,
+        when=when,
+        venue=venue,
+        category=event.category,
+        price=_format_price(config, event.price_cents),
+    )
+
+
+def _format_reply(config: BotConfig, reply: ConversationReply) -> str:
+    """Project one `ConversationReply` onto the plain-text `.reply(...)` string.
+
+    The five `kind` branches map to the `find_*` message-ids in
+    `data/bot.yaml`. `no_results` reads `answer` when present and
+    falls back to the shipped default so the user always sees a
+    concrete explanation.
+    """
+    locale = config.default_locale
+    if reply.kind == "recommendations":
+        lines = "\n".join(
+            _format_recommendation_line(config, position, event)
+            for position, event in enumerate(reply.candidates, start=1)
+        )
+        return resolve(config, "find_recommendations", locale, lines=lines)
+    if reply.kind == "clarification":
+        question = reply.question if reply.question is not None else ""
+        return resolve(config, "find_clarification", locale, question=question)
+    if reply.kind == "detail":
+        # The detail card is the `answer` field the service already
+        # rendered (or a fallback via the Event's title).
+        summary = reply.answer if reply.answer else (reply.event.title if reply.event else "")
+        # Detail lookup does not track a stable 1-indexed n through
+        # the service surface — the surface renders the event only,
+        # so we drop the number here. `n=""` is intentional.
+        return resolve(config, "find_detail", locale, n="", summary=summary)
+    if reply.kind == "no_results":
+        message = (
+            reply.answer if reply.answer else resolve(config, "find_no_results_default", locale)
+        )
+        return resolve(config, "find_no_results", locale, message=message)
+    error_type = reply.error_type if reply.error_type is not None else "unknown_error"
+    return resolve(config, "find_error", locale, error_type=error_type)
+
+
+async def handle_find(
+    surface: UserSurface, conn: sqlite3.Connection, message: IncomingMessage, config: BotConfig
+) -> None:
+    """Route `/find <query>` through the conversation service.
+
+    Empty query (a bare `/find`) surfaces the usage text. Any other
+    text — including a numeric answer to a prior clarification — is
+    dispatched to `conversation.service.handle_user_message`, which
+    owns the multi-turn logic. The reply is formatted by
+    `_format_reply` against the shipped message catalog.
+    """
+    text = _strip_command_prefix(message.text)
+    locale = config.default_locale
+    if not text:
+        await surface.reply(resolve(config, "find_usage", locale))
+        return
+    user_id = _stored_id(resolve_user(conn, message))
+    reply = handle_user_message(conn, user_id, text)
+    await surface.reply(_format_reply(config, reply))
+
+
+async def handle_message(
+    surface: UserSurface, conn: sqlite3.Connection, message: IncomingMessage, config: BotConfig
+) -> None:
+    """Fallback handler for non-command text.
+
+    Routes to `handle_user_message` only when the sender has an
+    active `pending_clarification` — a plain "music" from a user
+    with no state is still a no-op (the bot is silent on random
+    text; users must invoke `/find` explicitly for a fresh query).
+    This is what turns a clarification answer into a multi-turn
+    continuation without hijacking every message the bot sees.
+    """
+    user_id = _stored_id(resolve_user(conn, message))
+    state = get_state(conn, user_id)
+    if state is None or state.pending_clarification is None:
+        return
+    reply = handle_user_message(conn, user_id, message.text.strip())
+    await surface.reply(_format_reply(config, reply))

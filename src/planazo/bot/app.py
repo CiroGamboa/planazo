@@ -24,9 +24,18 @@ from telegram.ext import (
     ContextTypes,
     ExtBot,
     JobQueue,
+    MessageHandler,
+    filters,
 )
 
-from planazo.bot.commands import handle_help, handle_me, handle_prefs, handle_start
+from planazo.bot.commands import (
+    handle_find,
+    handle_help,
+    handle_me,
+    handle_message,
+    handle_prefs,
+    handle_start,
+)
 from planazo.bot.config import BotConfig, load_config, resolve
 from planazo.bot.models import IncomingMessage
 from planazo.bot.surface import surface_for
@@ -64,6 +73,7 @@ _HANDLERS: Final[Mapping[str, BotCommand]] = {
     "help": handle_help,
     "me": handle_me,
     "prefs": handle_prefs,
+    "find": handle_find,
 }
 
 
@@ -125,10 +135,22 @@ def adapter_for(command: BotCommand, config: BotConfig) -> UpdateCallback:
 
 
 def build_application(token: str, config: BotConfig) -> BotApplication:
-    """Build the `Application` with one `CommandHandler` per command."""
+    """Build the `Application` with one `CommandHandler` per command.
+
+    Also registers one `MessageHandler` for non-command text — the
+    multi-turn `/find` continuation seam. `handle_message` only
+    dispatches when the sender has an active `pending_clarification`,
+    so a random inbound message from a user outside a conversation
+    still results in bot silence. The message handler is added after
+    the command handlers so a `/find` command falls through to its
+    own `CommandHandler` first.
+    """
     application: BotApplication = ApplicationBuilder().token(token).build()
     for name, command in _HANDLERS.items():
         application.add_handler(CommandHandler(name, adapter_for(command, config)))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, adapter_for(handle_message, config))
+    )
     return application
 
 
