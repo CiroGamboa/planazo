@@ -14,6 +14,7 @@ _EXPECTED_TABLES = {
     "scan_state",
     "agent_runs",
     "llm_decisions",
+    "recommendations",
 }
 
 
