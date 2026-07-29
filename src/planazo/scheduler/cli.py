@@ -68,11 +68,13 @@ from pydantic import ValidationError
 
 from planazo.agents.extractor import extract_once
 from planazo.extraction.models import ExtractionResult
+from planazo.extraction.multimodal_profile import ACCOUNT_SCAN, MultimodalProfile
 from planazo.scheduler.audit import DEFAULT_AUDIT_LOG_PATH
 from planazo.scheduler.models import SchedulerBackend, SchedulerRunRecord, TickReport
 from planazo.scheduler.repository import bootstrap_system_user
 from planazo.scheduler.service import (
     ExtractorCallable,
+    ExtractorFactory,
     _process_source_url,
     run_tick,
 )
@@ -139,6 +141,25 @@ def _default_extractor(url: str, delegator_user_id: int) -> ExtractionResult:
 def _build_extractor() -> ExtractorCallable:
     """Return the production extractor callable. Overridable in tests."""
     return _default_extractor
+
+
+def _build_extractor_factory() -> ExtractorFactory:
+    """Return the production per-URL extractor factory closed over the profile.
+
+    `run_tick` and the account-scan entry points use this to build a
+    profile-bound `ExtractorCallable` per URL — the `MultimodalProfile`
+    argument caps how many images the multimodal hook sends to the LLM.
+    Tests that don't touch the multimodal path monkeypatch this alongside
+    `_build_extractor` or omit the factory entirely (pre-profile behavior).
+    """
+
+    def _factory(profile: MultimodalProfile) -> ExtractorCallable:
+        def _extract(url: str, delegator_user_id: int) -> ExtractionResult:
+            return extract_once(url, delegator_user_id=delegator_user_id, profile=profile)
+
+        return _extract
+
+    return _factory
 
 
 def _build_backends(
@@ -280,6 +301,7 @@ def _run_tick(config: SourcesConfig, *, audit_log_path: Path) -> int:
     """
     backends = _build_backends(config)
     extractor = _build_extractor()
+    extractor_factory = _build_extractor_factory()
 
     report: TickReport = run_tick(
         now=_now,
@@ -287,6 +309,7 @@ def _run_tick(config: SourcesConfig, *, audit_log_path: Path) -> int:
         source_by_name={},
         backends=backends,
         extractor=extractor,
+        extractor_factory=extractor_factory,
         config=config,
         audit_log_path=audit_log_path,
     )
@@ -337,6 +360,8 @@ def _run_once(
         narrative = NarrativeLogger(url=url) if verbose else None
         if narrative is not None:
             narrative.start()
+        # `--once <post-url>` has no account context — inherit
+        # `SINGLE_POST` via `extract_once`'s own default.
         run_extractor = _wrap_extractor_with_narrative(extractor, narrative)
         record = _run_once_post(url, run_extractor, audit_log_path)
         _print_record(record)
@@ -352,7 +377,12 @@ def _run_once(
     narrative = NarrativeLogger(url=account.url) if verbose else None
     if narrative is not None:
         narrative.start()
-    run_extractor = _wrap_extractor_with_narrative(extractor, narrative)
+    profile = account.resolved_multimodal_profile(ACCOUNT_SCAN)
+    extractor_factory = _build_extractor_factory()
+    profile_bound_extractor = extractor_factory(profile)
+    run_extractor = _wrap_extractor_with_narrative(
+        profile_bound_extractor, narrative, profile=profile
+    )
     record = _run_once_account(
         account=account,
         source=source,
@@ -365,7 +395,10 @@ def _run_once(
 
 
 def _wrap_extractor_with_narrative(
-    extractor: ExtractorCallable, narrative: NarrativeLogger | None
+    extractor: ExtractorCallable,
+    narrative: NarrativeLogger | None,
+    *,
+    profile: MultimodalProfile | None = None,
 ) -> ExtractorCallable:
     """Return ``extractor`` unchanged, or wrapped to route through ``narrative``.
 
@@ -379,17 +412,24 @@ def _wrap_extractor_with_narrative(
     directly (only route that carries the `on_step` seam). Tests that
     monkeypatch `_build_extractor` and set `verbose=False` see the
     identity path, keeping the existing seam intact.
+
+    ``profile`` is threaded through to `extract_once` on the narrative
+    branch so `--verbose` runs pick up the same account-scan cap as the
+    non-verbose path. `None` inherits `extract_once`'s own default
+    (`SINGLE_POST`).
     """
     if narrative is None:
         return extractor
 
     def _narrative_extractor(url: str, delegator_user_id: int) -> ExtractionResult:
-        return extract_once(
-            url,
-            delegator_user_id=delegator_user_id,
-            on_step=narrative,
-            on_complete=narrative.complete,
-        )
+        kwargs: dict[str, object] = {
+            "delegator_user_id": delegator_user_id,
+            "on_step": narrative,
+            "on_complete": narrative.complete,
+        }
+        if profile is not None:
+            kwargs["profile"] = profile
+        return extract_once(url, **kwargs)  # type: ignore[arg-type]
 
     return _narrative_extractor
 
@@ -508,11 +548,17 @@ def _run_scan_account(
     else:
         backends = {"anonymous": AnonInstagramClient()}
 
-    extractor = _build_extractor()
+    # `--scan-account` uses `ACCOUNT_SCAN` (10/6) as the base profile — no
+    # per-account override (the URL isn't in `sources.yaml` when the operator
+    # is scanning ad-hoc).
+    extractor_factory = _build_extractor_factory()
+    profile_bound_extractor = extractor_factory(ACCOUNT_SCAN)
     narrative = NarrativeLogger(url=account_url) if verbose else None
     if narrative is not None:
         narrative.start()
-    run_extractor = _wrap_extractor_with_narrative(extractor, narrative)
+    run_extractor = _wrap_extractor_with_narrative(
+        profile_bound_extractor, narrative, profile=ACCOUNT_SCAN
+    )
 
     record = _run_once_account(
         account=ephemeral_account,

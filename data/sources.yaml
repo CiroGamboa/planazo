@@ -26,6 +26,13 @@ sources:
     # Scan the recent posts of these accounts. `backend` picks the discovery
     # client the scheduler routes to. Default is `anonymous`; business venue
     # accounts need `hikerapi`.
+    #
+    # `max_carousel_images` / `max_reel_frames` are optional per-account
+    # overrides on the multimodal profile the Extractor uses for this
+    # account's posts. Leave both unset for single-venue accounts to
+    # inherit the base preset (`ACCOUNT_SCAN` = 10/6 for account-scan
+    # ticks). Curator / roundup accounts that post many-slides-many-events
+    # carousels should set `max_carousel_images` higher (bounded 1..30).
     accounts:
       - url: "https://instagram.com/PLACEHOLDER_CREATOR_ACCOUNT"
         cadence: "24h"
@@ -33,6 +40,10 @@ sources:
       - url: "https://instagram.com/PLACEHOLDER_BUSINESS_VENUE"
         cadence: "24h"
         backend: "hikerapi"
+      # - url: "https://instagram.com/PLACEHOLDER_ROUNDUP_CURATOR"
+      #   cadence: "24h"
+      #   max_carousel_images: 15  # one slide per distinct event
+      #   max_reel_frames: 6       # inherits ACCOUNT_SCAN default
 
     # Extract these specific post URLs on every tick. URL must match
     # `https://[www.]instagram.com/{p|reel}/<shortcode>/…` — account URLs pasted

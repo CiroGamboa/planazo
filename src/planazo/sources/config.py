@@ -57,6 +57,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from planazo.extraction.multimodal_profile import MultimodalProfile, resolve_profile
+
 _CADENCE_SHORTHAND = re.compile(r"^\s*(\d+)\s*([smhd])\s*$")
 _CADENCE_UNITS: dict[str, str] = {
     "s": "seconds",
@@ -127,6 +129,15 @@ class AccountConfig(BaseModel):
     or `"hikerapi"` (paid multi-key pool). Business venue accounts must
     route via `hikerapi` — the anonymous endpoint refuses them with a
     `laser.provider` schema block.
+
+    `max_carousel_images` / `max_reel_frames` override the base
+    `MultimodalProfile` for this account only. `None` on either field
+    inherits the base preset the scheduler passes in (typically
+    `ACCOUNT_SCAN` for account-scan entry points). Both are bounded
+    `1..=30` to match `MultimodalProfile`'s own bounds — a runaway-cost
+    backstop, not a policy target. Roundup / curator accounts
+    (many-slides-many-events posts) set these higher; single-venue
+    accounts leave them unset.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -135,6 +146,8 @@ class AccountConfig(BaseModel):
     cadence: timedelta | None = None
     media_types: MediaTypeFlags | None = None
     backend: Literal["anonymous", "hikerapi"] = "anonymous"
+    max_carousel_images: int | None = Field(default=None, ge=1, le=30)
+    max_reel_frames: int | None = Field(default=None, ge=1, le=30)
 
     @field_validator("cadence", mode="before")
     @classmethod
@@ -156,6 +169,20 @@ class AccountConfig(BaseModel):
         if self.media_types is not None:
             return self.media_types
         return source_defaults.default_media_types
+
+    def resolved_multimodal_profile(self, base: MultimodalProfile) -> MultimodalProfile:
+        """The multimodal profile the Extractor should use for this account.
+
+        Layers optional per-account overrides on top of the base preset
+        the scheduler passes in — see
+        `planazo.extraction.multimodal_profile.resolve_profile`. Missing
+        fields (`None`) inherit the base; non-`None` fields override.
+        """
+        return resolve_profile(
+            base,
+            max_carousel_images=self.max_carousel_images,
+            max_reel_frames=self.max_reel_frames,
+        )
 
 
 class PostConfig(BaseModel):

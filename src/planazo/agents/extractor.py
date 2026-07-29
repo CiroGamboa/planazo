@@ -9,12 +9,12 @@ feeds visual context to the LLM as `input_image` messages. Selection per
 media shape:
 
 - ``GraphImage`` — one ``input_image`` for the sole image asset.
-- ``GraphSidecar`` (carousel) — up to ``MAX_CAROUSEL_IMAGES`` slides, each
-  prefixed by a ``"Slide i/K"`` text part.
+- ``GraphSidecar`` (carousel) — up to ``profile.max_carousel_images``
+  slides, each prefixed by a ``"Slide i/K"`` text part.
 - ``GraphVideo`` (reel) — the hook downloads the reel ``video_url``,
-  extracts ``MAX_REEL_FRAMES`` evenly-spaced JPEG frames via ``ffmpeg``,
-  and sends them as base64 ``input_image`` data-URLs alongside the
-  thumbnail cover frame. Silently degrades to the thumbnail-only cover
+  extracts ``profile.max_reel_frames`` evenly-spaced JPEG frames via
+  ``ffmpeg``, and sends them as base64 ``input_image`` data-URLs
+  alongside the thumbnail cover frame. Silently degrades to the thumbnail-only cover
   frame on :class:`FrameExtractionError`; one ``logger.warning`` line is
   the operator-facing signal for the degrade branch. Multi-video sidecars
   (``n_videos >= 2``) route to the thumbnail-only arm without invoking
@@ -52,12 +52,13 @@ from planazo.agents.loop import LoopResult, StepRecord, run_loop
 from planazo.catalog import ExtractionRunIndexEntry, record_extraction_run, save_event
 from planazo.catalog.models import Event
 from planazo.extraction.audit import ExtractionRunLogger
-from planazo.extraction.frames import MAX_REEL_FRAMES, FrameExtractionError, extract_reel_frames
+from planazo.extraction.frames import FrameExtractionError, extract_reel_frames
 from planazo.extraction.models import (
     ExtractionErrorType,
     ExtractionResult,
     ExtractionStatus,
 )
+from planazo.extraction.multimodal_profile import SINGLE_POST, MultimodalProfile
 from planazo.memory.rules import load_rules
 from planazo.observability import (
     FINAL_ANSWER_CAP,
@@ -103,7 +104,6 @@ DELEGATION_BRIEF: Final[str] = _read_delegation_brief()
 USER_MESSAGE: Final[str] = "Extract every distinct event announced by the Instagram post above."
 MAX_STEPS: Final[int] = 8
 MAX_OUTPUT_TOKENS: Final[int] = 2000
-MAX_CAROUSEL_IMAGES: Final[int] = 3
 
 
 class _ReportedStatus(BaseModel):
@@ -150,8 +150,17 @@ def report_extraction_status(status: str, error_type: str, notes: str = "") -> d
 
 def _build_multimodal_hook(
     url: str,
+    *,
+    profile: MultimodalProfile = SINGLE_POST,
 ) -> Callable[[StepRecord], list[dict[str, Any]] | None]:
     """Return the `on_tool_output` hook closured over the extraction target `url`.
+
+    The `profile` argument caps how many visual assets reach the LLM per
+    post: `profile.max_carousel_images` for carousels,
+    `profile.max_reel_frames` for reels. Defaults to `SINGLE_POST` (3/3),
+    matching the pre-profile behavior byte-for-byte; the account-scan
+    entry points pass `ACCOUNT_SCAN` (or a per-account override) to lift
+    the cap for curator / roundup posts.
 
     Selection is driven by the counts of ``kind == "image"`` and
     ``kind == "video"`` assets in ``record.result["media"]``, keeping the
@@ -159,15 +168,15 @@ def _build_multimodal_hook(
 
     - ``n_images >= 2`` — carousel branch. Emits one user message with
       interleaved ``input_text`` + ``input_image`` parts for the first
-      ``MAX_CAROUSEL_IMAGES`` image assets (in media-list order), each
-      slide prefixed by ``"Slide {i}/{k} from the fetched post — {url}:"``.
+      ``profile.max_carousel_images`` image assets (in media-list order),
+      each slide prefixed by ``"Slide {i}/{k} from the fetched post — {url}:"``.
     - ``n_images == 1`` — single-image branch. One ``input_text`` + one
       ``input_image`` for the sole image asset.
     - ``n_images == 0`` and ``n_videos == 1`` — reel branch. Downloads the
-      video URL, extracts ``MAX_REEL_FRAMES`` evenly-spaced JPEG frames
-      via :func:`planazo.extraction.frames.extract_reel_frames`, and emits
-      one user message with an envelope ``input_text`` prefix, one
-      ``(text, input_image)`` pair per frame (frames sent as base64
+      video URL, extracts ``profile.max_reel_frames`` evenly-spaced JPEG
+      frames via :func:`planazo.extraction.frames.extract_reel_frames`,
+      and emits one user message with an envelope ``input_text`` prefix,
+      one ``(text, input_image)`` pair per frame (frames sent as base64
       ``data:image/jpeg;base64,...`` data-URLs), and a trailing
       ``(text, input_image)`` pair for the thumbnail cover frame when
       present. On :class:`FrameExtractionError` the hook logs one
@@ -216,7 +225,7 @@ def _build_multimodal_hook(
             asset for asset in media if isinstance(asset, dict) and asset.get("kind") == "image"
         ]
         if len(image_assets) >= 2:
-            k = min(len(image_assets), MAX_CAROUSEL_IMAGES)
+            k = min(len(image_assets), profile.max_carousel_images)
             content: list[dict[str, Any]] = []
             for i, asset in enumerate(image_assets[:k], start=1):
                 content.append(
@@ -257,7 +266,7 @@ def _build_multimodal_hook(
             video_asset = video_assets[0]
             video_url = str(video_asset.get("url", ""))
             try:
-                frames = extract_reel_frames(video_url, frame_count=MAX_REEL_FRAMES)
+                frames = extract_reel_frames(video_url, frame_count=profile.max_reel_frames)
             except FrameExtractionError as exc:
                 logger.warning("reel frame extraction failed for url=%s: %s", video_url, exc)
             else:
@@ -341,6 +350,7 @@ def extract_once(
     *,
     source: InstagramSource | None = None,
     model: str = STRONG,
+    profile: MultimodalProfile | None = None,
     on_step: Callable[[StepRecord], None] | None = None,
     on_complete: Callable[[LoopResult], None] | None = None,
 ) -> ExtractionResult:
@@ -351,6 +361,12 @@ def extract_once(
     directly: `url` and `delegator_user_id` come from the Recommender's
     session; the caption text never crosses back across the return.
 
+    `profile` caps how many visual assets the multimodal hook sends to
+    the LLM per post — `SINGLE_POST` (3/3) is the default and matches
+    the pre-profile behavior. Account-scan entry points pass
+    `ACCOUNT_SCAN` (or a per-account override built via
+    `resolve_profile`) to lift the cap for curator / roundup posts.
+
     `on_step` and `on_complete` are optional external observer seams the
     demo command (`planazo-scheduler --once --verbose`) uses to wire the
     stdout narrative logger alongside the built-in JSONL sidecar writer.
@@ -359,6 +375,7 @@ def extract_once(
     burden sits with the observer, matching `AgentRunLogger`'s
     discipline). See [ADR 0017](../../docs/adr/0017-instagram-demo-narrative-logs.md).
     """
+    resolved_profile = profile if profile is not None else SINGLE_POST
     run_id = str(uuid4())
     resolved_source = source if source is not None else _default_source()
 
@@ -413,7 +430,7 @@ def extract_once(
         max_steps=MAX_STEPS,
         max_output_tokens=MAX_OUTPUT_TOKENS,
         on_step=observe,
-        on_tool_output=_build_multimodal_hook(url),
+        on_tool_output=_build_multimodal_hook(url, profile=resolved_profile),
         system=system_text,
     )
     ended_at = datetime.now(UTC)
@@ -790,7 +807,6 @@ def _build_result(trace: list[StepRecord], loop_result: LoopResult) -> Extractio
 
 __all__ = [
     "DELEGATION_BRIEF",
-    "MAX_CAROUSEL_IMAGES",
     "MAX_OUTPUT_TOKENS",
     "MAX_STEPS",
     "USER_MESSAGE",

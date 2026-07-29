@@ -26,7 +26,6 @@ from agentlib.core import STRONG, Result
 from planazo.agents import extractor
 from planazo.agents.extractor import (
     DELEGATION_BRIEF,
-    MAX_CAROUSEL_IMAGES,
     MAX_OUTPUT_TOKENS,
     MAX_STEPS,
     USER_MESSAGE,
@@ -38,6 +37,7 @@ from planazo.catalog import events_exist_for_source_url, list_extraction_runs, s
 from planazo.extraction.audit import default_extraction_log_path
 from planazo.extraction.frames import FrameExtractionError
 from planazo.extraction.models import ExtractionResult
+from planazo.extraction.multimodal_profile import ACCOUNT_SCAN, SINGLE_POST, MultimodalProfile
 from planazo.identity import get_or_create_user
 from planazo.memory import facts, rules
 from planazo.monitor.models import RunStep
@@ -275,10 +275,11 @@ def test_multimodal_hook_selects_image_before_thumbnail() -> None:
     assert image_parts == [{"type": "input_image", "image_url": "https://cdn/image.jpg"}]
 
 
-def test_max_carousel_images_is_three() -> None:
-    """K value drift guard. If K moves, this test breaks — matching tests
-    that hard-code `Slide i/3` prefixes also need to be revisited."""
-    assert MAX_CAROUSEL_IMAGES == 3
+def test_single_post_profile_carousel_cap_is_three() -> None:
+    """K value drift guard. Locks `SINGLE_POST.max_carousel_images == 3` — the
+    pre-profile default that keeps single-venue extraction cheap. If this
+    moves, tests that hard-code `Slide i/3` prefixes also need updating."""
+    assert SINGLE_POST.max_carousel_images == 3
 
 
 def test_multimodal_hook_single_image_path_is_byte_identical() -> None:
@@ -379,9 +380,9 @@ def test_multimodal_hook_carousel_with_three_images_returns_three_input_image_pa
     ]
 
 
-def test_multimodal_hook_carousel_caps_at_max_carousel_images() -> None:
-    """`n > MAX_CAROUSEL_IMAGES` — only the first `MAX_CAROUSEL_IMAGES` land;
-    the denominator in the prefix is the *sent* count, not the total."""
+def test_multimodal_hook_carousel_caps_at_single_post_max() -> None:
+    """`n > SINGLE_POST.max_carousel_images` — only the first N land; the
+    denominator in the prefix is the *sent* count, not the total."""
     hook = extractor._build_multimodal_hook(_TEST_URL)
     record = StepRecord(
         step=1,
@@ -397,7 +398,7 @@ def test_multimodal_hook_carousel_caps_at_max_carousel_images() -> None:
     assert injected is not None
     content = injected[0]["content"]
     image_parts = [part for part in content if part["type"] == "input_image"]
-    assert len(image_parts) == MAX_CAROUSEL_IMAGES
+    assert len(image_parts) == SINGLE_POST.max_carousel_images
     assert image_parts == [
         {"type": "input_image", "image_url": "https://cdn/slide1.jpg"},
         {"type": "input_image", "image_url": "https://cdn/slide2.jpg"},
@@ -405,7 +406,57 @@ def test_multimodal_hook_carousel_caps_at_max_carousel_images() -> None:
     ]
     text_parts = [part for part in content if part["type"] == "input_text"]
     denominators = {part["text"].split("/")[1].split(" ")[0] for part in text_parts}
-    assert denominators == {str(MAX_CAROUSEL_IMAGES)}
+    assert denominators == {str(SINGLE_POST.max_carousel_images)}
+
+
+def test_multimodal_hook_carousel_uses_account_scan_profile_cap() -> None:
+    """The whole reason the profile knob exists: a 20-slide roundup carousel
+    under `ACCOUNT_SCAN` sends 10 slides (the preset cap), not 3
+    (`SINGLE_POST`). Locks the profile-plumbed count from
+    `_build_multimodal_hook` to the extractor call site."""
+    hook = extractor._build_multimodal_hook(_TEST_URL, profile=ACCOUNT_SCAN)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [{"kind": "image", "url": f"https://cdn/slide{i}.jpg"} for i in range(1, 21)]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected is not None
+    content = injected[0]["content"]
+    image_parts = [part for part in content if part["type"] == "input_image"]
+    assert len(image_parts) == ACCOUNT_SCAN.max_carousel_images
+    text_parts = [part for part in content if part["type"] == "input_text"]
+    denominators = {part["text"].split("/")[1].split(" ")[0] for part in text_parts}
+    assert denominators == {str(ACCOUNT_SCAN.max_carousel_images)}
+
+
+def test_multimodal_hook_carousel_uses_per_account_override_when_set() -> None:
+    """A `MultimodalProfile(max_carousel_images=15, ...)` — the shape
+    `AccountConfig.resolved_multimodal_profile` produces for a roundup
+    account with `max_carousel_images: 15` in `data/sources.yaml` — sends
+    exactly 15 slides on a 20-slide carousel."""
+    override = MultimodalProfile(max_carousel_images=15, max_reel_frames=6)
+    hook = extractor._build_multimodal_hook(_TEST_URL, profile=override)
+    record = StepRecord(
+        step=1,
+        tool="fetch_instagram_post",
+        arguments={"url": _TEST_URL},
+        result={
+            "media": [{"kind": "image", "url": f"https://cdn/slide{i}.jpg"} for i in range(1, 21)]
+        },
+    )
+
+    injected = hook(record)
+
+    assert injected is not None
+    content = injected[0]["content"]
+    image_parts = [part for part in content if part["type"] == "input_image"]
+    assert len(image_parts) == 15
 
 
 def test_multimodal_hook_carousel_mixed_image_and_video_selects_only_image_kind() -> None:
