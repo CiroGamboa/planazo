@@ -48,7 +48,7 @@ from planazo.sources.instagram.model_view import InstaloaderPostView
 from planazo.sources.models import MediaAsset, RawPost
 from planazo.storage import db
 
-assert MAX_STEPS == 8, "multi-event budget cap moved — update ADR 0012 rationale"
+assert MAX_STEPS == 32, "multi-event budget cap moved — update ADR 0012 rationale + issue #134"
 
 _MVP_ARCH_PATH = Path(__file__).resolve().parent.parent / "docs" / "MVP-ARCHITECTURE.md"
 _TEST_URL = "https://www.instagram.com/p/ABC123/"

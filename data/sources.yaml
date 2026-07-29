@@ -30,9 +30,10 @@ sources:
     # `max_carousel_images` / `max_reel_frames` are optional per-account
     # overrides on the multimodal profile the Extractor uses for this
     # account's posts. Leave both unset for single-venue accounts to
-    # inherit the base preset (`ACCOUNT_SCAN` = 10/6 for account-scan
-    # ticks). Curator / roundup accounts that post many-slides-many-events
-    # carousels should set `max_carousel_images` higher (bounded 1..30).
+    # inherit the base preset (`ACCOUNT_SCAN` = 5/5 for account-scan
+    # ticks — demo-tuned for fast turnaround). Curator / roundup
+    # accounts that post many-slides-many-events carousels can set
+    # `max_carousel_images` higher (bounded 1..30).
     accounts:
       - url: "https://instagram.com/PLACEHOLDER_CREATOR_ACCOUNT"
         cadence: "24h"
@@ -40,10 +41,17 @@ sources:
       - url: "https://instagram.com/PLACEHOLDER_BUSINESS_VENUE"
         cadence: "24h"
         backend: "hikerapi"
-      # - url: "https://instagram.com/PLACEHOLDER_ROUNDUP_CURATOR"
-      #   cadence: "24h"
-      #   max_carousel_images: 15  # one slide per distinct event
-      #   max_reel_frames: 6       # inherits ACCOUNT_SCAN default
+      # Curator account — high-slide-count roundups. Demo-tuned to 5
+      # slides for fast turnaround; combined with the partial-save
+      # discipline in the delegation brief, this yields real extraction
+      # wins on `--tick` without a heavy per-post budget. For
+      # production-grade coverage of a full 25-30 slide agenda, bump
+      # this to `max_carousel_images: 25`. `--scan-account` inherits the
+      # `ACCOUNT_SCAN` default (5) and does NOT read this override — it
+      # is discovered ad-hoc.
+      - url: "https://instagram.com/planesenbarcelona"
+        cadence: "24h"
+        max_carousel_images: 5
 
     # Extract these specific post URLs on every tick. URL must match
     # `https://[www.]instagram.com/{p|reel}/<shortcode>/…` — account URLs pasted

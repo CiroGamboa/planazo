@@ -102,7 +102,16 @@ def _read_delegation_brief() -> str:
 DELEGATION_BRIEF: Final[str] = _read_delegation_brief()
 
 USER_MESSAGE: Final[str] = "Extract every distinct event announced by the Instagram post above."
-MAX_STEPS: Final[int] = 8
+MAX_STEPS: Final[int] = 32
+"""Max LLM turns per extraction — fetch + up to ~30 `save_event` calls + terminal.
+
+Bumped from 8 to 32 to accommodate roundup posts and date-range expansion.
+A 19-event roundup or a 20-27 Aug range needs enough budget to emit one
+`save_event` per event; 8 was fine for single-venue posts but forced the
+LLM to bail on multi-event posts before it could enumerate. See issue
+#134 (partial-save discipline + date expansion) for the load-bearing
+rationale.
+"""
 MAX_OUTPUT_TOKENS: Final[int] = 2000
 
 
@@ -152,6 +161,7 @@ def _build_multimodal_hook(
     url: str,
     *,
     profile: MultimodalProfile = SINGLE_POST,
+    on_multimodal_send: Callable[..., None] | None = None,
 ) -> Callable[[StepRecord], list[dict[str, Any]] | None]:
     """Return the `on_tool_output` hook closured over the extraction target `url`.
 
@@ -161,6 +171,14 @@ def _build_multimodal_hook(
     matching the pre-profile behavior byte-for-byte; the account-scan
     entry points pass `ACCOUNT_SCAN` (or a per-account override) to lift
     the cap for curator / roundup posts.
+
+    `on_multimodal_send` is an optional narrative-observer callback fired
+    right before the hook returns image content — signals to the operator
+    that the run is now waiting on the LLM to analyze the images.
+    Invoked as `on_multimodal_send(count=<n>, kind=<literal>)` where
+    `kind` is one of ``"carousel slides"``, ``"reel frames"``,
+    ``"image"``, ``"thumbnail"``. The `--verbose` flag wires this to
+    `NarrativeLogger.on_multimodal_send`; production ticks pass `None`.
 
     Selection is driven by the counts of ``kind == "image"`` and
     ``kind == "video"`` assets in ``record.result["media"]``, keeping the
@@ -235,9 +253,13 @@ def _build_multimodal_hook(
                     }
                 )
                 content.append({"type": "input_image", "image_url": asset.get("url", "")})
+            if on_multimodal_send is not None:
+                on_multimodal_send(count=k, kind="carousel slides")
             return [{"role": "user", "content": content}]
         if len(image_assets) == 1:
             selected = image_assets[0]
+            if on_multimodal_send is not None:
+                on_multimodal_send(count=1, kind="image")
             return [
                 {
                     "role": "user",
@@ -300,8 +322,13 @@ def _build_multimodal_hook(
                     content.append(
                         {"type": "input_image", "image_url": str(thumbnail.get("url", ""))}
                     )
+                if on_multimodal_send is not None:
+                    frame_count = n + (1 if thumbnail is not None else 0)
+                    on_multimodal_send(count=frame_count, kind="reel frames")
                 return [{"role": "user", "content": content}]
         if thumbnail is not None:
+            if on_multimodal_send is not None:
+                on_multimodal_send(count=1, kind="thumbnail")
             return [
                 {
                     "role": "user",
@@ -353,6 +380,7 @@ def extract_once(
     profile: MultimodalProfile | None = None,
     on_step: Callable[[StepRecord], None] | None = None,
     on_complete: Callable[[LoopResult], None] | None = None,
+    on_multimodal_send: Callable[..., None] | None = None,
 ) -> ExtractionResult:
     """Run one Instagram-post → `Event` extraction and return the hand-off.
 
@@ -430,7 +458,9 @@ def extract_once(
         max_steps=MAX_STEPS,
         max_output_tokens=MAX_OUTPUT_TOKENS,
         on_step=observe,
-        on_tool_output=_build_multimodal_hook(url, profile=resolved_profile),
+        on_tool_output=_build_multimodal_hook(
+            url, profile=resolved_profile, on_multimodal_send=on_multimodal_send
+        ),
         system=system_text,
     )
     ended_at = datetime.now(UTC)

@@ -68,7 +68,7 @@ from pydantic import ValidationError
 
 from planazo.agents.extractor import extract_once
 from planazo.extraction.models import ExtractionResult
-from planazo.extraction.multimodal_profile import ACCOUNT_SCAN, MultimodalProfile
+from planazo.extraction.multimodal_profile import ACCOUNT_SCAN, MultimodalProfile, resolve_profile
 from planazo.scheduler.audit import DEFAULT_AUDIT_LOG_PATH
 from planazo.scheduler.models import SchedulerBackend, SchedulerRunRecord, TickReport
 from planazo.scheduler.repository import bootstrap_system_user
@@ -248,8 +248,9 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="URL",
         dest="scan_account",
         help="Ad-hoc scan of one Instagram account URL without editing "
-        "data/sources.yaml. Combine with --limit and --backend. Exits 2 on "
-        "backend/env misconfiguration.",
+        "data/sources.yaml. Combine with --limit, --backend, "
+        "--max-carousel-images, --max-reel-frames. Exits 2 on backend/env "
+        "misconfiguration.",
     )
     parser.add_argument(
         "--limit",
@@ -264,6 +265,27 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Only with --scan-account: discovery backend. Default 'anonymous'. "
         "'hikerapi' requires the PLANAZO_IG_HIKER_API_KEY_* env vars.",
+    )
+    parser.add_argument(
+        "--max-carousel-images",
+        type=int,
+        default=None,
+        dest="max_carousel_images",
+        metavar="N",
+        help="Only with --scan-account: override the ACCOUNT_SCAN profile's "
+        "carousel-image cap for this run (bounded 1..30). Default: 5 "
+        "(ACCOUNT_SCAN preset). Higher values give the LLM more slides per "
+        "roundup at higher token cost.",
+    )
+    parser.add_argument(
+        "--max-reel-frames",
+        type=int,
+        default=None,
+        dest="max_reel_frames",
+        metavar="N",
+        help="Only with --scan-account: override the ACCOUNT_SCAN profile's "
+        "reel-frame cap for this run (bounded 1..30). Default: 5 "
+        "(ACCOUNT_SCAN preset).",
     )
     parser.add_argument(
         "--verbose",
@@ -426,6 +448,7 @@ def _wrap_extractor_with_narrative(
             "delegator_user_id": delegator_user_id,
             "on_step": narrative,
             "on_complete": narrative.complete,
+            "on_multimodal_send": narrative.on_multimodal_send,
         }
         if profile is not None:
             kwargs["profile"] = profile
@@ -509,6 +532,17 @@ def _run_once_account(
 _SCAN_ACCOUNT_LIMIT_MIN: Final[int] = 1
 _SCAN_ACCOUNT_LIMIT_MAX: Final[int] = 50
 
+_MULTIMODAL_MIN: Final[int] = 1
+_MULTIMODAL_MAX: Final[int] = 30
+"""Bounds for `--max-carousel-images` / `--max-reel-frames`.
+
+Mirrors `MultimodalProfile`'s own bounds (see
+`planazo.extraction.multimodal_profile._MAX_IMAGES`). Enforcing at the
+argparse layer means the operator gets a `parser.error()` line before
+`_run_scan_account` runs, rather than a Pydantic `ValidationError`
+mid-composition. Both bounds are inclusive.
+"""
+
 
 def _run_scan_account(
     *,
@@ -517,6 +551,8 @@ def _run_scan_account(
     backend: Literal["anonymous", "hikerapi"],
     audit_log_path: Path,
     verbose: bool,
+    max_carousel_images: int | None = None,
+    max_reel_frames: int | None = None,
 ) -> int:
     """Execute `--scan-account <url> --limit N --backend <b>` end-to-end.
 
@@ -531,6 +567,11 @@ def _run_scan_account(
     are set, `HikerClient.from_env()` raises `RuntimeError` and we exit
     `EXIT_CONFIG` with a typed stderr line — matching the discipline for
     a mis-configured `--tick`.
+
+    `max_carousel_images` / `max_reel_frames` override the `ACCOUNT_SCAN`
+    preset for this run — the CLI seams for `--max-carousel-images` and
+    `--max-reel-frames`. `None` on either inherits the base preset.
+    Bounds are enforced by argparse before we get here.
     """
     ephemeral_source = SourceConfig(
         default_cadence=_ZERO_CADENCE,
@@ -548,16 +589,22 @@ def _run_scan_account(
     else:
         backends = {"anonymous": AnonInstagramClient()}
 
-    # `--scan-account` uses `ACCOUNT_SCAN` (10/6) as the base profile — no
-    # per-account override (the URL isn't in `sources.yaml` when the operator
-    # is scanning ad-hoc).
+    # `--scan-account` uses `ACCOUNT_SCAN` as the base profile; the CLI
+    # flags `--max-carousel-images` / `--max-reel-frames` layer per-field
+    # overrides on top for this run. No `sources.yaml` lookup — the URL
+    # is being scanned ad-hoc.
+    profile = resolve_profile(
+        ACCOUNT_SCAN,
+        max_carousel_images=max_carousel_images,
+        max_reel_frames=max_reel_frames,
+    )
     extractor_factory = _build_extractor_factory()
-    profile_bound_extractor = extractor_factory(ACCOUNT_SCAN)
+    profile_bound_extractor = extractor_factory(profile)
     narrative = NarrativeLogger(url=account_url) if verbose else None
     if narrative is not None:
         narrative.start()
     run_extractor = _wrap_extractor_with_narrative(
-        profile_bound_extractor, narrative, profile=ACCOUNT_SCAN
+        profile_bound_extractor, narrative, profile=profile
     )
 
     record = _run_once_account(
@@ -655,6 +702,8 @@ def _dispatch(args: argparse.Namespace, *, audit_log_path: Path) -> Callable[[],
                 backend=args.backend if args.backend is not None else "anonymous",
                 audit_log_path=audit_log_path,
                 verbose=bool(args.verbose),
+                max_carousel_images=args.max_carousel_images,
+                max_reel_frames=args.max_reel_frames,
             )
 
         return _scan
@@ -678,16 +727,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    # `--limit` and `--backend` only pair with `--scan-account`. argparse cannot
-    # express this natively — enforce it after parsing so the operator gets a
-    # clear message rather than a silent no-op default. Both flags default to
-    # `None`; only-with-scan-account is detected by `args.<flag> is not None`
+    # `--limit`, `--backend`, `--max-carousel-images`, `--max-reel-frames` only
+    # pair with `--scan-account`. argparse cannot express this natively —
+    # enforce it after parsing so the operator gets a clear message rather
+    # than a silent no-op default. Every flag defaults to `None`;
+    # only-with-scan-account is detected by `args.<flag> is not None`
     # (works for `--limit 5` and `--limit=5` alike).
     if args.scan_account is None:
         if args.limit is not None:
             parser.error("--limit is only valid with --scan-account")
         if args.backend is not None:
             parser.error("--backend is only valid with --scan-account")
+        if args.max_carousel_images is not None:
+            parser.error("--max-carousel-images is only valid with --scan-account")
+        if args.max_reel_frames is not None:
+            parser.error("--max-reel-frames is only valid with --scan-account")
     else:
         if args.limit is not None and not (
             _SCAN_ACCOUNT_LIMIT_MIN <= args.limit <= _SCAN_ACCOUNT_LIMIT_MAX
@@ -695,6 +749,20 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(
                 f"--limit must be in [{_SCAN_ACCOUNT_LIMIT_MIN}, {_SCAN_ACCOUNT_LIMIT_MAX}]; "
                 f"got {args.limit}"
+            )
+        if args.max_carousel_images is not None and not (
+            _MULTIMODAL_MIN <= args.max_carousel_images <= _MULTIMODAL_MAX
+        ):
+            parser.error(
+                f"--max-carousel-images must be in [{_MULTIMODAL_MIN}, {_MULTIMODAL_MAX}]; "
+                f"got {args.max_carousel_images}"
+            )
+        if args.max_reel_frames is not None and not (
+            _MULTIMODAL_MIN <= args.max_reel_frames <= _MULTIMODAL_MAX
+        ):
+            parser.error(
+                f"--max-reel-frames must be in [{_MULTIMODAL_MIN}, {_MULTIMODAL_MAX}]; "
+                f"got {args.max_reel_frames}"
             )
 
     audit_log_path = DEFAULT_AUDIT_LOG_PATH

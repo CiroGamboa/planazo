@@ -681,6 +681,85 @@ def test_scan_account_is_mutually_exclusive_with_tick() -> None:
     assert info.value.code != 0
 
 
+# ---- --max-carousel-images / --max-reel-frames flags ----------------------
+
+
+def test_scan_account_accepts_max_carousel_images_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_db: Path, audit_log_path: Path
+) -> None:
+    """`--max-carousel-images 3` runs cleanly — the argparse guard passes,
+    the CLI does not exit non-zero, and the extractor is invoked."""
+    anon = _ScriptedBackend(urls=[POST_URL])
+    _install_scan_backends(monkeypatch, anonymous=anon)
+    _install_extractor(monkeypatch, _CountingExtractor())
+
+    assert (
+        scheduler_cli.main(
+            ["--scan-account", ACCOUNT_URL, "--limit", "1", "--max-carousel-images", "3"]
+        )
+        == 0
+    )
+
+
+def test_scan_account_accepts_max_reel_frames_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_db: Path, audit_log_path: Path
+) -> None:
+    anon = _ScriptedBackend(urls=[POST_URL])
+    _install_scan_backends(monkeypatch, anonymous=anon)
+    _install_extractor(monkeypatch, _CountingExtractor())
+
+    assert (
+        scheduler_cli.main(
+            ["--scan-account", ACCOUNT_URL, "--limit", "1", "--max-reel-frames", "2"]
+        )
+        == 0
+    )
+
+
+@pytest.mark.parametrize("bad_value", ["0", "31", "-1"])
+def test_scan_account_max_carousel_images_out_of_range_argparse_error(bad_value: str) -> None:
+    """`--max-carousel-images` outside [1, 30] exits non-zero."""
+    with pytest.raises(SystemExit) as info:
+        scheduler_cli.main(["--scan-account", ACCOUNT_URL, "--max-carousel-images", bad_value])
+    assert info.value.code != 0
+
+
+@pytest.mark.parametrize("bad_value", ["0", "31", "-1"])
+def test_scan_account_max_reel_frames_out_of_range_argparse_error(bad_value: str) -> None:
+    """`--max-reel-frames` outside [1, 30] exits non-zero."""
+    with pytest.raises(SystemExit) as info:
+        scheduler_cli.main(["--scan-account", ACCOUNT_URL, "--max-reel-frames", bad_value])
+    assert info.value.code != 0
+
+
+def test_max_carousel_images_without_scan_account_is_argparse_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_db: Path, audit_log_path: Path
+) -> None:
+    """`--tick --max-carousel-images 5` is refused — the flag only pairs
+    with `--scan-account`."""
+    config = _config_with(_source_config(posts=[PostConfig(url=POST_URL)]))
+    _install_config(monkeypatch, config)
+    _install_backends(monkeypatch)
+    _install_extractor(monkeypatch, _CountingExtractor())
+
+    with pytest.raises(SystemExit) as info:
+        scheduler_cli.main(["--tick", "--max-carousel-images", "5"])
+    assert info.value.code != 0
+
+
+def test_max_reel_frames_without_scan_account_is_argparse_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_db: Path, audit_log_path: Path
+) -> None:
+    config = _config_with(_source_config(posts=[PostConfig(url=POST_URL)]))
+    _install_config(monkeypatch, config)
+    _install_backends(monkeypatch)
+    _install_extractor(monkeypatch, _CountingExtractor())
+
+    with pytest.raises(SystemExit) as info:
+        scheduler_cli.main(["--tick", "--max-reel-frames", "5"])
+    assert info.value.code != 0
+
+
 def test_scan_account_is_mutually_exclusive_with_once() -> None:
     """`--once URL --scan-account URL` is refused by argparse's mutex group."""
     with pytest.raises(SystemExit) as info:

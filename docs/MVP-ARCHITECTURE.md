@@ -446,7 +446,7 @@ Copied verbatim into the Extractor's system prompt (also lives as `DELEGATION_BR
 - **Acts alone when:** URL matches a known Instagram post pattern and the post has both an image and a caption.
 - **Asks (returns `status: "needs_clarification"`) when:** the post is ambiguous, the date/time cannot be extracted, or the location is not in Barcelona metro.
 - **Escalates (returns `status: "error"` + `error_type` and halts) when:** rate-limited, auth failure, image unavailable, or extraction confidence < 0.3.
-- **Effort budget:** `max_steps=8`, `max_output_tokens=2000`. Visual-asset budget is set per invocation by the `MultimodalProfile` the composition root passes to `extract_once` — the hook sends up to `profile.max_carousel_images` carousel slides or `profile.max_reel_frames` reel frames. Byte budgets are enforced by `run_loop` parameters, not by prompt text.
+- **Effort budget:** `max_steps=32`, `max_output_tokens=2000`. Visual-asset budget is set per invocation by the `MultimodalProfile` the composition root passes to `extract_once` — the hook sends up to `profile.max_carousel_images` carousel slides or `profile.max_reel_frames` reel frames. Byte budgets are enforced by `run_loop` parameters, not by prompt text.
 
 #### Correlating images and caption
 
@@ -456,6 +456,22 @@ Copied verbatim into the Extractor's system prompt (also lives as `DELEGATION_BR
   - **One post = one event.** Single image or a carousel where every slide is a different view of the same flyer. Emit exactly one `save_event`. Most single-venue accounts fall here.
   - **One post = several distinct events (roundup).** A carousel where each slide is a separate flyer, often paired with a caption like "this week's picks" or a numbered list. Emit one `save_event` per event with `event_index_in_post` = `0`, `1`, `2`, ... — one call per slide-derived event, in slide order. Curator / roundup accounts (`ACCOUNT_SCAN` profile) are shaped this way; the higher `max_carousel_images` cap on those runs exists specifically to give you enough slides to enumerate every event.
   - **One reel = one or more events.** Video frames + caption may describe one event's flyer or narrate a multi-event agenda; use the same rule as carousels — count distinct events in the caption + frame content and emit one `save_event` per event.
+- **Image ↔ caption mismatch is not a bail signal.** If the image says one thing and the caption says another, trust the caption for text (date, time, venue, title) and note the image as supplementary. Only bail via `report_extraction_status` when neither the caption nor the images give you enough data to name a single concrete event.
+
+#### Partial-save discipline
+
+- **Save every event you can identify.** If the post lists 19 events and 15 of them have a concrete date/time/venue while 4 are fuzzy, emit `save_event` 15 times — one per clean event, in order — and do NOT call `report_extraction_status(needs_clarification, multiple_events_in_post)` for the whole post. Partial coverage of a roundup is a **success**, not an ambiguity.
+- **Prefer `save_event` over `report_extraction_status` whenever the choice is real.** The only reasons to call `report_extraction_status(needs_clarification, ...)` on a multi-event post are: (a) you cannot distinguish **any single** event from the rest (rare — a totally undifferentiated blob of text), or (b) every event in the post is missing a concrete date. If even **one** event is savable, save it.
+- **`event_index_in_post` counts every `save_event` call in the same run, starting at `0`.** The catalog's `UNIQUE(source_url, event_index_in_post)` locks out double-writes; you do not need to defensively skip indexes.
+- **Fuzzy-event skipping is silent.** Do not `report_extraction_status` for the fuzzy remainder — the successful `save_event` calls are the terminal signal for the post. Use `notes` on a save_event only for the concrete event it describes.
+
+#### Date-range and recurring-event expansion
+
+- **Date ranges expand into one `save_event` per day.** A caption like *"20–27 August, 20:00 at Sala Apolo"* is 8 events (one per day 20, 21, ..., 27), each with the same title / venue / time but a distinct `start_utc`. Emit 8 `save_event` calls, `event_index_in_post = 0..7`.
+- **Weekly recurrences within a bounded window expand the same way.** *"Every Sunday in August 2026"* → compute the concrete Sundays for that month/year (5 Sundays: 2, 9, 16, 23, 30 in Aug 2026) and emit one `save_event` per date. Same rule for *"every Wednesday until 15 October"* — enumerate the concrete Wednesdays and save each.
+- **Expansion is capped at 31 concrete events per source recurrence.** A runaway-cost backstop: if the enumeration would exceed 31 dates (e.g. an open-ended "every Sunday" with no end month), do not expand — call `report_extraction_status(needs_clarification, missing_date)` for that specific recurrence and continue saving the other clean events in the post (partial-save discipline still applies).
+- **The reference date for a recurrence is the post's `date_utc`** (available on `fetch_instagram_post`'s return under `date_utc`). Use it to disambiguate *"every Sunday in August"* — the year is the year of the post, not the current wall-clock.
+- **Ambiguous ranges do NOT expand.** *"20–27 August"* with no year → use the post's year (post-date year). *"August–September"* with no specific days → not expandable; call `needs_clarification: missing_date` for that item.
 
 #### Terminal calls
 

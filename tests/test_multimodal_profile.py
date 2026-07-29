@@ -85,6 +85,16 @@ def test_account_scan_preset_lifts_carousel_and_reel_caps() -> None:
     assert ACCOUNT_SCAN.max_reel_frames > SINGLE_POST.max_reel_frames
 
 
+def test_account_scan_preset_locked_at_expected_values() -> None:
+    """Guard the ACCOUNT_SCAN value from PR #134 — 5/5, demo-tuned for fast
+    LLM turnaround. Paired with the partial-save discipline in the
+    delegation brief, this yields real extraction wins on roundups
+    without a heavy per-post budget. Production coverage of full 25-30
+    slide agendas comes via per-account overrides in `sources.yaml`."""
+    assert ACCOUNT_SCAN.max_carousel_images == 5
+    assert ACCOUNT_SCAN.max_reel_frames == 5
+
+
 # ---- resolve_profile ------------------------------------------------------
 
 

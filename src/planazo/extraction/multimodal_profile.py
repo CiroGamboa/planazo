@@ -20,9 +20,12 @@ right budget per entry point:
 - `SINGLE_POST` (3 / 3) — byte-identical to the pre-profile defaults.
   Used by `--tick` post-only extraction, `--once <post-url>`, and the
   Recommender's `dispatch_extraction` tool.
-- `ACCOUNT_SCAN` (10 / 6) — the default for `--scan-account` and the
-  `--tick` account-discovery path. Trades ~3x token cost per carousel
-  for coverage of roundup posts.
+- `ACCOUNT_SCAN` (5 / 5) — the default for `--scan-account` and the
+  `--tick` account-discovery path. Demo-tuned for fast LLM turnaround;
+  paired with the partial-save discipline in the delegation brief, this
+  yields enumerated events per roundup on a light visual budget. For
+  production coverage of 25-30 slide agendas, raise per-account via
+  `AccountConfig.max_carousel_images` in `data/sources.yaml`.
 
 Per-account overrides layer on top of a base preset via
 `resolve_profile`. A `sources.yaml` account entry can set
@@ -62,10 +65,17 @@ class MultimodalProfile(BaseModel):
 SINGLE_POST: Final[MultimodalProfile] = MultimodalProfile(max_carousel_images=3, max_reel_frames=3)
 """Default profile for single-post entry points. Preserves pre-config behavior."""
 
-ACCOUNT_SCAN: Final[MultimodalProfile] = MultimodalProfile(
-    max_carousel_images=10, max_reel_frames=6
-)
-"""Default profile for `--scan-account` and account-discovery ticks — roundup-friendly."""
+ACCOUNT_SCAN: Final[MultimodalProfile] = MultimodalProfile(max_carousel_images=5, max_reel_frames=5)
+"""Default profile for `--scan-account` and account-discovery ticks — roundup-friendly.
+
+Tuned to 5/5 for demo-friendly latency — a 5-slide budget lets the LLM
+identify multi-event roundups quickly without burning a full 20-slide
+pass. Partial-save discipline (issue #134) means even 5 slides worth of
+enumerated events land as `save_event` calls, so the demo shows real
+extraction wins without waiting on a heavy pass. For production-grade
+coverage of 25-30 slide agendas, raise per-account via
+`AccountConfig.max_carousel_images` in `data/sources.yaml`.
+"""
 
 
 def resolve_profile(
