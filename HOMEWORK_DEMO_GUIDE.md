@@ -20,6 +20,74 @@ external actions require approval**. The architecture is documented in
 [MVP architecture](docs/MVP-ARCHITECTURE.md) and the rules enforced across the
 repository are in [AGENTS.md](AGENTS.md).
 
+## System at a glance
+
+```mermaid
+flowchart LR
+    U[Telegram user] --> B[Bot surface]
+    B --> Q[Per-user FIFO queue]
+    Q --> R[Recommender]
+    R -->|validated search| C[(SQLite event catalog)]
+    R -->|pull facts/notes| M[(JSONL memory)]
+    R -->|always-pushed rules| Rules[Markdown rules]
+    R -->|delegate source URL| E[Extractor]
+    E --> C
+    R --> Rank[Deterministic ranker]
+    Rank --> B
+    R -->|irreversible calendar action| Gate{Explicit approval?}
+    Gate -->|yes| Cal[Calendar action]
+    Gate -->|no| B
+
+    S[Scheduled ingestion] --> E
+    Admin[Daily catalog curator] --> C
+    Logs[(Run / audit logs)] --> Monitor[Independent monitor]
+```
+
+The picture is useful because it shows the three different responsibilities:
+the Recommender serves the user, the Extractor handles messy sources, and the
+Curator maintains shared catalog data. The monitor observes them afterward; it
+does not sit inside a user turn.
+
+## Safety decisions in one picture
+
+```mermaid
+flowchart TD
+    Input[User message, source page, tool output, or stored row]
+    Input --> Validate{Pydantic validation}
+    Validate -->|invalid| Typed[Typed error branch]
+    Validate -->|valid| Data[Structured data]
+    Data --> Untrusted{Retrieved or shared text?}
+    Untrusted -->|yes| ToolResult[Tool-result data only]
+    Untrusted -->|no| Context[Safe composition context]
+    ToolResult --> Loop[Hand-written agent loop]
+    Context --> Loop
+    Loop --> External{External / irreversible action?}
+    External -->|no| Execute[Execute read or reversible action]
+    External -->|yes| Approval[Ask user explicitly]
+    Approval -->|approved| Execute
+    Approval -->|declined| Stop[Record safe non-action]
+```
+
+This is the answer to “how do you stop the agent from trusting everything it
+reads?”: validation controls shape; message roles control whether text can act
+as instruction; the approval gate controls external effects.
+
+## ADR map — why the architecture looks this way
+
+ADRs are the project’s decision history. For the demo, these are the most
+useful ones to know:
+
+| Decision | ADR | Practical effect in the demo |
+| --- | --- | --- |
+| Hand-written loop and tool/approval contract | [0001](docs/adr/0001-agent-runtime-layout-and-provider.md), [0002](docs/adr/0002-event-tool-contracts-and-approval-gate.md) | We can point to our own loop and explain why calendar creation is gated. |
+| SQLite event catalog | [0003](docs/adr/0003-sqlite-domain-store.md) | Events are structured records that can be searched, filtered, and audited. |
+| Three stores and safe memory scope | [0004](docs/adr/0004-three-store-memory-model.md) | Facts, shared notes, and rules have different storage and trust behavior. |
+| Recommender + Extractor split | [0005](docs/adr/0005-multi-agent-shape.md) | The second agent has a bounded delegation brief and typed hand-off. |
+| Monitor with categorical rationale | [0007](docs/adr/0007-monitor-scheduling-and-grades.md) | Monitoring is outside the request loop and must explain its verdict. |
+| Telegram and queue behavior | [queue ADR 0019](docs/adr/0019-per-user-message-serialization.md) | The bot has a real channel and preserves order for one user without blocking everyone. |
+| Trusted radius and deterministic recommendations | [0014](docs/adr/0014-deterministic-ranking-boundary.md) | Coordinates are application-owned; ranking is repeatable and not an LLM opinion. |
+| Admin curator | [0020](docs/adr/0020-catalog-curator-agent.md) | A separate privileged agent maintains stale/duplicate/misclassified catalog records. |
+
 ---
 
 ## tools, loop, approval, errors
@@ -174,11 +242,29 @@ intent fields; geographic origin coordinates are intentionally redacted.
 
 ## Suggested demo order
 
-1. Start the Telegram bot and show a normal safe request.
+```mermaid
+sequenceDiagram
+    participant Teacher
+    participant Team
+    participant Bot as Telegram bot
+    participant Rec as Recommender
+    participant Catalog as SQLite catalog
+
+    Teacher->>Team: Ask for a Barcelona event
+    Team->>Bot: Send /find demo request
+    Bot->>Rec: Validated message + user identity
+    Rec->>Catalog: Search validated events
+    Catalog-->>Rec: Structured candidates
+    Rec-->>Bot: Filtered/ranked response
+    Bot-->>Teacher: Explain result and source link
+    Team->>Team: Open linked code/test only if asked
+```
+
+1. Start with the system diagram, then make one normal Telegram request.
 2. Open `run_loop` to show the hand-written loop and max-step stop.
-3. Show an approval prompt for a calendar action and decline it once.
-4. Show one memory fact/rule example and explain private/shared scope.
-5. Show the Extractor delegation brief and a typed extraction result.
+3. Show one memory fact/rule example and explain private/shared scope.
+4. Show the Extractor delegation brief and a typed extraction result.
+5. Show an approval prompt for a calendar action and decline it once.
 6. Show a scheduler record with a `gate_reason` silence branch and the
    curator dry-run evidence.
 7. Finish with `uv run pytest` and the relevant test file for any question.
