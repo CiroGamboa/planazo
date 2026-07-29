@@ -446,11 +446,20 @@ Copied verbatim into the Extractor's system prompt (also lives as `DELEGATION_BR
 - **Acts alone when:** URL matches a known Instagram post pattern and the post has both an image and a caption.
 - **Asks (returns `status: "needs_clarification"`) when:** the post is ambiguous, the date/time cannot be extracted, or the location is not in Barcelona metro.
 - **Escalates (returns `status: "error"` + `error_type` and halts) when:** rate-limited, auth failure, image unavailable, or extraction confidence < 0.3.
-- **Effort budget:** `max_steps=8`, `max_output_tokens=2000`, one image for single-image posts; up to 3 images for carousels; 3 evenly-spaced frames + thumbnail for reels. Enforced by `run_loop` parameters, not by prompt text.
+- **Effort budget:** `max_steps=8`, `max_output_tokens=2000`. Visual-asset budget is set per invocation by the `MultimodalProfile` the composition root passes to `extract_once` — the hook sends up to `profile.max_carousel_images` carousel slides or `profile.max_reel_frames` reel frames. Byte budgets are enforced by `run_loop` parameters, not by prompt text.
+
+#### Correlating images and caption
+
+- **Caption is authoritative for text.** Dates, times, venue names, and titles that appear in the caption take precedence over what an image OCR might yield — a hand-written flyer date can be misread, the caption is the operator-typed source of truth.
+- **Images are authoritative for signals the caption may skip.** Flyer poster art, event-specific date/venue overlays, artist lineups, and layout cues the caption glosses over ("swipe for lineup") are what the images add. Read image content in that role, not as a redundant re-read of the caption.
+- **The image↔caption relation has three shapes; use the caption + slide count to decide which:**
+  - **One post = one event.** Single image or a carousel where every slide is a different view of the same flyer. Emit exactly one `save_event`. Most single-venue accounts fall here.
+  - **One post = several distinct events (roundup).** A carousel where each slide is a separate flyer, often paired with a caption like "this week's picks" or a numbered list. Emit one `save_event` per event with `event_index_in_post` = `0`, `1`, `2`, ... — one call per slide-derived event, in slide order. Curator / roundup accounts (`ACCOUNT_SCAN` profile) are shaped this way; the higher `max_carousel_images` cap on those runs exists specifically to give you enough slides to enumerate every event.
+  - **One reel = one or more events.** Video frames + caption may describe one event's flyer or narrate a multi-event agenda; use the same rule as carousels — count distinct events in the caption + frame content and emit one `save_event` per event.
 
 #### Terminal calls
 
-- **Success ends with one or more `save_event` calls.** When a valid `Event` has been parsed, call `save_event` with its fields; the catalog persists the row and returns `{"saved": ..., "event_db_id": ...}`. When a single post announces multiple distinct events (curator carousels), call `save_event` once per event with `event_index_in_post` = `0`, `1`, `2`, ... — one call per slot, in order. Do not answer in free-form text after the final `save_event` — the tool call is the terminal signal.
+- **Success ends with one or more `save_event` calls.** When a valid `Event` has been parsed, call `save_event` with its fields; the catalog persists the row and returns `{"saved": ..., "event_db_id": ...}`. When a single post announces multiple distinct events, call `save_event` once per event with `event_index_in_post` = `0`, `1`, `2`, ... — one call per slot, in order. Do not answer in free-form text after the final `save_event` — the tool call is the terminal signal.
 - **Copy `author_handle` from `fetch_instagram_post`'s return into `save_event(source_account=...)`.** The source-account handle names the account that posted the flyer (e.g. `sala_apolo`); it is a wire-level pass-through, not a field the LLM composes.
 - **Unhappy ends with `report_extraction_status(status, error_type, notes)`.** Every non-success branch terminates with exactly one `report_extraction_status` call. Map from this brief's branches to `error_type` literals as follows.
   - "Asks (returns `status: "needs_clarification"`)": `status="needs_clarification"`, `error_type` ∈ `{"ambiguous_content", "missing_date", "location_out_of_metro", "multiple_events_in_post"}`.

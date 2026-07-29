@@ -39,6 +39,7 @@ import pytest
 from planazo.catalog.models import Event
 from planazo.catalog.repository import insert_event
 from planazo.extraction.models import ExtractionResult
+from planazo.extraction.multimodal_profile import ACCOUNT_SCAN, SINGLE_POST, MultimodalProfile
 from planazo.scheduler.models import (
     ScanState,
     SchedulerRunRecord,
@@ -846,3 +847,141 @@ def test_tick_writes_audit_log_line_per_record(conn: sqlite3.Connection, audit_l
     for line in lines:
         rec = SchedulerRunRecord.model_validate_json(line)
         assert rec.source_kind == "post"
+
+
+# ---- extractor_factory profile dispatch -----------------------------------
+
+
+class _ProfileRecordingFactory:
+    """Records the `MultimodalProfile` each `_process_*_entry` requests.
+
+    Returns a `CountingExtractor` each call so the audit-log path stays
+    lit; the recorded `profiles` list is what tests assert on.
+    """
+
+    def __init__(self) -> None:
+        self.profiles: list[MultimodalProfile] = []
+        self.extractor = CountingExtractor()
+
+    def __call__(self, profile: MultimodalProfile) -> ExtractorCallable:
+        self.profiles.append(profile)
+        return self.extractor
+
+
+def test_run_tick_passes_single_post_profile_for_configured_post_entries(
+    conn: sqlite3.Connection, audit_log: Path
+) -> None:
+    """A `posts:` entry has no account context — `_process_post_entry` asks
+    the factory for `SINGLE_POST`. The account-scan cap is not applied to
+    single-post work."""
+    del conn
+    factory = _ProfileRecordingFactory()
+    config = _config_with(_source_config(posts=[PostConfig(url=POST_URL_A)]))
+
+    def _factory() -> sqlite3.Connection:
+        return db.connect()
+
+    run_tick(
+        now=_fixed_now,
+        conn_factory=_factory,
+        source_by_name={},
+        backends=_backends(),
+        extractor=CountingExtractor(),  # fallback if factory is `None` (not this test)
+        extractor_factory=factory,
+        config=config,
+        audit_log_path=audit_log,
+    )
+
+    assert factory.profiles == [SINGLE_POST]
+
+
+def test_run_tick_passes_account_scan_profile_for_account_entries(
+    conn: sqlite3.Connection, audit_log: Path
+) -> None:
+    """An `accounts:` entry without per-account overrides gets the
+    `ACCOUNT_SCAN` preset — the higher-cap profile roundup posts need."""
+    del conn
+    factory = _ProfileRecordingFactory()
+    account = AccountConfig(url=ACCOUNT_URL, backend="anonymous")
+    config = _config_with(_source_config(accounts=[account]))
+
+    def _factory() -> sqlite3.Connection:
+        return db.connect()
+
+    run_tick(
+        now=_fixed_now,
+        conn_factory=_factory,
+        source_by_name={},
+        backends=_backends(anonymous=ScriptedBackend(urls=[])),
+        extractor=CountingExtractor(),
+        extractor_factory=factory,
+        config=config,
+        audit_log_path=audit_log,
+    )
+
+    assert factory.profiles == [ACCOUNT_SCAN]
+
+
+def test_run_tick_folds_per_account_override_into_resolved_profile(
+    conn: sqlite3.Connection, audit_log: Path
+) -> None:
+    """A `sources.yaml` account with `max_carousel_images: 15` — the roundup
+    shape — makes the factory receive a profile with that cap on top of
+    `ACCOUNT_SCAN`'s reel default. This is the load-bearing wire from YAML
+    to `_multimodal_hook`."""
+    del conn
+    factory = _ProfileRecordingFactory()
+    account = AccountConfig(
+        url=ACCOUNT_URL,
+        backend="anonymous",
+        max_carousel_images=15,
+    )
+    config = _config_with(_source_config(accounts=[account]))
+
+    def _factory() -> sqlite3.Connection:
+        return db.connect()
+
+    run_tick(
+        now=_fixed_now,
+        conn_factory=_factory,
+        source_by_name={},
+        backends=_backends(anonymous=ScriptedBackend(urls=[])),
+        extractor=CountingExtractor(),
+        extractor_factory=factory,
+        config=config,
+        audit_log_path=audit_log,
+    )
+
+    assert len(factory.profiles) == 1
+    resolved = factory.profiles[0]
+    assert resolved.max_carousel_images == 15
+    assert resolved.max_reel_frames == ACCOUNT_SCAN.max_reel_frames
+
+
+def test_run_tick_without_factory_falls_back_to_extractor(
+    conn: sqlite3.Connection, audit_log: Path
+) -> None:
+    """Backwards-compat: `extractor_factory=None` (the default) means every
+    test that pre-dates this ticket keeps using its fixed `extractor` fake
+    verbatim — no profile is threaded through and no unexpected import
+    happens."""
+    del conn
+    extractor = CountingExtractor()
+    config = _config_with(_source_config(posts=[PostConfig(url=POST_URL_A)]))
+
+    def _factory() -> sqlite3.Connection:
+        return db.connect()
+
+    run_tick(
+        now=_fixed_now,
+        conn_factory=_factory,
+        source_by_name={},
+        backends=_backends(),
+        extractor=extractor,
+        config=config,
+        audit_log_path=audit_log,
+    )
+
+    assert extractor.calls  # extractor was invoked
+    # No factory means no profile dispatch — the fixed extractor was used
+    # verbatim without asking anyone for a profile.
