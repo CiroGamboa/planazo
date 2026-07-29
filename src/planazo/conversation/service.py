@@ -97,6 +97,17 @@ _CLARIFICATION_KEY_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
 _CLARIFICATION_KEY_FALLBACK: Final[str] = "general"
 _CLARIFICATION_KEY_PREFIX: Final[str] = "pref:clarified."
 
+_RECOMMENDATIONS_PREFACE_CAP: Final[int] = 500
+"""Bound for the `ok`-branch `ConversationReply.answer` (the recommendations
+preface). `ConversationReply.answer` itself allows up to 2,000 chars — wide
+enough for the `no_results`/`detail` branches' longer explanations — but the
+preface sits *above* a numbered candidate list a Telegram message must still
+fit, so it is truncated to this tighter bound in `_project_recommendations`
+before the reply is constructed. Truncating here (rather than leaving the
+model's own `max_length` as the only gate) means an over-length
+`RecommenderResult.answer` truncates silently instead of raising
+`ValidationError` on `ConversationReply(...)` construction."""
+
 
 def _derive_clarification_key(question: str) -> str:
     """Map a clarification question to a namespaced preference key.
@@ -359,9 +370,20 @@ def _persist_state_best_effort(conn: sqlite3.Connection, state: ConversationStat
 
 
 def _project_recommendations(result: RecommenderResult) -> ConversationReply:
-    """Project one `RecommenderResult` onto the matching `ConversationReply`."""
+    """Project one `RecommenderResult` onto the matching `ConversationReply`.
+
+    The `ok` branch carries `result.answer` through as the reply's `answer` —
+    the Recommender's own brief natural-language summary, truncated to
+    `_RECOMMENDATIONS_PREFACE_CAP` so it can never overrun the template
+    `bot.commands.format_reply` renders it into. An empty or `None` answer
+    stays `None`; `format_reply` treats that as "no preface" and falls back
+    to the plain candidate list unchanged.
+    """
     if result.status == "ok":
-        return ConversationReply(kind="recommendations", candidates=result.candidates)
+        answer = result.answer[:_RECOMMENDATIONS_PREFACE_CAP] if result.answer else None
+        return ConversationReply(
+            kind="recommendations", candidates=result.candidates, answer=answer
+        )
     if result.status == "no_results":
         return ConversationReply(
             kind="no_results",
