@@ -144,10 +144,11 @@ uv run planazo-sources-instagram --url https://instagram.com/p/ABC/             
 `planazo-scheduler` is the host-cron entry point for periodic ingestion: on every `--tick` it reads `data/sources.yaml`, walks the configured `posts:` + `accounts:` blocks, routes each account through `AccountConfig.backend` to one of two discovery backends (`anonymous` via `curl_cffi` + Meta's `web_profile_info`, or `hikerapi` via the paid multi-key HikerAPI pool), pre-checks discovered URLs against `events_exist_for_source_url` to skip already-persisted URLs, and dispatches survivors into `extract_once` under a seeded system user (`telegram_user_id="system"`). One `SchedulerRunRecord` line per source URL processed lands in `var/scheduler_runs.jsonl` for human tailing. See [ADR 0011 — Scheduled ingestion](docs/adr/0011-scheduled-ingestion.md) and [ADR 0014 — Instagram discovery backends](docs/adr/0014-instagram-discovery-backends.md).
 
 ```bash
-uv run planazo-scheduler --tick                                       # one-shot tick over sources.yaml
-uv run planazo-scheduler --once https://www.instagram.com/p/ABC/      # diagnostic single-URL run (bypasses cadence)
-uv run planazo-scheduler --once https://www.instagram.com/reel/ABC/   # same, for a reel URL
-uv run planazo-scheduler --once https://www.instagram.com/acct/       # single-account run (must be in sources.yaml)
+uv run planazo-scheduler --tick                                          # one-shot tick over sources.yaml
+uv run planazo-scheduler --once https://www.instagram.com/p/ABC/         # diagnostic single-URL run (bypasses cadence)
+uv run planazo-scheduler --once https://www.instagram.com/reel/ABC/      # same, for a reel URL
+uv run planazo-scheduler --once https://www.instagram.com/acct/          # single-account run (must be in sources.yaml)
+uv run planazo-scheduler --once https://www.instagram.com/p/ABC/ --verbose  # add a step-by-step narrative log to stdout (see ADR 0017)
 ```
 
 Exit codes: `0` when the tick completed (regardless of per-URL outcomes — operators read the JSONL log for per-URL health); `1` on an uncaught runtime exception; `2` on a config-time failure (malformed `sources.yaml`, missing `PLANAZO_IG_HIKER_API_KEY_*` when a `hikerapi`-backed account is configured, or an `--once <url>` call against an account URL that is not in `sources.yaml`).

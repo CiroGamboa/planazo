@@ -52,6 +52,7 @@ uv run planazo-agent "<prompt>"                  # run the agent loop once
 uv run planazo-agent                             # interactive REPL
 uv run python -m planazo.bot                     # start the Telegram bot
 uv run planazo-scheduler --tick                  # run one scheduled ingestion tick over data/sources.yaml
+uv run planazo-scheduler --once <URL> --verbose  # single-post demo with step-by-step narrative log (see ADR 0017)
 docker compose up sources-instagram              # run the Instagram source adapter one-shot
 ```
 

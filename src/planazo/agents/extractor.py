@@ -341,6 +341,8 @@ def extract_once(
     *,
     source: InstagramSource | None = None,
     model: str = STRONG,
+    on_step: Callable[[StepRecord], None] | None = None,
+    on_complete: Callable[[LoopResult], None] | None = None,
 ) -> ExtractionResult:
     """Run one Instagram-post → `Event` extraction and return the hand-off.
 
@@ -348,6 +350,14 @@ def extract_once(
     (`extraction.tools.build_dispatch_extraction`). Not user-facing
     directly: `url` and `delegator_user_id` come from the Recommender's
     session; the caption text never crosses back across the return.
+
+    `on_step` and `on_complete` are optional external observer seams the
+    demo command (`planazo-scheduler --once --verbose`) uses to wire the
+    stdout narrative logger alongside the built-in JSONL sidecar writer.
+    Both default to `None`; when set, they are best-effort — an
+    exception raised inside the callback is not caught here (Rule 4
+    burden sits with the observer, matching `AgentRunLogger`'s
+    discipline). See [ADR 0017](../../docs/adr/0017-instagram-demo-narrative-logs.md).
     """
     run_id = str(uuid4())
     resolved_source = source if source is not None else _default_source()
@@ -375,7 +385,7 @@ def extract_once(
 
     system_text = f"{load_rules()}\n\n{DELEGATION_BRIEF}\n\nURL to extract: {url}"
 
-    logger = ExtractionRunLogger(
+    audit_logger = ExtractionRunLogger(
         run_id=run_id,
         url=url,
         delegator_user_id=delegator_user_id,
@@ -387,7 +397,9 @@ def extract_once(
 
     def observe(record: StepRecord) -> None:
         trace.append(record)
-        logger(record)
+        audit_logger(record)
+        if on_step is not None:
+            on_step(record)
 
     # Capture wall-clock boundaries around `run_loop` so the `agent_runs`
     # row's `started_at` / `ended_at` cover the full loop, including every
@@ -405,7 +417,9 @@ def extract_once(
         system=system_text,
     )
     ended_at = datetime.now(UTC)
-    logger.complete(loop_result)
+    audit_logger.complete(loop_result)
+    if on_complete is not None:
+        on_complete(loop_result)
 
     # Best-effort SQLite audit-row write. `AgentRunLogger` catches every
     # exception and logs a WARNING; the Extractor's `ExtractionResult` is

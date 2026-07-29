@@ -27,6 +27,9 @@ Do **not** write an ADR for:
 
 ## Current accepted decisions
 
+- [0017 — Instagram demo narrative logs](0017-instagram-demo-narrative-logs.md)
+  defines the opt-in, stdout-only, structural-signals-only narrative logger the `planazo-scheduler --once --verbose` demo command wires into `extract_once`'s new `on_step` + `on_complete` observer seams.
+
 - [0016 — Multi-turn Recommender conversation](0016-multi-turn-recommender-conversation.md)
   defines the DB-backed per-user scratchpad, preference-namespaced profile enrichment, and the `handle_user_message` composition root the bot's `/find` handler + any CLI helper call.
 
