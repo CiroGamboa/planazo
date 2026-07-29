@@ -11,24 +11,31 @@ The Extractor ([`../../agents/extractor.py`](../../agents/extractor.py)) is the 
 
 ## Quick demo
 
-Three commands, ready to copy-paste:
+Four commands, ready to copy-paste:
 
 ```bash
 # 1. Extract a single post (verbose narrative to stdout).
 uv run planazo-scheduler --once https://www.instagram.com/p/DbSiUpoDNiZ/ --verbose
 
-# 2. Run one scheduler tick over every entry in data/sources.yaml.
+# 2. Ad-hoc scan of one account (no data/sources.yaml edit).
+#    --limit N caps discovery at N recent posts (default 12, max 50).
+#    --backend {anonymous,hikerapi} picks the discovery client (default anonymous).
+uv run planazo-scheduler --scan-account https://www.instagram.com/venue.name/ --limit 5 --verbose
+
+# 3. Run one scheduler tick over every entry in data/sources.yaml.
 uv run planazo-scheduler --tick
 
-# 3. Config-only smoke: validate data/sources.yaml (no LLM cost, no network).
+# 4. Config-only smoke: validate data/sources.yaml (no LLM cost, no network).
 uv run python -c "from planazo.sources.config import load_config; print(load_config())"
 ```
 
-Command 1 is the live-demo command. It goes through the full pipeline (fetch → multimodal LLM turn → `save_event` or `report_extraction_status`) and prints step-by-step narrative to stdout. See ADR 0017 for the narrative log discipline.
+Command 1 is the live-demo command for a single URL. It goes through the full pipeline (fetch → multimodal LLM turn → `save_event` or `report_extraction_status`) and prints step-by-step narrative to stdout. See ADR 0017 for the narrative log discipline.
 
-Command 2 is the cron-driven ingestion path. It walks `posts:` + `accounts:` in `data/sources.yaml`, respects the per-URL cadence gate, and appends one `SchedulerRunRecord` line per URL to `var/scheduler_runs.jsonl`.
+Command 2 is the ad-hoc account scan. It builds an ephemeral `AccountConfig` and routes through the chosen backend (`anonymous` needs no env; `hikerapi` needs the `PLANAZO_IG_HIKER_API_KEY_*` env vars). Bypasses the cadence gate. Ideal for demos where you want to point at any public account and pull its last N posts.
 
-Command 3 is the offline smoke — a Pydantic parse of the config file, no network, no LLM. Useful before pushing a config change.
+Command 3 is the cron-driven ingestion path. It walks `posts:` + `accounts:` in `data/sources.yaml`, respects the per-URL cadence gate, and appends one `SchedulerRunRecord` line per URL to `var/scheduler_runs.jsonl`.
+
+Command 4 is the offline smoke — a Pydantic parse of the config file, no network, no LLM. Useful before pushing a config change.
 
 ## Config: `data/sources.yaml`
 

@@ -308,6 +308,7 @@ def _process_source_url(
     audit_log_path: Path,
     system_user_id: int,
     bypass_cadence_gate: bool,
+    discovery_limit: int | None = None,
 ) -> SchedulerRunRecord:
     """Process one configured source URL end-to-end; return the audit record.
 
@@ -410,7 +411,8 @@ def _process_source_url(
             urls_to_extract: list[str] = []
         else:
             try:
-                discovered = backend_client.list_recent_posts(source_url, limit=DISCOVERY_LIMIT)
+                effective_limit = DISCOVERY_LIMIT if discovery_limit is None else discovery_limit
+                discovered = backend_client.list_recent_posts(source_url, limit=effective_limit)
                 posts_discovered = len(discovered)
                 urls_to_extract = list(discovered)
             except (HikerClientError, AnonInstagramClientError) as exc:
