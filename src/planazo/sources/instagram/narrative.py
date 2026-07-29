@@ -38,20 +38,42 @@ _SHORTCODE_RE: Final[re.Pattern[str]] = re.compile(
     r"^https?://(?:www\.)?instagram\.com/(?:p|reel|tv)/(?P<shortcode>[A-Za-z0-9_-]+)"
 )
 
+_ACCOUNT_HANDLE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^https?://(?:www\.)?instagram\.com/(?P<handle>[A-Za-z0-9_.]+)/?$"
+)
 
-def _shortcode_from_url(url: str) -> str:
-    """Extract the shortcode from an Instagram post URL, or return `"(unknown)"`.
 
-    The narrative log's setup line names the shortcode so the operator can
-    correlate stdout with the JSONL trace. A non-Instagram URL or a
-    malformed one falls back to a stable placeholder rather than raising —
-    Rule 4 discipline extends to the display layer (a narrative print
-    must never take down a live demo).
+def _shortcode_from_url(url: str) -> str | None:
+    """Extract the shortcode from an Instagram post URL, or `None` if not a post.
+
+    An account URL (`https://instagram.com/<handle>/`) matches
+    `_ACCOUNT_HANDLE_RE` but NOT this regex, so it returns `None` — the
+    caller then falls through to the account-handle branch instead of
+    printing `"(unknown)"`.
     """
     match = _SHORTCODE_RE.match(url)
     if match is None:
-        return "(unknown)"
+        return None
     return match.group("shortcode")
+
+
+def _account_handle_from_url(url: str) -> str | None:
+    """Extract the `@handle` from an Instagram account URL, or `None`.
+
+    Returns `None` for post URLs (which contain `/p/`, `/reel/`, or
+    `/tv/` after the handle position) and for anything that doesn't
+    parse as `instagram.com/<handle>/`. The caller uses this to decide
+    which setup-line branch to print.
+    """
+    match = _ACCOUNT_HANDLE_RE.match(url)
+    if match is None:
+        return None
+    handle = match.group("handle")
+    # Post-shape segments — `p`, `reel`, `tv` — match this regex too.
+    # Exclude them here so a post URL never renders as `@p` / `@reel` / `@tv`.
+    if handle in {"p", "reel", "tv"}:
+        return None
+    return handle
 
 
 def _hhmmss(now: datetime) -> str:
@@ -89,7 +111,18 @@ class NarrativeLogger:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Print the setup line: `[HH:MM:SS] Fetching post <shortcode> from Instagram...`.
+        """Print the setup line.
+
+        Two shapes depending on the URL the logger was constructed with:
+
+        - Post URL (`.../p/<shortcode>/`, `.../reel/<shortcode>/`, `.../tv/<shortcode>/`)
+          → `Fetching post <shortcode> from Instagram...`
+        - Account URL (`.../<handle>/`) — the `--scan-account` demo entry —
+          → `Scanning account @<handle> for recent posts...`
+
+        A URL that matches neither falls back to
+        `Fetching post (unknown) from Instagram...` — the pre-fix
+        behavior for genuinely unparseable input.
 
         Called by the composition root (the scheduler CLI) before
         `extract_once` runs. Best-effort — a stdout failure or a URL that
@@ -97,7 +130,14 @@ class NarrativeLogger:
         """
         try:
             shortcode = _shortcode_from_url(self._url)
-            self._emit(f"Fetching post {shortcode} from Instagram...")
+            if shortcode is not None:
+                self._emit(f"Fetching post {shortcode} from Instagram...")
+                return
+            handle = _account_handle_from_url(self._url)
+            if handle is not None:
+                self._emit(f"Scanning account @{handle} for recent posts...")
+                return
+            self._emit("Fetching post (unknown) from Instagram...")
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("narrative_logger start failed: %s", exc)
 

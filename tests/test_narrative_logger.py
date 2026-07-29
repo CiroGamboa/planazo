@@ -94,6 +94,43 @@ def test_start_on_non_instagram_url_falls_back_to_placeholder() -> None:
     assert _bodies(stream.getvalue()) == ["Fetching post (unknown) from Instagram..."]
 
 
+def test_start_on_account_url_prints_scanning_line() -> None:
+    """An Instagram account URL prints `Scanning account @<handle> for recent posts...`.
+
+    Regression guard on the `--scan-account` cosmetic bug where an
+    account URL passed to `NarrativeLogger` printed the misleading
+    `Fetching post (unknown) from Instagram...` (the account URL has
+    no shortcode, so the old `_shortcode_from_url` returned "(unknown)").
+    """
+    logger, stream = _stream_logger(url="https://www.instagram.com/planesenbarcelona/")
+
+    logger.start()
+
+    assert _bodies(stream.getvalue()) == ["Scanning account @planesenbarcelona for recent posts..."]
+
+
+def test_start_on_account_url_without_trailing_slash() -> None:
+    """Account URLs without a trailing `/` still match the account branch."""
+    logger, stream = _stream_logger(url="https://instagram.com/some.venue")
+
+    logger.start()
+
+    assert _bodies(stream.getvalue()) == ["Scanning account @some.venue for recent posts..."]
+
+
+def test_start_post_url_never_misroutes_as_account() -> None:
+    """Post URLs (`/p/`, `/reel/`, `/tv/`) always print the post-shortcode line.
+
+    Guards against a future regex regression that would try to render
+    `@p`, `@reel`, or `@tv` if the post shape ever fell through to the
+    account branch.
+    """
+    for shape in ("p", "reel", "tv"):
+        logger, stream = _stream_logger(url=f"https://www.instagram.com/{shape}/ABC123def/")
+        logger.start()
+        assert _bodies(stream.getvalue()) == ["Fetching post ABC123def from Instagram..."]
+
+
 # ---- timestamp shape ------------------------------------------------------
 
 
