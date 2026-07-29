@@ -148,7 +148,7 @@ The layers below each map to one bounded context (annotated per layer). Numberin
 ### 1. Telegram bot — `src/planazo/bot/`
 
 - **`bot/app.py`** — entrypoint; builds the `python-telegram-bot` `Application` with `concurrent_updates=True` so different senders' turns run concurrently, registers one `CommandHandler` per command plus one `MessageHandler` wrapping `bot/chat.py`'s three-way plain-text dispatch, converts each `Update` into an `IncomingMessage`, dispatches every one of those six handlers through one shared per-sender queue before running any of them, and runs long polling.
-- **`bot/queue.py`** — `PerUserQueue`, the per-sender FIFO gate `bot/app.py` dispatches every handler through: one `asyncio.Lock` and a bounded waiter count per `telegram_user_id`, the bound and its two replies configured in `data/bot.yaml` ([ADR 0014](adr/0014-per-user-message-serialization.md)).
+- **`bot/queue.py`** — `PerUserQueue`, the per-sender FIFO gate `bot/app.py` dispatches every handler through: a `busy` flag, a waiting counter, and a `deque` of FIFO turn events per `telegram_user_id`, the bound and its two replies configured in `data/bot.yaml` ([ADR 0014](adr/0014-per-user-message-serialization.md)).
 - **`bot/surface.py`** — `TelegramSurface`, the reply channel bound to a `Bot` and a `chat_id`; the implementation of `planazo.interfaces.surface.UserSurface`. Plain text, no `parse_mode`.
 - **`bot/models.py`** — `IncomingMessage`, the Pydantic v2 projection of one update that the command layer consumes.
 - **`bot/session.py`** — resolves the Telegram `user_id` to the internal `users.id` (create-on-first-contact). This is the multi-user seam.
