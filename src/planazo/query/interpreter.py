@@ -51,6 +51,7 @@ def _record_search_intent(
     categories: str = "",
     radius_km: float = -1.0,
     budget_cents: int = -1,
+    limit: int = -1,
 ) -> SearchIntent:
     """Record the interpreted `/find` query as a structured SearchIntent.
 
@@ -62,7 +63,9 @@ def _record_search_intent(
     (or omit it) when the user did not name a radius in kilometres, and
     `budget_cents=-1` (or omit it) when the user did not name a budget
     in cents; the sentinel is negative because `0` is a legitimate
-    `budget_cents` value meaning free events only.
+    `budget_cents` value meaning free events only. Pass `limit=-1` (or
+    omit it) when the user did not name a count of events; otherwise pass
+    the requested count as `limit` (1-50).
     """
     return SearchIntent.model_validate(
         {
@@ -72,6 +75,7 @@ def _record_search_intent(
             "categories": categories,
             "radius_km": None if radius_km < 0 else radius_km,
             "budget_cents": None if budget_cents < 0 else budget_cents,
+            "limit": None if limit < 0 else limit,
         }
     )
 
@@ -99,8 +103,8 @@ Defaults you should apply when the user leaves them implicit:
 - `city`: "Barcelona". Every user of Planazo is looking for Barcelona
   events unless they explicitly named another city.
 - `start_utc` / `end_utc`: an ISO-8601 UTC window inferred from the
-  message. If the message names no time window at all, use the next 72
-  hours starting from now.
+  message. If the message names no time window at all, use the next 30
+  days starting from now.
 - `categories`: a comma-separated subset of the allowed values —
   {categories}. Leave the field empty when the user did not name any.
 - `radius_km`: pass `-1.0` when the user did not name a radius in
@@ -108,6 +112,9 @@ Defaults you should apply when the user leaves them implicit:
 - `budget_cents`: pass `-1` when the user did not name a budget in
   cents. `0` is a legitimate value (free events only), which is why the
   "unspecified" sentinel is negative.
+- `limit`: pass `-1` when the user did not name a count. When the user
+  says "give me N events", "top N", "N recommendations", "just N", etc.,
+  pass `limit=N`.
 
 Call `_record_search_intent` exactly once."""
 
@@ -117,7 +124,7 @@ _SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.format(categories=_CATEGORY_LIST)
 
 _INTERPRET_CONTRACT = (
     "Callers MUST check result.error_type before using any other field: on failure "
-    "the returned SearchIntent is a Barcelona-today+72h default tagged "
+    "the returned SearchIntent is a Barcelona-today+30d default tagged "
     '"interpreter_fallback", structurally indistinguishable from a real intent.'
 )
 
@@ -127,11 +134,12 @@ def _fallback_intent() -> SearchIntent:
     now = _now()
     return SearchIntent(
         start_utc=now,
-        end_utc=now + timedelta(hours=72),
+        end_utc=now + timedelta(days=30),
         city="Barcelona",
         categories=(),
         radius_km=None,
         budget_cents=None,
+        limit=None,
         error_type="interpreter_fallback",
     )
 

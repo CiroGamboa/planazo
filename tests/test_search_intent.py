@@ -86,6 +86,24 @@ def test_radius_km_and_budget_cents_may_be_none() -> None:
     assert intent.budget_cents is None
 
 
+def test_limit_may_be_omitted_and_defaults_to_none() -> None:
+    intent = _happy_intent()
+
+    assert intent.limit is None
+
+
+def test_limit_within_range_is_accepted() -> None:
+    intent = _happy_intent(limit=3)
+
+    assert intent.limit == 3
+
+
+@pytest.mark.parametrize("limit", [0, 51, -1])
+def test_limit_out_of_range_is_rejected(limit: int) -> None:
+    with pytest.raises(ValidationError):
+        _happy_intent(limit=limit)
+
+
 def test_error_type_accepts_the_fallback_literal() -> None:
     intent = _happy_intent(error_type="interpreter_fallback")
 

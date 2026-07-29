@@ -49,6 +49,7 @@ class SearchIntent(BaseModel):
     city: str = Field(min_length=1)
     radius_km: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     budget_cents: int | None = Field(default=None, ge=0)
+    limit: int | None = Field(default=None, ge=1, le=50)
     origin: SearchOrigin | None = None
     error_type: Literal["interpreter_fallback"] | None = None
 
