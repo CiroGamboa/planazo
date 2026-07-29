@@ -28,7 +28,6 @@ import json
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
-from functools import wraps
 from typing import Annotated, Any, Literal, cast
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
@@ -354,10 +353,25 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
     ]
     system_text = "\n\n".join(context_parts)
 
-    @wraps(catalog_search_events)
+    # NOTE: `@wraps(catalog_search_events)` was intentionally dropped after
+    # M3.6 extended `catalog_search_events` with four new filter parameters
+    # (`venue_name`, `tag`, `title_contains`, `budget_cents_max`). `@wraps`
+    # copies `__wrapped__`, and `tools.schema.schema_for` follows it via
+    # `inspect.signature(follow_wrapped=True)`, so the LLM would see the
+    # 8-param catalog signature and call this narrower wrapper with the new
+    # kwargs — raising `TypeError`. The Recommender's tool surface stays
+    # deliberately bounded to the four MVP filters below; the new filters
+    # remain reachable at the repository layer for direct callers.
     def search_events(
         category: str = "", city: str = "", start_after: str = "", max_results: int = 20
     ) -> dict[str, object]:
+        """Search the shared event store — Recommender's read-only tool.
+
+        Bounded projection of `catalog.tools.search_events`: exposes only the
+        four filters the Recommender's LLM currently reasons about. Pass
+        `category` (one of the `EventCategory` Literals), `city`, an
+        ISO-8601 `start_after` timestamp, and a `max_results` cap.
+        """
         return catalog_search_events(
             category=category,
             city=city,
