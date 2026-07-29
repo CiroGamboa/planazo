@@ -187,3 +187,59 @@ def test_update_event_category_refuses_archived_row(conn: sqlite3.Connection) ->
 
 def test_update_event_category_returns_false_when_id_missing(conn: sqlite3.Connection) -> None:
     assert update_event_category(conn, 999_999, "cultural") is False
+
+
+def test_query_events_include_archived_composes_with_other_filters(
+    conn: sqlite3.Connection,
+) -> None:
+    """`include_archived=True` returns archived rows that still match every other filter.
+
+    Locks the compose behavior — an admin caller reading "every tech event,
+    archived or not" must get both, but a Madrid archived-tech row must NOT
+    leak into a Barcelona-tech query.
+    """
+    live_tech_bcn = insert_event(
+        conn, make_event(source_url="https://seed/tech-live", category="tech", city="Barcelona")
+    )
+    archived_tech_bcn = insert_event(
+        conn, make_event(source_url="https://seed/tech-arch", category="tech", city="Barcelona")
+    )
+    archived_tech_mad = insert_event(
+        conn, make_event(source_url="https://seed/mad-arch", category="tech", city="Madrid")
+    )
+    live_music_bcn = insert_event(
+        conn, make_event(source_url="https://seed/music-live", category="music", city="Barcelona")
+    )
+    soft_delete_event(conn, archived_tech_bcn)
+    soft_delete_event(conn, archived_tech_mad)
+
+    found = query_events(conn, include_archived=True, category="tech", city="Barcelona")
+
+    assert {event.id for event in found} == {live_tech_bcn, archived_tech_bcn}
+    assert live_music_bcn not in {event.id for event in found}
+    assert archived_tech_mad not in {event.id for event in found}
+
+
+def test_restore_soft_delete_restore_roundtrip_flips_repeatedly(conn: sqlite3.Connection) -> None:
+    """Multiple archive/restore cycles converge to the expected state each time.
+
+    Locks the reversibility invariant ADR 0020 rests on — no state gets
+    stuck after several flips.
+    """
+    event_id = insert_event(conn, make_event())
+
+    assert soft_delete_event(conn, event_id) is True
+    assert get_event_by_id(conn, event_id) is None
+
+    assert restore_event(conn, event_id) is True
+    live_after_first_restore = get_event_by_id(conn, event_id)
+    assert live_after_first_restore is not None
+    assert live_after_first_restore.archived_at is None
+
+    assert soft_delete_event(conn, event_id) is True
+    assert get_event_by_id(conn, event_id) is None
+
+    assert restore_event(conn, event_id) is True
+    live_after_second_restore = get_event_by_id(conn, event_id)
+    assert live_after_second_restore is not None
+    assert live_after_second_restore.archived_at is None
