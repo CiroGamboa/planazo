@@ -264,7 +264,9 @@ def _format_detail_answer(event: Event) -> str:
     return " · ".join(parts)
 
 
-def _run_and_capture(user_id: int, intent: SearchIntent) -> tuple[RecommenderResult, str | None]:
+def _run_and_capture(
+    user_id: int, intent: SearchIntent, text: str | None = None
+) -> tuple[RecommenderResult, str | None]:
     """Run one Recommender loop and return `(result, run_id)`.
 
     `run_once` does not expose its `run_id` in its return value; the
@@ -273,8 +275,13 @@ def _run_and_capture(user_id: int, intent: SearchIntent) -> tuple[RecommenderRes
     returns. The `run_id` is `None` when the audit write was disabled
     or failed (Rule 4 best-effort) — in that case the follow-up
     features degrade gracefully to "cannot re-run same intent".
+
+    `text` is the raw user message this turn, if any, forwarded to
+    `run_once` as push context (`docs/adr/0022-user-text-push-context.md`)
+    so the Recommender's LLM can reason over nuance the interpreter's
+    structured `SearchIntent` fields don't capture.
     """
-    result = run_once(user_id, intent)
+    result = run_once(user_id, intent, text=text)
     # Best-effort: the audit surface is Rule 4 best-effort, so the
     # newest agent_runs row may be missing for a run that had a
     # legitimate best-effort audit failure. Falling back to `None`
@@ -401,6 +408,7 @@ def _handle_more_results(
     user_id: int,
     state: ConversationState,
     prior_run_id: str,
+    text: str,
 ) -> ConversationReply | None:
     """Return a fresh recommendations reply that excludes prior candidates.
 
@@ -411,6 +419,9 @@ def _handle_more_results(
     the colleagues' `SearchIntent` has no `exclude_ids` field and
     reaching into their code is out of scope.
 
+    `text` is the raw "more"/"otros ..." trigger message, forwarded to
+    `run_once` as push context like every other Recommender call.
+
     `None` means "cannot re-run same intent" (missing prior run,
     corrupt JSON) — the caller falls through to the fresh path.
     """
@@ -419,7 +430,7 @@ def _handle_more_results(
         return None
     prior = query_recommendations(conn, run_id=prior_run_id, limit=100)
     excluded_ids = {rec.event_id for rec in prior if rec.event_id is not None}
-    result, new_run_id = _run_and_capture(user_id, intent)
+    result, new_run_id = _run_and_capture(user_id, intent, text=text)
     if result.status != "ok":
         # Any non-ok branch we surface as-is; the state augmentation
         # is done by the caller after we return.
@@ -503,7 +514,7 @@ def _handle_clarification_answer(
     # — the clarification-answer path is the more specific state and
     # wins over the router.
     fresh_intent = interpret_search_only(text)
-    result, new_run_id = _run_and_capture(user_id, fresh_intent)
+    result, new_run_id = _run_and_capture(user_id, fresh_intent, text=text)
     reply = _project_recommendations(result)
     new_state = _augment_state_after_result(
         state=None,  # cleared: pending was consumed
@@ -538,7 +549,7 @@ def _handle_fresh_query(
     if routed.kind == "chat":
         return _handle_chat_route(conn, user_id, state, routed)
     intent = routed.intent
-    result, new_run_id = _run_and_capture(user_id, intent)
+    result, new_run_id = _run_and_capture(user_id, intent, text=text)
     reply = _project_recommendations(result)
     new_state = _augment_state_after_result(state, user_id, result, new_run_id, intent)
     _persist_state_best_effort(conn, new_state)
@@ -630,7 +641,9 @@ def handle_user_message(conn: sqlite3.Connection, user_id: int, text: str) -> Co
             # Out-of-range N or FK-cleared event — fall through.
 
         if _is_more_results(stripped):
-            reply = _handle_more_results(conn, user_id, state, state.last_recommendation_run_id)
+            reply = _handle_more_results(
+                conn, user_id, state, state.last_recommendation_run_id, stripped
+            )
             if reply is not None:
                 return reply
             # Prior run's intent could not be rebuilt — fall through.

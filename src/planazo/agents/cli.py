@@ -201,6 +201,7 @@ def _run(
         "on_step": _print_step,
         "gate": gate,
         "calendar_enabled": calendar_enabled,
+        "text": prompt,
     }
     if max_steps is not None:
         run_context["max_steps"] = max_steps

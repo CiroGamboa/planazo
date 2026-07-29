@@ -390,10 +390,13 @@ def test_only_the_cli_surface_imports_the_interpreter_outside_planazo_query() ->
                 offenders.append((py, pattern))
     agents_dir = Path(event_agent.__file__).parent
     conversation_dir = agents_dir.parent / "conversation"
-    assert offenders == [
+    # `Path.rglob` gives no ordering guarantee, so compare as a set rather
+    # than an exact list — the invariant is which files import the
+    # runtime, not the filesystem's traversal order.
+    assert set(offenders) == {
         (agents_dir / "cli.py", "planazo.query.interpreter"),
         (conversation_dir / "service.py", "planazo.query.interpreter"),
-    ], f"unexpected interpreter-runtime import: {offenders}"
+    }, f"unexpected interpreter-runtime import: {offenders}"
 
 
 def test_run_once_never_composes_the_interpreter_into_the_agent_registry(

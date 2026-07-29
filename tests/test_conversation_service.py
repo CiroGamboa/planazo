@@ -160,7 +160,7 @@ def _install_stubs(
         return interpret_returns
 
     def fake_run_and_capture(
-        user_id: int, intent: SearchIntent
+        user_id: int, intent: SearchIntent, text: str | None = None
     ) -> tuple[RecommenderResult, str | None]:
         calls.append((user_id, intent))
         return next(result_iter), next(run_id_iter, None)
@@ -519,7 +519,9 @@ def test_chat_route_returns_kind_chat_without_calling_run_once(
 
     run_once_calls: list[tuple[int, object]] = []
 
-    def fake_run_and_capture(user_id: int, intent: object) -> tuple[object, str | None]:
+    def fake_run_and_capture(
+        user_id: int, intent: object, text: str | None = None
+    ) -> tuple[object, str | None]:
         run_once_calls.append((user_id, intent))
         raise AssertionError("run_once must not fire on a chat route")
 
@@ -613,7 +615,9 @@ def test_clarification_answer_bypasses_router_via_interpret_search_only(
     monkeypatch.setattr(service, "interpret_search_only", lambda _text: fresh_intent)
 
     result = RecommenderResult(status="no_results", answer="none", stopped="answered", steps=1)
-    monkeypatch.setattr(service, "_run_and_capture", lambda _uid, _intent: (result, "run-clar-ans"))
+    monkeypatch.setattr(
+        service, "_run_and_capture", lambda _uid, _intent, text=None: (result, "run-clar-ans")
+    )
 
     reply = service.handle_user_message(conn, user_id, "2")
 
