@@ -41,6 +41,7 @@ from agentlib.core import BASE_URL, CHEAP
 from planazo.agents.langgraph_runtime import (
     RecommenderGraphInput,
     ToolCallable,
+    _message_text,
     build_langchain_tools,
     build_recommender_graph,
     invoke_recommender_graph,
@@ -333,16 +334,6 @@ def _build_recommender_chat_model(model: str, max_output_tokens: int | None) -> 
         use_responses_api=True,
     )
     return chat_model.model_copy(update={"max_tokens": max_output_tokens})
-
-
-def _message_text(message: AIMessage) -> str:
-    """Project LangChain's validated message content onto Planazo's text contract."""
-
-    if isinstance(message.content, str):
-        return message.content
-    return "".join(
-        part if isinstance(part, str) else str(part.get("text", "")) for part in message.content
-    )
 
 
 def _instrument_recommender_tools(
