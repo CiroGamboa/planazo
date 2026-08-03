@@ -30,6 +30,7 @@ import sqlite3
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from functools import wraps
+from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
 from langchain_core.messages import AIMessage
@@ -43,6 +44,7 @@ from planazo.agents.langgraph_runtime import (
     build_langchain_tools,
     build_recommender_graph,
     invoke_recommender_graph,
+    open_recommender_checkpointer,
 )
 from planazo.agents.loop import (
     DECLINED_RESULT,
@@ -404,6 +406,7 @@ def _run_recommender_graph(
     gate: ApprovalGate | None,
     system: str | None,
     thread_id: str,
+    checkpoint_path: str | Path | None,
 ) -> LoopResult:
     """Run one Recommender turn through the typed LangGraph runtime."""
 
@@ -421,22 +424,22 @@ def _run_recommender_graph(
             current_step=lambda: model_step,
         )
     )
-    graph = build_recommender_graph(
-        _build_recommender_chat_model(model, max_output_tokens),
-        tools,
-        on_model_step=observe_model_step,
+    request = RecommenderGraphInput(
+        user_id=user_id,
+        intent=intent,
+        system_prompt=system or "",
+        user_message=RECOMMENDER_WORK_MESSAGE,
+        thread_id=thread_id,
+        max_model_steps=max_steps,
     )
-    state = invoke_recommender_graph(
-        graph,
-        RecommenderGraphInput(
-            user_id=user_id,
-            intent=intent,
-            system_prompt=system or "",
-            user_message=RECOMMENDER_WORK_MESSAGE,
-            thread_id=thread_id,
-            max_model_steps=max_steps,
-        ),
-    )
+    with open_recommender_checkpointer(checkpoint_path) as checkpointer:
+        graph = build_recommender_graph(
+            _build_recommender_chat_model(model, max_output_tokens),
+            tools,
+            checkpointer=checkpointer,
+            on_model_step=observe_model_step,
+        )
+        state = invoke_recommender_graph(graph, request)
     stopped = state["stopped"]
     if stopped == "max_steps":
         return LoopResult(answer=None, steps=state["model_steps"], stopped="max_steps")
@@ -512,6 +515,11 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
       too loud"). Omit when no raw text is available for this run; it is
       never a tool parameter and never a write surface
       (`docs/adr/0022-user-text-push-context.md`).
+    - `thread_id` - stable LangGraph thread identity. Defaults deterministically
+      to `recommender:<user_id>` so a later run can resume prior graph state.
+    - `checkpoint_path` - optional local SQLite path for graph state; defaults
+      to the ignored `data/langgraph/recommender-checkpoints.sqlite3`, never the
+      Planazo domain database.
     """
     # An active radius's trust boundary is evaluated before all other reads.
     if intent.radius_km is not None and intent.origin is None:
@@ -631,9 +639,7 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
     # `agent_runs` row's `started_at` / `ended_at` cover the full loop —
     # including tool dispatches, not just the LLM turns.
     started_at = datetime.now(UTC)
-    thread_id = run_context.get("thread_id")
-    if thread_id is None:
-        thread_id = f"recommender:{logger.run_id if logger is not None else user_id}"
+    thread_id = run_context.get("thread_id", f"recommender:{user_id}")
     result = _run_recommender_graph(
         user_id=user_id,
         intent=intent,
@@ -645,6 +651,7 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
         gate=run_context.get("gate"),
         system=system_text or None,
         thread_id=thread_id,
+        checkpoint_path=run_context.get("checkpoint_path"),
     )
     ended_at = datetime.now(UTC)
     if logger is not None:

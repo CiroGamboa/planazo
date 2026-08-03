@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
+from pathlib import Path
 from typing import Annotated, Literal, Protocol, TypedDict, cast
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -21,6 +23,7 @@ from langchain_core.runnables import Runnable
 from langchain_core.runnables.config import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
@@ -28,6 +31,24 @@ from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, ConfigDict, Field
 
 from planazo.query.models import SearchIntent
+
+DEFAULT_CHECKPOINT_PATH = Path("data/langgraph/recommender-checkpoints.sqlite3")
+
+
+def recommender_checkpoint_path(path: str | Path | None = None) -> Path:
+    """Return the local, non-domain SQLite database used for graph state."""
+
+    resolved = Path(path) if path is not None else DEFAULT_CHECKPOINT_PATH
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    return resolved
+
+
+def open_recommender_checkpointer(
+    path: str | Path | None = None,
+) -> AbstractContextManager[SqliteSaver]:
+    """Open a durable LangGraph SQLite saver outside Planazo's domain store."""
+
+    return SqliteSaver.from_conn_string(str(recommender_checkpoint_path(path)))
 
 
 class PlanazoGraphState(TypedDict):

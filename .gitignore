@@ -240,6 +240,9 @@ scratch/
 # Runtime audit traces and generated monitor reports
 data/runs/
 data/monitor/
+# Durable LangGraph execution state. This is deliberately separate from the
+# tracked schema/migrations of Planazo's domain database.
+data/langgraph/
 # Demo evidence traces — regenerate with scripts/demo/*.py.
 # Milestone-level acceptance-evidence files are committed as historical
 # records (see `docs/evidence/m3.5-*` etc.); the demo-script traces stay

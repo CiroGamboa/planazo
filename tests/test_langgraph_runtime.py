@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
@@ -16,6 +17,7 @@ from planazo.agents.langgraph_runtime import (
     build_langchain_tools,
     build_recommender_graph,
     invoke_recommender_graph,
+    open_recommender_checkpointer,
 )
 from planazo.query.models import SearchIntent
 
@@ -75,6 +77,20 @@ class RepeatedToolModel:
         )
 
 
+class ResumeAfterToolModel:
+    """A recreated model that can finish only when a prior tool result persists."""
+
+    def bind_tools(self, tools: Sequence[BaseTool]) -> Runnable[Sequence[BaseMessage], AIMessage]:
+        return self  # type: ignore[return-value]
+
+    def invoke(self, messages: Sequence[BaseMessage]) -> AIMessage:
+        if any(
+            isinstance(message, ToolMessage) and message.content == "AGAIN" for message in messages
+        ):
+            return AIMessage(content="Resumed from the saved tool result.")
+        raise AssertionError("the recreated graph did not receive the prior tool output")
+
+
 def _request() -> RecommenderGraphInput:
     return RecommenderGraphInput(
         user_id=1,
@@ -127,6 +143,42 @@ def test_graph_dispatches_the_final_tool_then_stops_at_the_model_step_cap() -> N
     assert state["model_steps"] == 1
     assert state["stopped"] == "max_steps"
     assert any(isinstance(message, ToolMessage) for message in state["messages"])
+
+
+def test_sqlite_checkpoint_resumes_a_stopped_tool_turn_after_graph_recreation(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "recommender-checkpoints.sqlite3"
+    stopped_request = _request().model_copy(update={"max_model_steps": 1})
+
+    with open_recommender_checkpointer(checkpoint_path) as first_checkpointer:
+        first_graph = build_recommender_graph(
+            RepeatedToolModel(),
+            build_langchain_tools({"uppercase": _uppercase}),
+            checkpointer=first_checkpointer,
+        )
+        stopped_state = invoke_recommender_graph(first_graph, stopped_request)
+
+    assert stopped_state["stopped"] == "max_steps"
+    assert checkpoint_path.exists()
+
+    with open_recommender_checkpointer(checkpoint_path) as resumed_checkpointer:
+        resumed_graph = build_recommender_graph(
+            ResumeAfterToolModel(),
+            build_langchain_tools({"uppercase": _uppercase}),
+            checkpointer=resumed_checkpointer,
+        )
+        resumed_state = invoke_recommender_graph(
+            resumed_graph,
+            _request().model_copy(update={"user_message": "Please finish this turn."}),
+        )
+
+    assert resumed_state["stopped"] == "answered"
+    assert any(
+        isinstance(message, ToolMessage) and message.content == "AGAIN"
+        for message in resumed_state["messages"]
+    )
+    assert resumed_state["messages"][-1].content == "Resumed from the saved tool result."
 
 
 def test_graph_input_validates_the_application_boundary_before_graph_execution() -> None:
