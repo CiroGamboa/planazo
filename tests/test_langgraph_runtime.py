@@ -13,6 +13,7 @@ from langchain_core.tools import BaseTool
 from pydantic import ValidationError
 
 from planazo.agents.langgraph_runtime import (
+    PlanazoGraphState,
     RecommenderGraphInput,
     build_langchain_tools,
     build_recommender_graph,
@@ -31,6 +32,18 @@ def _uppercase(text: str) -> str:
     """Return text in uppercase for a deterministic graph-tool test."""
 
     return text.upper()
+
+
+def _search_events(city: str) -> dict[str, object]:
+    """Search events for the requested city in this deterministic graph test."""
+
+    return {"events": [], "city": city}
+
+
+def _retrieve_memory(query: str) -> dict[str, object]:
+    """Retrieve saved user-memory context for this deterministic graph test."""
+
+    return {"facts": [f"remembered: {query}"]}
 
 
 class ScriptedToolCallingModel:
@@ -91,6 +104,50 @@ class ResumeAfterToolModel:
         raise AssertionError("the recreated graph did not receive the prior tool output")
 
 
+class QuerySelectingModel:
+    """Fake model that selects a registered tool from the user's query."""
+
+    def __init__(self) -> None:
+        self.bound_tools: Sequence[BaseTool] = ()
+        self.selected_tools: list[str] = []
+
+    def bind_tools(self, tools: Sequence[BaseTool]) -> Runnable[Sequence[BaseMessage], AIMessage]:
+        self.bound_tools = tools
+        return self  # type: ignore[return-value]
+
+    def invoke(self, messages: Sequence[BaseMessage]) -> AIMessage:
+        if any(isinstance(message, ToolMessage) for message in messages):
+            return AIMessage(content="Tool result considered.")
+        user_text = next(
+            str(message.content).casefold()
+            for message in reversed(messages)
+            if message.type == "human"
+        )
+        if "preference" in user_text:
+            self.selected_tools.append("retrieve_memory")
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "retrieve_memory",
+                        "args": {"query": "quiet venues"},
+                        "id": "memory-call",
+                    }
+                ],
+            )
+        self.selected_tools.append("search_events")
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "search_events",
+                    "args": {"city": "Barcelona"},
+                    "id": "search-call",
+                }
+            ],
+        )
+
+
 def _request() -> RecommenderGraphInput:
     return RecommenderGraphInput(
         user_id=1,
@@ -116,6 +173,62 @@ def test_graph_registers_a_langchain_tool_and_returns_to_the_model_after_a_tool_
     )
     assert state["messages"][-1].content == "The tool result is ready."
     assert state["model_steps"] == 2
+
+
+def test_typed_graph_state_has_no_ad_hoc_mapping_fields() -> None:
+    annotations = PlanazoGraphState.__annotations__
+
+    assert set(annotations) == {
+        "messages",
+        "user_id",
+        "intent",
+        "system_prompt",
+        "thread_id",
+        "model_steps",
+        "max_model_steps",
+        "stopped",
+    }
+    assert all("dict" not in str(annotation).lower() for annotation in annotations.values())
+
+
+def test_fake_model_selects_registered_search_and_memory_tools_through_tool_node() -> None:
+    dispatched: list[str] = []
+
+    def search_events(city: str) -> dict[str, object]:
+        dispatched.append("search_events")
+        return _search_events(city)
+
+    def retrieve_memory(query: str) -> dict[str, object]:
+        dispatched.append("retrieve_memory")
+        return _retrieve_memory(query)
+
+    search_events.__doc__ = _search_events.__doc__
+    retrieve_memory.__doc__ = _retrieve_memory.__doc__
+    model = QuerySelectingModel()
+    graph = build_recommender_graph(
+        model,
+        build_langchain_tools(
+            {
+                "search_events": search_events,
+                "retrieve_memory": retrieve_memory,
+            }
+        ),
+    )
+
+    event_state = invoke_recommender_graph(
+        graph,
+        _request().model_copy(update={"user_message": "Find events in Barcelona."}),
+    )
+    preference_state = invoke_recommender_graph(
+        graph,
+        _request().model_copy(update={"user_message": "Use my preference for quiet venues."}),
+    )
+
+    assert {tool.name for tool in model.bound_tools} == {"search_events", "retrieve_memory"}
+    assert model.selected_tools == ["search_events", "retrieve_memory"]
+    assert dispatched == ["search_events", "retrieve_memory"]
+    assert any(isinstance(message, ToolMessage) for message in event_state["messages"])
+    assert any(isinstance(message, ToolMessage) for message in preference_state["messages"])
 
 
 def test_graph_ends_after_the_agent_node_when_the_model_requests_no_tool() -> None:
