@@ -116,7 +116,7 @@ Each aggregate lives beside its repository under `src/planazo/<context>/`, one f
 
 ## Out of Scope (first version)
 
-- Agent-orchestration frameworks outside the Recommender's LangGraph runtime (ADR 0023), including CrewAI and PydanticAI.
+- Agent-orchestration frameworks outside the Recommender's and Extractor's LangGraph runtimes (ADR 0023, ADR 0024), including CrewAI and PydanticAI.
 - Building a generic web scraper. We extract from a small, named set of sources.
 - Cross-city event discovery. Barcelona only.
 - Autonomous calendar creation or invitation without an explicit per-artifact user approval.
