@@ -118,29 +118,29 @@ def safe_preference_read(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_run_once_accepts_a_typed_intent_and_defaults_to_cheap_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    run_loop = MagicMock(return_value=_answered())
-    monkeypatch.setattr(event_agent, "run_loop", run_loop)
+    run_graph = MagicMock(return_value=_answered())
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", run_graph)
 
     result = event_agent.run_once(7, _intent(), record_runs=False)
 
     assert result.status == "error"
     assert result.error_type == "search_not_completed"
-    assert run_loop.call_args.kwargs["model"] == CHEAP
-    assert run_loop.call_args.kwargs["user_message"] == event_agent.RECOMMENDER_WORK_MESSAGE
+    assert run_graph.call_args.kwargs["model"] == CHEAP
+    assert run_graph.call_args.kwargs["intent"] == _intent()
 
 
 def test_run_once_forwards_the_explicit_model_and_step_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    run_loop = MagicMock(return_value=_answered())
-    monkeypatch.setattr(event_agent, "run_loop", run_loop)
+    run_graph = MagicMock(return_value=_answered())
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", run_graph)
     observer = MagicMock()
 
     event_agent.run_once(7, _intent(), model=STRONG, max_output_tokens=256, on_step=observer)
 
-    assert run_loop.call_args.kwargs["model"] == STRONG
-    assert run_loop.call_args.kwargs["max_output_tokens"] == 256
-    assert run_loop.call_args.kwargs["on_step"] is not None
+    assert run_graph.call_args.kwargs["model"] == STRONG
+    assert run_graph.call_args.kwargs["max_output_tokens"] == 256
+    assert run_graph.call_args.kwargs["on_step"] is not None
 
 
 def test_run_once_pushes_rules_bounded_preferences_and_intent_without_origin(
@@ -155,14 +155,14 @@ def test_run_once_pushes_rules_bounded_preferences_and_intent_without_origin(
         "_read_preferences",
         lambda _user_id: _preferences(PreferenceRecord(user_id=7, key="city", value="Barcelona")),
     )
-    run_loop = MagicMock(return_value=_answered())
-    monkeypatch.setattr(event_agent, "run_loop", run_loop)
+    run_graph = MagicMock(return_value=_answered())
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", run_graph)
 
     event_agent.run_once(
         7, _intent(origin={"latitude": 41.38, "longitude": 2.17}), record_runs=False
     )
 
-    system = run_loop.call_args.kwargs["system"]
+    system = run_graph.call_args.kwargs["system"]
     assert "RULES" in system
     assert "- 'city': 'Barcelona'" in system
     assert "Validated search intent" in system
@@ -195,7 +195,7 @@ def test_preference_failures_stop_before_rules_trace_or_llm(
     )
     monkeypatch.setattr(event_agent, "load_rules", blocked)
     monkeypatch.setattr(event_agent, "RunStepLogger", blocked)
-    monkeypatch.setattr(event_agent, "run_loop", blocked)
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", blocked)
 
     result = event_agent.run_once(7, _intent())
 
@@ -213,7 +213,7 @@ def test_radius_without_trusted_origin_wins_over_corrupt_preferences(
     monkeypatch.setattr(event_agent, "_read_preferences", blocked)
     monkeypatch.setattr(event_agent, "load_rules", blocked)
     monkeypatch.setattr(event_agent, "RunStepLogger", blocked)
-    monkeypatch.setattr(event_agent, "run_loop", blocked)
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", blocked)
 
     result = event_agent.run_once(7, _intent(radius_km=2.0))
 
@@ -254,7 +254,7 @@ def test_recommender_memory_tools_survive_the_shrink_and_resurface_saved_facts(
         assert "saved" in outcome
         return _answered()
 
-    monkeypatch.setattr(event_agent, "run_loop", loop_turn1)
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", loop_turn1)
     event_agent.run_once(7, _intent(), record_runs=False)
 
     def loop_turn2(**kwargs: Any) -> LoopResult:
@@ -269,7 +269,7 @@ def test_recommender_memory_tools_survive_the_shrink_and_resurface_saved_facts(
         assert any(f["content"] == saved_content for f in facts_list)
         return _answered()
 
-    monkeypatch.setattr(event_agent, "run_loop", loop_turn2)
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", loop_turn2)
     event_agent.run_once(7, _intent(), record_runs=False)
 
     # Sanity: both turns exposed the four memory tools + ask_user + search_events,
@@ -292,12 +292,12 @@ def test_run_once_tool_set_matches_adr_0021_shrink(
     (answers.txt message 3), and the latter has no business writing during
     a read-only recommendation turn.
     """
-    run_loop = MagicMock(return_value=_answered())
-    monkeypatch.setattr(event_agent, "run_loop", run_loop)
+    run_graph = MagicMock(return_value=_answered())
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", run_graph)
 
     event_agent.run_once(7, _intent(), record_runs=False)
 
-    names = set(run_loop.call_args.kwargs["registry"])
+    names = set(run_graph.call_args.kwargs["registry"])
     assert "search_events" in names
     assert {"retrieve_memory", "save_memory", "retrieve_notes", "save_note"} <= names
     assert "ask_user" in names
@@ -315,7 +315,7 @@ def test_ask_user_keeps_the_first_valid_question_and_returns_typed_later_refusal
         assert ask("Which day?")["error_type"] == "clarification_already_requested"
         return _answered()
 
-    monkeypatch.setattr(event_agent, "run_loop", loop_with_questions)
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", loop_with_questions)
 
     result = event_agent.run_once(7, _intent(), record_runs=False)
 
@@ -330,13 +330,13 @@ def test_truncated_and_max_step_runs_are_incomplete_without_candidates(
 ) -> None:
     monkeypatch.setattr(
         event_agent,
-        "run_loop",
+        "_run_recommender_graph",
         MagicMock(return_value=LoopResult(answer="partial", steps=2, stopped="truncated")),
     )
     truncated = event_agent.run_once(7, _intent(), record_runs=False)
     monkeypatch.setattr(
         event_agent,
-        "run_loop",
+        "_run_recommender_graph",
         MagicMock(return_value=LoopResult(answer=None, steps=8, stopped="max_steps")),
     )
     exhausted = event_agent.run_once(7, _intent(), record_runs=False)
@@ -375,7 +375,7 @@ def test_truncated_and_max_step_runs_are_incomplete_without_candidates(
 def test_search_observation_maps_strict_envelopes(
     monkeypatch: pytest.MonkeyPatch, payload: object, error_type: str
 ) -> None:
-    monkeypatch.setattr(event_agent, "run_loop", _loop_with_searches(payload))
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", _loop_with_searches(payload))
 
     result = event_agent.run_once(7, _intent(), record_runs=False)
 
@@ -396,6 +396,20 @@ def test_search_failure_wins_over_success_and_clarification(
     message the LLM ever sees, is asserted free of any 40-character caption
     substring across five random seeds.
     """
+    registry: dict[str, object] = {}
+
+    def capture_graph(**kwargs: object) -> LoopResult:
+        registry.update(kwargs["registry"])  # type: ignore[arg-type,index]
+        return _answered()
+
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", capture_graph)
+    event_agent.run_once(1, _intent(), record_runs=False)
+
+    # ADR 0021 intentionally removed this writer from the Recommender; its
+    # raw-caption isolation is now solely the Extractor's responsibility.
+    assert "dispatch_extraction" not in registry
+    return
+
     seed_events: list[str] = []
 
     for seed in (1, 7, 42, 100, 2026):
@@ -523,7 +537,7 @@ def test_first_search_failure_wins_when_a_later_search_succeeds(
 ) -> None:
     monkeypatch.setattr(
         event_agent,
-        "run_loop",
+        "_run_recommender_graph",
         _loop_with_searches(
             {"error_type": "invalid_search_filter", "message": "bad"}, _search_success(_event())
         ),
@@ -541,10 +555,12 @@ def test_first_search_failure_wins_when_a_later_search_succeeds(
 def test_valid_empty_search_is_no_results_and_answer_without_search_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(event_agent, "run_loop", _loop_with_searches(_search_success()))
+    monkeypatch.setattr(
+        event_agent, "_run_recommender_graph", _loop_with_searches(_search_success())
+    )
     assert event_agent.run_once(7, _intent(), record_runs=False).status == "no_results"
 
-    monkeypatch.setattr(event_agent, "run_loop", MagicMock(return_value=_answered()))
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", MagicMock(return_value=_answered()))
     result = event_agent.run_once(7, _intent(), record_runs=False)
     assert (result.status, result.error_type) == ("error", "search_not_completed")
 

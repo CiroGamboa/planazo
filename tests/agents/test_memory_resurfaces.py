@@ -29,7 +29,7 @@ import pytest
 
 from agentlib.core import CHEAP, Result
 from planazo.agents import event_agent, loop
-from planazo.agents.loop import StepRecord
+from planazo.agents.loop import LoopResult, StepRecord
 from planazo.identity import PreferenceReadResult
 from planazo.memory import facts
 from planazo.query.models import SearchIntent
@@ -114,6 +114,27 @@ def test_fact_saved_in_turn_one_persists_and_resurfaces_in_turn_three(
         "content": "user dislikes loud venues",
         "scope": "private",
     }
+    graph_turn = 0
+    system_text = ""
+
+    def fake_graph(**kwargs: object) -> LoopResult:
+        nonlocal graph_turn, system_text
+        graph_turn += 1
+        registry = kwargs["registry"]
+        observer = kwargs["on_step"]
+        assert isinstance(registry, dict)
+        system_text = str(kwargs["system"])
+        if graph_turn == 1:
+            registry["save_memory"](**save_args)
+            return LoopResult(answer="saved", steps=2, stopped="answered")
+        if graph_turn == 3:
+            outcome = registry["retrieve_memory"]("music venues", "private")
+            assert callable(observer)
+            observer(StepRecord(step=1, tool="retrieve_memory", arguments={}, result=outcome))
+            return LoopResult(answer="Since you dislike loud venues.", steps=2, stopped="answered")
+        return LoopResult(answer="unrelated", steps=1, stopped="answered")
+
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", fake_graph)
     mock_call_1 = MagicMock(
         side_effect=[_turn("save_memory", save_args), _answer("Got it, I'll keep that in mind.")]
     )
@@ -122,9 +143,7 @@ def test_fact_saved_in_turn_one_persists_and_resurfaces_in_turn_three(
 
     # The whole point of this ticket: the new rules file must actually reach
     # the pushed system message, with no code change required.
-    system_message = mock_call_1.call_args_list[0].kwargs["messages"][0]
-    assert system_message["role"] == "system"
-    assert "retrieve_memory" in system_message["content"]
+    assert "retrieve_memory" in system_text
 
     facts_path = facts.MEMORY_ROOT / "private" / str(user_id) / "facts.jsonl"
     assert facts_path.exists()
@@ -183,6 +202,21 @@ def test_cross_user_memory_invariants_through_the_recommender_loop(
     )
     monkeypatch.setattr(loop, "call", mock_call)
 
+    system_text = ""
+
+    def fake_graph(**kwargs: object) -> LoopResult:
+        nonlocal system_text
+        registry = kwargs["registry"]
+        observer = kwargs["on_step"]
+        assert isinstance(registry, dict)
+        assert callable(observer)
+        system_text = str(kwargs["system"])
+        outcome = registry["retrieve_memory"]("techno", "both")
+        observer(StepRecord(step=1, tool="retrieve_memory", arguments={}, result=outcome))
+        return LoopResult(answer="Sala Apolo is worth checking out.", steps=2, stopped="answered")
+
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", fake_graph)
+
     steps: list[StepRecord] = []
     result = event_agent.run_once(user_b, _intent(), on_step=steps.append, record_runs=False)
 
@@ -191,17 +225,7 @@ def test_cross_user_memory_invariants_through_the_recommender_loop(
     # User B never sees user A's private fact — only the two shared ones.
     assert contents == {"Sala Apolo has late-night techno", _INJECTION}
 
-    all_messages = [
-        message for call in mock_call.call_args_list for message in call.kwargs["messages"]
-    ]
-    system_messages = [message for message in all_messages if message.get("role") == "system"]
-    assert all(_INJECTION not in message["content"] for message in system_messages)
-    function_outputs = [
-        json.dumps(message)
-        for message in all_messages
-        if message.get("type") == "function_call_output"
-    ]
-    assert any(_INJECTION in output for output in function_outputs)
+    assert _INJECTION not in system_text
 
     assert result.answer is not None
     assert "Sala Apolo" in result.answer

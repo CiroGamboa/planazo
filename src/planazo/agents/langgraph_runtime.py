@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Mapping, Sequence
-from typing import Annotated, Protocol, TypedDict, cast
+from typing import Annotated, Literal, Protocol, TypedDict, cast
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import Runnable
@@ -24,7 +24,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, ConfigDict, Field
 
 from planazo.query.models import SearchIntent
@@ -47,6 +47,8 @@ class PlanazoGraphState(TypedDict):
     system_prompt: str
     thread_id: str
     model_steps: int
+    max_model_steps: int
+    stopped: Literal["running", "answered", "truncated", "max_steps"]
 
 
 class AgentNodeUpdate(TypedDict):
@@ -54,6 +56,13 @@ class AgentNodeUpdate(TypedDict):
 
     messages: list[BaseMessage]
     model_steps: int
+    stopped: Literal["running", "answered", "truncated"]
+
+
+class TerminalNodeUpdate(TypedDict):
+    """The only state field the post-tool cap node may update."""
+
+    stopped: Literal["running", "max_steps"]
 
 
 class RecommenderGraphInput(BaseModel):
@@ -63,7 +72,7 @@ class RecommenderGraphInput(BaseModel):
 
     user_id: int = Field(ge=1)
     intent: SearchIntent
-    system_prompt: str = Field(min_length=1, max_length=20_000)
+    system_prompt: str = Field(max_length=20_000)
     user_message: str = Field(min_length=1, max_length=4_000)
     thread_id: str = Field(min_length=1, max_length=200)
     max_model_steps: int = Field(default=8, ge=1, le=32)
@@ -78,6 +87,8 @@ class RecommenderGraphInput(BaseModel):
             "system_prompt": self.system_prompt,
             "thread_id": self.thread_id,
             "model_steps": 0,
+            "max_model_steps": self.max_model_steps,
+            "stopped": "running",
         }
 
     def graph_config(self) -> RunnableConfig:
@@ -91,7 +102,7 @@ class RecommenderGraphInput(BaseModel):
 
         return {
             "configurable": {"thread_id": self.thread_id},
-            "recursion_limit": self.max_model_steps * 2 + 1,
+            "recursion_limit": self.max_model_steps * 2 + 2,
         }
 
 
@@ -138,21 +149,56 @@ def build_langchain_tools(registry: Mapping[str, ToolCallable]) -> list[BaseTool
 
 def _agent_node(
     bound_model: Runnable[Sequence[BaseMessage], AIMessage],
+    on_model_step: Callable[[int], None] | None,
 ) -> Callable[[PlanazoGraphState], AgentNodeUpdate]:
     """Build the graph node that lets the LLM answer or request a tool."""
 
     def invoke_model(state: PlanazoGraphState) -> AgentNodeUpdate:
-        response = bound_model.invoke(
-            [SystemMessage(content=state["system_prompt"]), *state["messages"]]
-        )
+        messages: list[BaseMessage] = list(state["messages"])
+        if state["system_prompt"]:
+            messages.insert(0, SystemMessage(content=state["system_prompt"]))
+        response = bound_model.invoke(messages)
         if not isinstance(response, AIMessage):
             raise TypeError("the Recommender chat model must return an AIMessage")
+        next_step = state["model_steps"] + 1
+        if on_model_step is not None:
+            on_model_step(next_step)
+        finish_reason = response.response_metadata.get("finish_reason")
+        stopped: Literal["running", "answered", "truncated"] = (
+            "truncated" if finish_reason in {"length", "max_output_tokens"} else "answered"
+        )
+        if response.tool_calls:
+            stopped = "running"
         return {
             "messages": [response],
-            "model_steps": state["model_steps"] + 1,
+            "model_steps": next_step,
+            "stopped": stopped,
         }
 
     return invoke_model
+
+
+def _route_after_agent(state: PlanazoGraphState) -> Literal["tools", "__end__"]:
+    """Dispatch only model-selected tools; otherwise terminate the graph."""
+
+    last_message = state["messages"][-1]
+    if isinstance(last_message, AIMessage) and last_message.tool_calls:
+        return "tools"
+    return cast(Literal["tools", "__end__"], END)
+
+
+def _mark_max_steps(state: PlanazoGraphState) -> TerminalNodeUpdate:
+    """Keep the historical cap semantics after dispatching the final tools."""
+
+    return {
+        "stopped": ("max_steps" if state["model_steps"] >= state["max_model_steps"] else "running")
+    }
+
+
+def _route_after_tools(state: PlanazoGraphState) -> Literal["agent", "__end__"]:
+    """Return to the model only while the validated model-turn cap permits it."""
+
+    return cast(Literal["agent", "__end__"], END if state["stopped"] == "max_steps" else "agent")
 
 
 def build_recommender_graph(
@@ -160,6 +206,7 @@ def build_recommender_graph(
     tools: Sequence[BaseTool],
     *,
     checkpointer: BaseCheckpointSaver[str] | None = None,
+    on_model_step: Callable[[int], None] | None = None,
 ) -> CompiledStateGraph[PlanazoGraphState, None, PlanazoGraphState, PlanazoGraphState]:
     """Compile the Recommender's explicit LangGraph tool-calling topology."""
 
@@ -172,20 +219,29 @@ def build_recommender_graph(
     # nodes as generic runnables, so preserve that framework boundary explicitly.
     agent_node = cast(
         Runnable[PlanazoGraphState, object],
-        _agent_node(bound_model),
+        _agent_node(bound_model, on_model_step),
     )
     builder.add_node("agent", agent_node)
     builder.add_node("tools", ToolNode(list(tools)))
+    builder.add_node("enforce_step_cap", _mark_max_steps)
     builder.add_edge(START, "agent")
     builder.add_conditional_edges(
         "agent",
-        tools_condition,
+        _route_after_agent,
         {
             "tools": "tools",
             END: END,
         },
     )
-    builder.add_edge("tools", "agent")
+    builder.add_edge("tools", "enforce_step_cap")
+    builder.add_conditional_edges(
+        "enforce_step_cap",
+        _route_after_tools,
+        {
+            "agent": "agent",
+            END: END,
+        },
+    )
     return builder.compile(checkpointer=checkpointer)
 
 

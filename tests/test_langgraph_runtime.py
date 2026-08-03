@@ -62,6 +62,19 @@ class AnswerOnlyModel:
         return AIMessage(content="No tool is needed.")
 
 
+class RepeatedToolModel:
+    """A fake model that keeps requesting a tool until the graph cap stops it."""
+
+    def bind_tools(self, tools: Sequence[BaseTool]) -> Runnable[Sequence[BaseMessage], AIMessage]:
+        return self  # type: ignore[return-value]
+
+    def invoke(self, messages: Sequence[BaseMessage]) -> AIMessage:
+        return AIMessage(
+            content="",
+            tool_calls=[{"name": "uppercase", "args": {"text": "again"}, "id": "call-repeat"}],
+        )
+
+
 def _request() -> RecommenderGraphInput:
     return RecommenderGraphInput(
         user_id=1,
@@ -100,6 +113,20 @@ def test_graph_ends_after_the_agent_node_when_the_model_requests_no_tool() -> No
     assert len(state["messages"]) == 2
     assert state["messages"][-1].content == "No tool is needed."
     assert state["model_steps"] == 1
+
+
+def test_graph_dispatches_the_final_tool_then_stops_at_the_model_step_cap() -> None:
+    graph = build_recommender_graph(
+        RepeatedToolModel(),
+        build_langchain_tools({"uppercase": _uppercase}),
+    )
+    request = _request().model_copy(update={"max_model_steps": 1})
+
+    state = invoke_recommender_graph(graph, request)
+
+    assert state["model_steps"] == 1
+    assert state["stopped"] == "max_steps"
+    assert any(isinstance(message, ToolMessage) for message in state["messages"])
 
 
 def test_graph_input_validates_the_application_boundary_before_graph_execution() -> None:

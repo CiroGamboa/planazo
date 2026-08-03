@@ -27,7 +27,7 @@ def test_missing_origin_stops_before_any_composition_or_trace(
     blocked = MagicMock(side_effect=AssertionError("preflight must stop first"))
     monkeypatch.setattr(event_agent, "load_rules", blocked)
     monkeypatch.setattr(event_agent, "_read_preferences", blocked)
-    monkeypatch.setattr(event_agent, "run_loop", blocked)
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", blocked)
     monkeypatch.setattr(event_agent, "RunStepLogger", blocked)
 
     result = event_agent.run_once(
