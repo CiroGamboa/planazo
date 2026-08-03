@@ -252,7 +252,7 @@ def test_run_once_writes_one_agent_runs_row(
     (isolated_stores / "rules" / "000-core-rules.md").write_text("RULES", encoding="utf-8")
 
     intent = _intent()
-    monkeypatch.setattr(event_agent, "run_loop", MagicMock(return_value=_answered()))
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", MagicMock(return_value=_answered()))
 
     event_agent.run_once(user_id, intent)
 
@@ -290,7 +290,7 @@ def test_run_once_record_runs_false_disables_sqlite_writer(
     user_id = _seed_user()
     (isolated_stores / "rules" / "000-core-rules.md").write_text("RULES", encoding="utf-8")
 
-    monkeypatch.setattr(event_agent, "run_loop", MagicMock(return_value=_answered()))
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", MagicMock(return_value=_answered()))
 
     event_agent.run_once(user_id, _intent(), record_runs=False)
 

@@ -423,7 +423,7 @@ def test_run_once_writes_one_recommendation_row_per_candidate(
         )
         return LoopResult(answer="here are three", steps=1, stopped="answered")
 
-    monkeypatch.setattr(event_agent, "run_loop", fake_run_loop)
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", fake_run_loop)
 
     result = event_agent.run_once(user_id, _intent())
     assert result.status == "ok"
@@ -475,7 +475,7 @@ def test_run_once_record_runs_false_disables_recommendation_writer(
         )
         return LoopResult(answer="ok", steps=1, stopped="answered")
 
-    monkeypatch.setattr(event_agent, "run_loop", fake_run_loop)
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", fake_run_loop)
 
     result = event_agent.run_once(user_id, _intent(), record_runs=False)
     assert result.status == "ok"
@@ -521,7 +521,7 @@ def test_run_once_recommendation_writer_failure_logs_warning_and_does_not_propag
         )
         return LoopResult(answer="ok", steps=1, stopped="answered")
 
-    monkeypatch.setattr(event_agent, "run_loop", fake_run_loop)
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", fake_run_loop)
 
     # Make the recommendation writer's underlying primitive raise. The
     # writer swallows it and logs one WARNING; the Recommender's answer
@@ -567,7 +567,7 @@ def test_run_once_no_results_writes_zero_recommendation_rows(
         )
         return LoopResult(answer="nothing found", steps=1, stopped="answered")
 
-    monkeypatch.setattr(event_agent, "run_loop", fake_run_loop)
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", fake_run_loop)
 
     result = event_agent.run_once(user_id, _intent())
     assert result.status == "no_results"

@@ -23,6 +23,10 @@ invocation, identity or not. The flag is unauthenticated dev impersonation —
 whatever id the shell supplies is used, so this CLI is an operator's surface,
 not a user-facing one (`docs/adr/0004-three-store-memory-model.md`).
 
+`--thread-id ID` selects the durable LangGraph conversation thread. Reusing an
+ID resumes its local SQLite checkpoint; omitting it uses the deterministic
+Recommender thread for the supplied user id.
+
 `import openai` here names `openai.OpenAIError` for the narrow `except`
 around the LLM call — it makes no provider call itself (those go through
 `agentlib`).
@@ -55,6 +59,17 @@ def _positive_int(value: str) -> int:
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be >= 1")
     return parsed
+
+
+def _thread_id(value: str) -> str:
+    """Argparse type for a bounded, non-blank durable graph thread id."""
+
+    normalized = value.strip()
+    if not normalized:
+        raise argparse.ArgumentTypeError("must not be blank")
+    if len(normalized) > 200:
+        raise argparse.ArgumentTypeError("must be at most 200 characters")
+    return normalized
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -95,6 +110,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=_positive_int,
         required=True,
         help="bind the run to this user id: adds memory tools and preferences",
+    )
+    parser.add_argument(
+        "--thread-id",
+        type=_thread_id,
+        default=None,
+        help="resume this durable local LangGraph thread (default: recommender:<user-id>)",
     )
     return parser
 
@@ -178,6 +199,7 @@ def _run(
     max_steps: int | None,
     calendar_enabled: bool,
     user_id: int,
+    thread_id: str | None,
 ) -> int:
     """Run one prompt, printing the live trace then the result block.
 
@@ -202,6 +224,7 @@ def _run(
         "gate": gate,
         "calendar_enabled": calendar_enabled,
         "text": prompt,
+        "thread_id": thread_id or f"recommender:{user_id}",
     }
     if max_steps is not None:
         run_context["max_steps"] = max_steps
@@ -214,7 +237,14 @@ def _run(
     return 1 if result.status == "error" else 0
 
 
-def _repl(*, model: str, max_steps: int | None, calendar_enabled: bool, user_id: int) -> int:
+def _repl(
+    *,
+    model: str,
+    max_steps: int | None,
+    calendar_enabled: bool,
+    user_id: int,
+    thread_id: str | None,
+) -> int:
     """Read prompts until exit/quit, EOF, or Ctrl-C; one run_once per line."""
     while True:
         try:
@@ -234,6 +264,7 @@ def _repl(*, model: str, max_steps: int | None, calendar_enabled: bool, user_id:
             max_steps=max_steps,
             calendar_enabled=calendar_enabled,
             user_id=user_id,
+            thread_id=thread_id,
         )
 
 
@@ -252,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
             max_steps=args.max_steps,
             calendar_enabled=args.calendar,
             user_id=args.user_id,
+            thread_id=args.thread_id,
         )
     return _run(
         args.prompt,
@@ -259,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         max_steps=args.max_steps,
         calendar_enabled=args.calendar,
         user_id=args.user_id,
+        thread_id=args.thread_id,
     )
 
 

@@ -567,7 +567,7 @@ def test_run_once_writes_one_answered_llm_decision(
 
     monkeypatch.setattr(
         event_agent,
-        "run_loop",
+        "_run_recommender_graph",
         MagicMock(
             return_value=LoopResult(
                 answer="here are three techno events", steps=1, stopped="answered"
@@ -603,7 +603,7 @@ def test_run_once_record_runs_false_disables_llm_decisions_writer(
 
     monkeypatch.setattr(
         event_agent,
-        "run_loop",
+        "_run_recommender_graph",
         MagicMock(return_value=LoopResult(answer="done", steps=1, stopped="answered")),
     )
 

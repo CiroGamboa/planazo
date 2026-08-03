@@ -25,15 +25,34 @@ the replacement.
 """
 
 import json
+import os
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from functools import wraps
+from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
+from langchain_core.messages import AIMessage
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field, SecretStr, TypeAdapter, ValidationError, model_validator
 
-from agentlib.core import CHEAP
-from planazo.agents.loop import LoopResult, StepRecord, run_loop
+from agentlib.core import BASE_URL, CHEAP
+from planazo.agents.langgraph_runtime import (
+    RecommenderGraphInput,
+    ToolCallable,
+    build_langchain_tools,
+    build_recommender_graph,
+    invoke_recommender_graph,
+    open_recommender_checkpointer,
+)
+from planazo.agents.loop import (
+    DECLINED_RESULT,
+    ApprovalGate,
+    LoopResult,
+    StepRecord,
+    tool_failure_result,
+)
 from planazo.catalog import Event, filter_events_for_intent
 from planazo.catalog import search_events as catalog_search_events
 from planazo.identity import PreferenceReadResult, get_preferences
@@ -54,7 +73,6 @@ from planazo.observability import (
 from planazo.query.models import SearchIntent
 from planazo.storage import db
 from tools import tools as calendar_tools
-from tools.schema import schema_for
 
 PREFERENCE_PUSH_CAP = 1_200
 USER_TEXT_PUSH_CAP = 2_000
@@ -302,6 +320,139 @@ def _filter_candidates(events: tuple[Event, ...], intent: SearchIntent) -> tuple
     return radius_filtered.events[:cap]
 
 
+def _build_recommender_chat_model(model: str, max_output_tokens: int | None) -> ChatOpenAI:
+    """Create the Recommender's Responses-compatible LangChain model client."""
+
+    api_key = os.environ.get("OPENCODE_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENCODE_API_KEY is not set. Add it to a .env file at the repo root.")
+    chat_model = ChatOpenAI(
+        model=model,
+        api_key=SecretStr(api_key),
+        base_url=BASE_URL,
+        use_responses_api=True,
+    )
+    return chat_model.model_copy(update={"max_tokens": max_output_tokens})
+
+
+def _message_text(message: AIMessage) -> str:
+    """Project LangChain's validated message content onto Planazo's text contract."""
+
+    if isinstance(message.content, str):
+        return message.content
+    return "".join(
+        part if isinstance(part, str) else str(part.get("text", "")) for part in message.content
+    )
+
+
+def _instrument_recommender_tools(
+    registry: Mapping[str, ToolCallable],
+    *,
+    gate: ApprovalGate | None,
+    on_step: Callable[[StepRecord], None] | None,
+    current_step: Callable[[], int],
+) -> dict[str, ToolCallable]:
+    """Preserve the legacy tool dispatch contracts under LangGraph's ToolNode.
+
+    The framework chooses and invokes only registered tools. This Planazo-owned
+    adapter keeps the approval, serialization-failure, and monitoring boundary
+    which existed around the former generic loop.
+    """
+
+    instrumented: dict[str, ToolCallable] = {}
+    for name, function in registry.items():
+
+        @wraps(function)
+        def invoke(
+            *, _name: str = name, _function: ToolCallable = function, **arguments: object
+        ) -> object:
+            output: object
+            if (
+                gate is not None
+                and _name in gate.tool_names
+                and not gate.approve(_name, cast(dict[str, Any], arguments))
+            ):
+                output = DECLINED_RESULT
+            else:
+                try:
+                    output = _function(**arguments)
+                    json.dumps({"result": output})
+                except Exception as exc:
+                    output = tool_failure_result(f"{type(exc).__name__}: {exc}")
+            if on_step is not None:
+                on_step(
+                    StepRecord(
+                        step=current_step(),
+                        tool=_name,
+                        arguments=dict(arguments),
+                        result=output,
+                    )
+                )
+            return output
+
+        instrumented[name] = invoke
+    return instrumented
+
+
+def _run_recommender_graph(
+    *,
+    user_id: int,
+    intent: SearchIntent,
+    registry: Mapping[str, ToolCallable],
+    model: str,
+    max_steps: int,
+    max_output_tokens: int | None,
+    on_step: Callable[[StepRecord], None] | None,
+    gate: ApprovalGate | None,
+    system: str | None,
+    thread_id: str,
+    checkpoint_path: str | Path | None,
+) -> LoopResult:
+    """Run one Recommender turn through the typed LangGraph runtime."""
+
+    model_step = 0
+
+    def observe_model_step(step: int) -> None:
+        nonlocal model_step
+        model_step = step
+
+    tools = build_langchain_tools(
+        _instrument_recommender_tools(
+            registry,
+            gate=gate,
+            on_step=on_step,
+            current_step=lambda: model_step,
+        )
+    )
+    request = RecommenderGraphInput(
+        user_id=user_id,
+        intent=intent,
+        system_prompt=system or "",
+        user_message=RECOMMENDER_WORK_MESSAGE,
+        thread_id=thread_id,
+        max_model_steps=max_steps,
+    )
+    with open_recommender_checkpointer(checkpoint_path) as checkpointer:
+        graph = build_recommender_graph(
+            _build_recommender_chat_model(model, max_output_tokens),
+            tools,
+            checkpointer=checkpointer,
+            on_model_step=observe_model_step,
+        )
+        state = invoke_recommender_graph(graph, request)
+    stopped = state["stopped"]
+    if stopped == "max_steps":
+        return LoopResult(answer=None, steps=state["model_steps"], stopped="max_steps")
+    final_message = state["messages"][-1]
+    if not isinstance(final_message, AIMessage):
+        raise TypeError("the Recommender graph ended without an AIMessage")
+    return LoopResult(
+        answer=_message_text(final_message),
+        steps=state["model_steps"],
+        stopped=cast(Literal["answered", "truncated"], stopped),
+    )
+
+
 def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> RecommenderResult:
     """Run one observe -> reason -> act -> verify pass for `user_message`.
 
@@ -364,6 +515,11 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
       too loud"). Omit when no raw text is available for this run; it is
       never a tool parameter and never a write surface
       (`docs/adr/0022-user-text-push-context.md`).
+    - `thread_id` - stable LangGraph thread identity. Defaults deterministically
+      to `recommender:<user_id>` so a later run can resume prior graph state.
+    - `checkpoint_path` - optional local SQLite path for graph state; defaults
+      to the ignored `data/langgraph/recommender-checkpoints.sqlite3`, never the
+      Planazo domain database.
     """
     # An active radius's trust boundary is evaluated before all other reads.
     if intent.radius_km is not None and intent.origin is None:
@@ -419,11 +575,9 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
             max_results=max_results,
         )
 
-    tool_schemas: list[dict[str, Any]] = [schema_for(search_events)]  # Any: see schema_for
     registry: dict[str, Callable[..., dict[str, object]]] = {"search_events": search_events}
 
-    memory_schemas, memory_registry = build_memory_tools(user_id)
-    tool_schemas = tool_schemas + memory_schemas
+    _, memory_registry = build_memory_tools(user_id)
     registry = {**registry, **memory_registry}
 
     clarification: ClarificationRequest | None = None
@@ -454,14 +608,11 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
     # the Recommender's tool set (see docstring above). Both remain
     # callable from their legitimate callers (bot /prefs, clarification
     # answer path, scheduler, Extractor).
-    mutation_schemas = [schema_for(ask_user)]
     mutation_registry: dict[str, Callable[..., dict[str, object]]] = {
         "ask_user": ask_user,
     }
-    tool_schemas = tool_schemas + mutation_schemas
     registry = {**registry, **mutation_registry}
     if run_context.get("calendar_enabled", False):
-        tool_schemas = tool_schemas + calendar_tools.TOOL_SCHEMAS
         registry = {**registry, **calendar_tools.TOOL_REGISTRY}
 
     model = run_context.get("model", CHEAP)
@@ -484,22 +635,23 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
         if supplied_observer is not None:
             supplied_observer(record)
 
-    # Capture the loop's wall-clock boundaries around `run_loop` so the
+    # Capture the graph's wall-clock boundaries around its full tool run so the
     # `agent_runs` row's `started_at` / `ended_at` cover the full loop —
     # including tool dispatches, not just the LLM turns.
     started_at = datetime.now(UTC)
-    result = run_loop(
-        user_message=RECOMMENDER_WORK_MESSAGE,
-        tools=tool_schemas,
+    thread_id = run_context.get("thread_id", f"recommender:{user_id}")
+    result = _run_recommender_graph(
+        user_id=user_id,
+        intent=intent,
         registry=registry,
         model=model,
         max_steps=run_context.get("max_steps", 8),
         max_output_tokens=run_context.get("max_output_tokens"),
         on_step=observe,
         gate=run_context.get("gate"),
-        # No rules on disk and no identity leaves nothing to push, and an empty
-        # system message is worse than none at all.
         system=system_text or None,
+        thread_id=thread_id,
+        checkpoint_path=run_context.get("checkpoint_path"),
     )
     ended_at = datetime.now(UTC)
     if logger is not None:

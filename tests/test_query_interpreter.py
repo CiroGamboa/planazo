@@ -406,7 +406,7 @@ def test_run_once_never_composes_the_interpreter_into_the_agent_registry(
     # future refactor that re-composed the registry from the query module
     # would fail this. Widest tool-set combination (user_id + calendar).
     mock_run_loop = MagicMock(return_value=LoopResult(answer="ok", steps=1, stopped="answered"))
-    monkeypatch.setattr(event_agent, "run_loop", mock_run_loop)
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", mock_run_loop)
 
     event_agent.run_once(
         1,

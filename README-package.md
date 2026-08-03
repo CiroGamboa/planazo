@@ -1,8 +1,8 @@
 # Planazo Agent
 
-The hand-rolled observe -> reason -> act -> verify agent that powers Planazo's event discovery: it calls source/extraction tools, persists normalized event candidates, ranks them, and — only after explicit chat approval — creates the user's calendar entry.
+The agent runtime that powers Planazo's event discovery: it calls source/extraction tools, persists normalized event candidates, ranks them, and — only after explicit chat approval — creates the user's calendar entry.
 
-No agent framework, no API server, no frontend here (see `AGENTS.md` rule 5 and `docs/adr/`) — just the loop, the tool registry, and the guardrails, all plain Python.
+The current Recommender loop is being refactored onto a typed LangGraph `StateGraph` with LangChain tools and persistent SQLite checkpoints for the Agentic AI Systems HW1; [ADR 0023](docs/adr/0023-langgraph-recommender-runtime.md) records the boundary. The bot, domain models, approval policy, and validation guardrails remain Planazo code rather than framework defaults.
 
 ## Quick start
 

@@ -69,6 +69,18 @@ def test_cli_forwards_model_and_calendar_options(
     assert run_once.call_args.kwargs["max_steps"] == 3
 
 
+def test_cli_forwards_a_durable_thread_id_for_checkpoint_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "interpret", MagicMock(return_value=SearchRoute(intent=_intent())))
+    run_once = MagicMock(return_value=_result())
+    monkeypatch.setattr(cli, "run_once", run_once)
+
+    assert cli.main(["--user-id", "7", "--thread-id", "demo-resume", "find events"]) == 0
+
+    assert run_once.call_args.kwargs["thread_id"] == "demo-resume"
+
+
 @pytest.mark.parametrize(
     ("answer", "expected"), [("y", True), ("yes", True), ("n", False), ("", False)]
 )
