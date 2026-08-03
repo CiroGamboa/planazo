@@ -12,19 +12,22 @@ Best-effort semantics are covered by the last block: a raise inside
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.runnables import Runnable
+from langchain_core.tools import BaseTool
 from pydantic import ValidationError
 
-from agentlib.core import CHEAP, STRONG, Result
-from planazo.agents import event_agent
+from agentlib.core import STRONG
+from planazo.agents import event_agent, extractor
 from planazo.agents.extractor import extract_once
 from planazo.agents.loop import LoopResult
 from planazo.identity import get_or_create_user
@@ -85,36 +88,41 @@ def isolated_stores(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _make_result(**overrides: object) -> Result:
-    defaults: dict[str, object] = {
-        "text": "ok",
-        "model": CHEAP,
-        "status": "completed",
-        "stop_reason": None,
-        "truncated": False,
-        "input_tokens": 13,
-        "cached_tokens": 0,
-        "output_tokens": 5,
-        "reasoning_tokens": 0,
-        "cost_usd": 0.0,
-        "reasoning_summary": None,
-    }
-    defaults.update(overrides)
-    return Result(**defaults)  # type: ignore[arg-type]
+def _turn(text: str, tool_calls: list[dict[str, Any]] | None = None) -> AIMessage:
+    """Build a LangChain ``AIMessage`` with the requested tool_calls (or none)."""
 
-
-def _turn(text: str, tool_calls: list[dict[str, Any]] | None = None) -> Result:
-    tool_calls = tool_calls or []
-    output_items = [
-        {
-            "type": "function_call",
-            "name": tc["name"],
-            "arguments": json.dumps(tc["arguments"]),
-            "call_id": tc["call_id"],
-        }
-        for tc in tool_calls
+    lc_tool_calls = [
+        {"name": tc["name"], "args": tc["arguments"], "id": tc["call_id"]}
+        for tc in (tool_calls or [])
     ]
-    return _make_result(text=text, tool_calls=tool_calls, output_items=output_items)
+    return AIMessage(content=text, tool_calls=lc_tool_calls)
+
+
+class _ScriptedExtractorChatModel:
+    """Small LangChain-compatible fake for scripting the Extractor's chat model."""
+
+    def __init__(self, script: Sequence[AIMessage]) -> None:
+        self._script = list(script)
+
+    def bind_tools(self, tools: Sequence[BaseTool]) -> Runnable[Sequence[BaseMessage], AIMessage]:
+        return self  # type: ignore[return-value]
+
+    def invoke(self, messages: Sequence[BaseMessage]) -> AIMessage:
+        if not self._script:
+            raise AssertionError("scripted extractor chat model exhausted before graph terminated")
+        return self._script.pop(0)
+
+
+def _install_scripted_extractor_model(
+    monkeypatch: pytest.MonkeyPatch, script: Sequence[AIMessage]
+) -> None:
+    """Install a scripted chat model at the Extractor's build seam."""
+
+    monkeypatch.setattr(
+        extractor,
+        "_build_extractor_chat_model",
+        lambda *_, **__: _ScriptedExtractorChatModel(script),
+    )
 
 
 class _FakeInstagramClient:
@@ -481,8 +489,9 @@ def test_extract_once_writes_llm_decisions_for_save_event_plus_report(
     user_id = _seed_user()
     source = _build_source()
 
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_extractor_model(
+        monkeypatch,
+        [
             _turn(
                 "",
                 [
@@ -513,9 +522,8 @@ def test_extract_once_writes_llm_decisions_for_save_event_plus_report(
                 ],
             ),
             _turn(""),
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     extract_once(_TEST_URL, delegator_user_id=user_id, source=source, model=STRONG)
 
@@ -636,8 +644,9 @@ def test_extract_once_writer_failure_does_not_propagate(
 
     monkeypatch.setattr("planazo.observability.logging.record_llm_decision", _raising_record)
 
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_extractor_model(
+        monkeypatch,
+        [
             _turn(
                 "",
                 [
@@ -653,9 +662,8 @@ def test_extract_once_writer_failure_does_not_propagate(
                 ],
             ),
             _turn(""),
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     caplog.set_level(logging.WARNING, logger="planazo.observability.logging")
 

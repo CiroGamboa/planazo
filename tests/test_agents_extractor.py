@@ -12,17 +12,21 @@ Rule 2 enforcement site).
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import logging
 import random
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.runnables import Runnable
+from langchain_core.tools import BaseTool
 
-from agentlib.core import STRONG, Result
 from planazo.agents import extractor
 from planazo.agents.extractor import (
     DELEGATION_BRIEF,
@@ -41,6 +45,7 @@ from planazo.extraction.multimodal_profile import ACCOUNT_SCAN, SINGLE_POST, Mul
 from planazo.identity import get_or_create_user
 from planazo.memory import facts, rules
 from planazo.monitor.models import RunStep
+from planazo.observability import AgentRunRecord
 from planazo.sources.config import MediaTypeFlags, SourceConfig
 from planazo.sources.instagram.adapter import InstagramSource
 from planazo.sources.instagram.client import InstagramClientProtocol
@@ -54,22 +59,65 @@ _MVP_ARCH_PATH = Path(__file__).resolve().parent.parent / "docs" / "MVP-ARCHITEC
 _TEST_URL = "https://www.instagram.com/p/ABC123/"
 
 
-def _make_result(**overrides: object) -> Result:
-    defaults: dict[str, object] = {
-        "text": "ok",
-        "model": STRONG,
-        "status": "completed",
-        "stop_reason": None,
-        "truncated": False,
-        "input_tokens": 13,
-        "cached_tokens": 0,
-        "output_tokens": 5,
-        "reasoning_tokens": 0,
-        "cost_usd": 0.0,
-        "reasoning_summary": None,
-    }
-    defaults.update(overrides)
-    return Result(**defaults)  # type: ignore[arg-type]
+ScriptSource = Sequence[AIMessage] | Callable[[Sequence[BaseMessage]], AIMessage]
+
+
+class ScriptedExtractorChatModel:
+    """LangChain-compatible fake that plays a pre-scripted sequence of ``AIMessage``s.
+
+    Analogous to ``ScriptedToolCallingModel`` in ``test_langgraph_runtime.py`` —
+    exposes ``.bind_tools`` (returning ``self`` so the graph binds directly)
+    and ``.invoke`` (popping the next scripted response and recording the
+    message stream the graph passed in). Tests inspect ``messages_seen`` to
+    assert on the injected multimodal ``HumanMessage`` shape between turns.
+
+    ``script`` may be a sequence of ``AIMessage``s (popped in order) or a
+    callable that receives the message stream and returns the next response —
+    lets tests exercise both deterministic turn scripts and side-effect
+    branches that need to inspect the state before answering.
+    """
+
+    def __init__(self, script: ScriptSource) -> None:
+        self._script: list[AIMessage] | None = list(script) if not callable(script) else None
+        self._callable: Callable[[Sequence[BaseMessage]], AIMessage] | None = (
+            script if callable(script) else None
+        )
+        self.messages_seen: list[list[BaseMessage]] = []
+        self.bound_tools: Sequence[BaseTool] = ()
+
+    def bind_tools(self, tools: Sequence[BaseTool]) -> Runnable[Sequence[BaseMessage], AIMessage]:
+        self.bound_tools = tools
+        return self  # type: ignore[return-value]
+
+    def invoke(self, messages: Sequence[BaseMessage]) -> AIMessage:
+        self.messages_seen.append(list(messages))
+        if self._callable is not None:
+            return self._callable(messages)
+        assert self._script is not None
+        if not self._script:
+            raise AssertionError("scripted extractor chat model exhausted before graph terminated")
+        return self._script.pop(0)
+
+
+def _install_scripted_model(
+    monkeypatch: pytest.MonkeyPatch, script: ScriptSource
+) -> ScriptedExtractorChatModel:
+    """Install a scripted chat model on the extractor's build seam.
+
+    Records the ``max_output_tokens`` argument every caller passed so tests
+    can assert on the ``ChatOpenAI(max_tokens=...)`` boundary without touching
+    the live model factory.
+    """
+
+    model = ScriptedExtractorChatModel(script)
+
+    def _build(model_id: str, max_output_tokens: int) -> ScriptedExtractorChatModel:
+        model.build_calls.append({"model": model_id, "max_output_tokens": max_output_tokens})
+        return model
+
+    model.build_calls = []  # type: ignore[attr-defined]
+    monkeypatch.setattr(extractor, "_build_extractor_chat_model", _build)
+    return model
 
 
 class _FakeInstagramClient:
@@ -877,18 +925,19 @@ def test_report_extraction_status_rejects_notes_longer_than_200_chars() -> None:
 # ---------------------------
 
 
-def _turn(text: str, tool_calls: list[dict[str, Any]] | None = None) -> Result:
-    tool_calls = tool_calls or []
-    output_items = [
-        {
-            "type": "function_call",
-            "name": tc["name"],
-            "arguments": json.dumps(tc["arguments"]),
-            "call_id": tc["call_id"],
-        }
-        for tc in tool_calls
+def _turn(text: str, tool_calls: list[dict[str, Any]] | None = None) -> AIMessage:
+    """Build a LangChain ``AIMessage`` with the requested tool_calls (or none).
+
+    Each ``tool_call`` dict uses ``call_id`` as the LangChain ``id`` field so
+    the ordering / call-id assertions transfer directly from the legacy
+    ``agentlib.Result``-shaped scripts.
+    """
+
+    lc_tool_calls = [
+        {"name": tc["name"], "args": tc["arguments"], "id": tc["call_id"]}
+        for tc in (tool_calls or [])
     ]
-    return _make_result(text=text, tool_calls=tool_calls, output_items=output_items)
+    return AIMessage(content=text, tool_calls=lc_tool_calls)
 
 
 def _fetch_call(call_id: str = "call_fetch") -> dict[str, Any]:
@@ -932,14 +981,14 @@ def test_extract_once_happy_path_parses_event_from_save_event_saved(
     _seed_user()
     source = _build_source(caption="Come to Techno Night this Saturday!")
 
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn("", [_save_event_call()]),
             _turn(""),  # empty text — brief forbids free-form text after save_event
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     # search_events must NEVER be called on the happy path — critic MAJOR 1.
     search_events_spy = MagicMock()
@@ -965,14 +1014,14 @@ def test_extract_once_writes_three_trace_lines_with_extractor_agent(
     _seed_user()
     source = _build_source(caption="A public event")
 
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn("", [_save_event_call()]),
             _turn(""),
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
@@ -997,18 +1046,35 @@ def test_extract_once_stops_at_max_steps_when_llm_never_terminates(
     _seed_user()
     source = _build_source(caption="anything")
 
-    # Every turn returns the same fetch call — the LLM never terminates.
-    non_terminating_turn = _turn("", [_fetch_call()])
-    monkeypatch.setattr("planazo.agents.loop.call", MagicMock(return_value=non_terminating_turn))
-    spy_run_loop = MagicMock(wraps=extractor.run_loop)
-    monkeypatch.setattr(extractor, "run_loop", spy_run_loop)
+    # Every turn returns the same fetch call — the LLM never terminates. The
+    # graph's `recursion_limit_for(32, 4)` budget carries the run to the
+    # `max_model_steps` cap without raising `GraphRecursionError`.
+    fetch_call_id = {"n": 0}
+
+    def _always_fetch(_messages: Sequence[BaseMessage]) -> AIMessage:
+        fetch_call_id["n"] += 1
+        return _turn("", [_fetch_call(call_id=f"call_fetch_{fetch_call_id['n']}")])
+
+    model = _install_scripted_model(monkeypatch, _always_fetch)
+    captured_configs: list[dict[str, Any]] = []
+    real_invoke = extractor.invoke_extractor_graph
+
+    def spy_invoke_extractor_graph(graph: Any, request: Any) -> Any:
+        captured_configs.append(dict(request.graph_config()))
+        return real_invoke(graph, request)
+
+    monkeypatch.setattr(extractor, "invoke_extractor_graph", spy_invoke_extractor_graph)
 
     result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
     assert result.status == "error"
     assert result.error_type == "low_confidence_extraction"
-    assert spy_run_loop.call_args.kwargs["max_steps"] == MAX_STEPS
-    assert spy_run_loop.call_args.kwargs["max_output_tokens"] == MAX_OUTPUT_TOKENS
+    # The chat-model factory was called with the pinned per-turn output cap.
+    assert model.build_calls, "extractor chat model factory was never invoked"
+    assert all(entry["max_output_tokens"] == MAX_OUTPUT_TOKENS for entry in model.build_calls)
+    # The graph invocation used the topology-aware recursion limit for a 4-node
+    # cycle at max_model_steps=32.
+    assert captured_configs == [{"recursion_limit": 130}]
 
 
 # ------------------------------
@@ -1045,14 +1111,14 @@ def test_extract_once_maps_report_extraction_status_error_type(
         else "error"
     )
 
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn("", [_report_call(error_type, status=status, notes="short reason")]),
             _turn(""),
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
@@ -1073,17 +1139,17 @@ def test_extract_once_surfaces_source_adapter_typed_error(
             return {"error_type": "rate_limited", "message": "too many", "url": url}
 
     fake_source = _RateLimitedSource()
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn(
                 "",
                 [_report_call("rate_limited", status="error", notes="adapter said too many")],
             ),
             _turn(""),
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     result = extract_once(_TEST_URL, delegator_user_id=1, source=fake_source)  # type: ignore[arg-type]
 
@@ -1106,9 +1172,7 @@ def test_extract_once_returns_source_error_when_llm_never_terminates_after_error
         def fetch_post(self, url: str) -> dict[str, Any]:
             return {"error_type": "not_found", "message": "gone", "url": url}
 
-    fetch_turn = _turn("", [_fetch_call()])
-    # Same fetch every turn — the LLM never fires a terminal call.
-    monkeypatch.setattr("planazo.agents.loop.call", MagicMock(return_value=fetch_turn))
+    _install_scripted_model(monkeypatch, lambda _messages: _turn("", [_fetch_call()]))
 
     result = extract_once(_TEST_URL, delegator_user_id=1, source=_NotFoundSource())  # type: ignore[arg-type]
 
@@ -1134,14 +1198,14 @@ def test_extract_once_marks_save_event_typed_error_as_save_event_failed(
         confidence=0.5,
     )
 
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn("", [_save_event_call()]),
             _turn(""),
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
@@ -1163,18 +1227,18 @@ def test_extract_once_records_extraction_run_index_entry_before_first_turn(
 
     calls_seen: list[str] = []
 
-    def _tracking_call(*_args: Any, **kwargs: Any) -> Result:
+    def _tracking_invoke(_messages: Sequence[BaseMessage]) -> AIMessage:
         conn = db.connect()
         try:
             rows = list_extraction_runs(conn, user_id=1)
         finally:
             conn.close()
         calls_seen.append(f"turn:{len(rows)}")
-        # After the first LLM turn, at least one index row must already exist.
+        # By the first LLM turn, at least one index row must already exist.
         assert len(rows) == 1
         return _turn("", [_report_call("low_confidence_extraction")])
 
-    monkeypatch.setattr("planazo.agents.loop.call", _tracking_call)
+    _install_scripted_model(monkeypatch, _tracking_invoke)
 
     extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
@@ -1206,14 +1270,14 @@ def test_extract_once_never_returns_caption_bytes_when_llm_behaves(
     )
     source = _build_source(caption=caption)
 
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn("", [_save_event_call()]),
             _turn(""),  # LLM behaves — no free-form text after save_event.
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
@@ -1240,17 +1304,17 @@ def test_extract_once_adversarial_notes_never_leak_caption(
     source = _build_source(caption=caption)
 
     # The LLM adversarially reports the full caption as `notes`.
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn(
                 "",
                 [_report_call("ambiguous_content", status="needs_clarification", notes=caption)],
             ),
             _turn(""),
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
@@ -1277,25 +1341,27 @@ def test_extract_once_registry_never_includes_search_events(
     _seed_user()
     source = _build_source(caption="anything")
 
-    captured_registries: list[dict[str, Any]] = []
+    captured_tool_names: list[set[str]] = []
+    real_build_langchain_tools = extractor.build_langchain_tools
 
-    real_run_loop = extractor.run_loop
+    def _spy_build_langchain_tools(registry: Any) -> Any:
+        tools = real_build_langchain_tools(registry)
+        captured_tool_names.append({tool.name for tool in tools})
+        return tools
 
-    def _spy_run_loop(**kwargs: Any) -> Any:
-        captured_registries.append(kwargs["registry"])
-        return real_run_loop(**kwargs)
-
-    monkeypatch.setattr(extractor, "run_loop", _spy_run_loop)
-    monkeypatch.setattr(
-        "planazo.agents.loop.call",
-        MagicMock(return_value=_turn("", [_report_call("ambiguous_content")])),
+    monkeypatch.setattr(extractor, "build_langchain_tools", _spy_build_langchain_tools)
+    _install_scripted_model(
+        monkeypatch,
+        [
+            _turn("", [_report_call("ambiguous_content")]),
+            _turn(""),
+        ],
     )
 
     extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
-    assert len(captured_registries) == 1
-    registry = captured_registries[0]
-    assert set(registry.keys()) == {
+    assert len(captured_tool_names) == 1
+    assert captured_tool_names[0] == {
         "fetch_instagram_post",
         "save_event",
         "report_extraction_status",
@@ -1333,14 +1399,14 @@ def test_extraction_result_hand_off_shape_from_happy_path(
     _seed_user()
     source = _build_source(caption="caption")
 
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn("", [_save_event_call()]),
             _turn(""),
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
@@ -1370,7 +1436,9 @@ def test_extract_once_returns_ok_when_retry_after_failed_save_succeeds(
     real_save_event = extractor.save_event
     call_count = {"n": 0}
 
+    @functools.wraps(real_save_event)
     def flaky_save_event(**kwargs: Any) -> dict[str, Any]:
+        """Persist an event or return an error dict for this deterministic test."""
         call_count["n"] += 1
         if call_count["n"] == 1:
             return {"error_type": "duplicate_event", "message": "already saved once"}
@@ -1378,15 +1446,15 @@ def test_extract_once_returns_ok_when_retry_after_failed_save_succeeds(
 
     monkeypatch.setattr(extractor, "save_event", flaky_save_event)
 
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn("", [_save_event_call("call_save_1")]),
             _turn("", [_save_event_call("call_save_2")]),
             _turn(""),
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
@@ -1410,21 +1478,22 @@ def test_extract_once_returns_save_event_failed_when_all_saves_fail(
     _seed_user()
     source = _build_source(caption="Come to Techno Night this Saturday!")
 
-    monkeypatch.setattr(
-        extractor,
-        "save_event",
-        lambda **_kw: {"error_type": "duplicate_event", "message": "still no"},
-    )
+    @functools.wraps(extractor.save_event)
+    def _always_fail_save(**_kwargs: Any) -> dict[str, Any]:
+        """Return a duplicate_event marker for every save in this test."""
+        return {"error_type": "duplicate_event", "message": "still no"}
 
-    fake_call = MagicMock(
-        side_effect=[
+    monkeypatch.setattr(extractor, "save_event", _always_fail_save)
+
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn("", [_save_event_call("call_save_1")]),
             _turn("", [_save_event_call("call_save_2")]),
             _turn(""),
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
@@ -1460,13 +1529,13 @@ def test_extract_once_degrades_unknown_source_error_to_low_confidence(
                 "url": url,
             }
 
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn(""),  # LLM gives up without a terminal call
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     drifting = cast(InstagramSource, _DriftingSource())
     result = extract_once(_TEST_URL, delegator_user_id=1, source=drifting)
@@ -1516,8 +1585,9 @@ def test_extract_once_multi_event_happy_path_persists_all_slots(
     _seed_user()
     source = _build_source(caption="Two events happening this weekend!")
 
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn(
                 "",
@@ -1542,9 +1612,8 @@ def test_extract_once_multi_event_happy_path_persists_all_slots(
                 ],
             ),
             _turn(""),  # brief forbids free-form text after the final save
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
@@ -1582,15 +1651,15 @@ def test_extract_once_multi_event_duplicate_slot_keeps_first_and_notes_error_typ
     _seed_user()
     source = _build_source(caption="A single event, LLM mistakenly retries")
 
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn("", [_save_event_call_multi(event_index_in_post=0, call_id="call_save_0")]),
             _turn("", [_save_event_call_multi(event_index_in_post=0, call_id="call_save_0_dup")]),
             _turn(""),
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
@@ -1626,8 +1695,9 @@ def test_extract_once_multi_event_mixed_success_and_failure_uses_redacted_notes(
     caption_title_slice = caption[80:120]
     assert len(caption_title_slice) == 40
 
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn(
                 "",
@@ -1651,9 +1721,8 @@ def test_extract_once_multi_event_mixed_success_and_failure_uses_redacted_notes(
                 ],
             ),
             _turn(""),
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
@@ -1676,8 +1745,9 @@ def test_extract_once_multi_event_success_then_report_extraction_status(
     _seed_user()
     source = _build_source(caption="One event, LLM flags second as ambiguous")
 
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn("", [_save_event_call_multi(event_index_in_post=0, call_id="call_save_0")]),
             _turn(
@@ -1691,9 +1761,8 @@ def test_extract_once_multi_event_success_then_report_extraction_status(
                 ],
             ),
             _turn(""),
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
@@ -1726,8 +1795,9 @@ def test_extract_once_multi_event_idempotency_contract_end_to_end(
     _seed_user()
     source = _build_source(caption="Three back-to-back nights at Nitsa this weekend!")
 
-    fake_call = MagicMock(
-        side_effect=[
+    _install_scripted_model(
+        monkeypatch,
+        [
             _turn("", [_fetch_call()]),
             _turn(
                 "",
@@ -1764,9 +1834,8 @@ def test_extract_once_multi_event_idempotency_contract_end_to_end(
                 ],
             ),
             _turn(""),  # brief forbids free-form text after the final save
-        ]
+        ],
     )
-    monkeypatch.setattr("planazo.agents.loop.call", fake_call)
 
     result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
 
@@ -1807,3 +1876,238 @@ def test_extract_once_multi_event_idempotency_contract_end_to_end(
     finally:
         conn.close()
     assert slots_after_retry == [0, 1, 2]
+
+
+# ------------------------------
+# Multimodal-injection wire — post_tools grafts a HumanMessage after fetch
+# ------------------------------
+
+
+def test_extract_once_multimodal_hook_wires_into_graph_after_fetch(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a successful ``fetch_instagram_post`` the graph appends one
+    ``HumanMessage`` carrying the fetched image; the LLM's second ``invoke``
+    call sees it in its message stream."""
+    _seed_user()
+    source = _build_source(caption="Rooftop DJ night")
+
+    model = _install_scripted_model(
+        monkeypatch,
+        [
+            _turn("", [_fetch_call()]),
+            _turn("", [_save_event_call()]),
+            _turn(""),
+        ],
+    )
+
+    extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    # The second graph invocation sees fetch → tool result → injected image.
+    second_call_messages = model.messages_seen[1]
+    injected = [m for m in second_call_messages if isinstance(m, HumanMessage)]
+    # There is the initial user message plus the multimodal injection.
+    assert len(injected) >= 2
+    multimodal_message = injected[-1]
+    assert isinstance(multimodal_message.content, list)
+    parts = multimodal_message.content
+    text_parts = [
+        part for part in parts if isinstance(part, dict) and part.get("type") == "input_text"
+    ]
+    image_parts = [
+        part for part in parts if isinstance(part, dict) and part.get("type") == "input_image"
+    ]
+    assert len(image_parts) == 1
+    assert image_parts[0].get("image_url") == "https://scontent.cdninstagram.com/image.jpg"
+    assert text_parts, "multimodal HumanMessage missing input_text prefix"
+    assert text_parts[0]["text"] == (
+        f"Image content from the fetched post — {_TEST_URL} (kind=image):"
+    )
+
+
+def test_extract_once_multimodal_hook_not_invoked_on_save_event_or_report_status(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only ``fetch_instagram_post`` triggers multimodal injection — a run
+    whose first turn fires ``save_event`` never yields a HumanMessage carrying
+    an ``input_image`` content part."""
+    _seed_user()
+    source = _build_source(caption="No fetch on this run")
+
+    model = _install_scripted_model(
+        monkeypatch,
+        [
+            _turn("", [_save_event_call()]),
+            _turn(""),
+        ],
+    )
+
+    extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    for messages in model.messages_seen:
+        for message in messages:
+            if not isinstance(message, HumanMessage):
+                continue
+            if not isinstance(message.content, list):
+                continue
+            image_parts = [
+                part
+                for part in message.content
+                if isinstance(part, dict) and part.get("type") == "input_image"
+            ]
+            assert image_parts == [], "multimodal injection fired on a non-fetch tool call"
+
+
+def test_extract_once_reports_max_steps_as_low_confidence_extraction(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model that always fires a fetch tool call runs the graph to its
+    ``max_model_steps=32`` cap; ``extract_once`` surfaces a
+    ``low_confidence_extraction`` error with the ran-out-of-steps note."""
+    _seed_user()
+    source = _build_source(caption="fetching forever")
+
+    fetch_counter = {"n": 0}
+
+    def _always_fetch(_messages: Sequence[BaseMessage]) -> AIMessage:
+        fetch_counter["n"] += 1
+        return _turn("", [_fetch_call(call_id=f"call_fetch_{fetch_counter['n']}")])
+
+    _install_scripted_model(monkeypatch, _always_fetch)
+
+    result = extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    assert result.status == "error"
+    assert result.error_type == "low_confidence_extraction"
+    assert result.notes == "ran out of steps without a terminal call"
+
+
+def test_extract_once_batched_ai_message_fires_on_step_in_order_with_dict_arguments(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two ``save_event`` calls in one AIMessage fire ``on_step`` twice in
+    tool_call order, share the same step number, expose plain ``dict``
+    arguments, and land before any ``post_tools`` visit."""
+    _seed_user()
+    source = _build_source(caption="Batched roundup save")
+
+    # A batched AIMessage carries two save_event tool_calls in one turn.
+    batched = _turn(
+        "",
+        [
+            _save_event_call_multi(
+                event_index_in_post=0, title="Batched One", call_id="call_batch_0"
+            ),
+            _save_event_call_multi(
+                event_index_in_post=1,
+                title="Batched Two",
+                start_utc="2026-08-16T22:00:00+00:00",
+                end_utc="2026-08-17T04:00:00+00:00",
+                call_id="call_batch_1",
+            ),
+        ],
+    )
+
+    _install_scripted_model(monkeypatch, [batched, _turn("")])
+
+    step_events: list[StepRecord] = []
+
+    # Spy on the ``post_tools`` closure the composition root installs via
+    # ``build_extractor_graph``. Every visit fires exactly once per ToolNode
+    # invocation, so it must land AFTER both ``on_step`` firings from the
+    # batched AIMessage.
+    post_tools_visits: list[int] = []
+    real_build_extractor_graph = extractor.build_extractor_graph
+
+    def _spy_build_extractor_graph(*args: Any, **kwargs: Any) -> Any:
+        original_post_tools = kwargs.get("post_tools")
+
+        def _wrapped(state: Any) -> list[BaseMessage]:
+            post_tools_visits.append(len(step_events))
+            if original_post_tools is None:
+                return []
+            return original_post_tools(state)
+
+        kwargs["post_tools"] = _wrapped
+        return real_build_extractor_graph(*args, **kwargs)
+
+    monkeypatch.setattr(extractor, "build_extractor_graph", _spy_build_extractor_graph)
+
+    extract_once(
+        _TEST_URL,
+        delegator_user_id=1,
+        source=source,
+        on_step=step_events.append,
+    )
+
+    # `on_step` fired twice for the batched turn, in tool_call order.
+    save_events = [record for record in step_events if record.tool == "save_event"]
+    assert len(save_events) == 2
+    assert [record.arguments["event_index_in_post"] for record in save_events] == [0, 1]
+    # Same step number — the two calls belong to the same LLM turn.
+    assert save_events[0].step == save_events[1].step
+    # Arguments are plain ``dict`` instances (not Pydantic models).
+    for record in save_events:
+        assert type(record.arguments) is dict
+    # ``post_tools`` runs at most once per ToolNode invocation regardless of
+    # the batch size — a single visit is recorded and it fired AFTER both
+    # ``on_step`` events (the visit index equals the total step count).
+    assert len(post_tools_visits) == 1
+    assert post_tools_visits[0] == len(save_events)
+
+
+def test_extract_once_wall_clock_brackets_tool_dispatch(
+    isolated_stores: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``started_at`` is captured before the graph run, ``ended_at`` after —
+    a tool dispatch timestamp lands between them, and the ``AgentRunRecord``
+    written to the audit table carries those timestamps unchanged."""
+    _seed_user()
+    source = _build_source(caption="Wall-clock bracket")
+
+    _install_scripted_model(
+        monkeypatch,
+        [
+            _turn("", [_fetch_call()]),
+            _turn("", [_save_event_call()]),
+            _turn(""),
+        ],
+    )
+
+    dispatch_times: list[datetime] = []
+    real_build_fetch = extractor.build_fetch_instagram_post
+
+    def _spy_build_fetch(src: Any) -> Any:
+        schema, callable_ = real_build_fetch(src)
+
+        @functools.wraps(callable_)
+        def _timestamped_fetch(url: str) -> Any:
+            dispatch_times.append(datetime.now(UTC))
+            return callable_(url=url)
+
+        return schema, _timestamped_fetch
+
+    monkeypatch.setattr(extractor, "build_fetch_instagram_post", _spy_build_fetch)
+
+    recorded: list[AgentRunRecord] = []
+    real_agent_run_logger = extractor.AgentRunLogger
+
+    class _CapturingAgentRunLogger:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            self._inner = real_agent_run_logger(conn_factory=db.connect)
+
+        def record(self, record: AgentRunRecord) -> None:
+            recorded.append(record)
+            self._inner.record(record)
+
+    monkeypatch.setattr(extractor, "AgentRunLogger", _CapturingAgentRunLogger)
+
+    extract_once(_TEST_URL, delegator_user_id=1, source=source)
+
+    assert dispatch_times, "instrumented fetch never fired"
+    assert recorded, "audit logger never wrote a row"
+    started_at = recorded[0].started_at
+    ended_at = recorded[0].ended_at
+    first_dispatch = dispatch_times[0]
+    assert started_at <= first_dispatch <= ended_at
+    assert (ended_at - started_at).total_seconds() > 0

@@ -1,7 +1,7 @@
 # ADR 0024 — LangGraph Extractor runtime
 
-**Status:** Proposed
-**Date:** 2026-08-03
+**Status:** Accepted
+**Date:** 2026-08-04
 **Deciders:** Planazo team
 **Related:** [ADR 0002](0002-event-tool-contracts-and-approval-gate.md), [ADR 0005](0005-multi-agent-shape.md), [ADR 0006](0006-instagram-extraction-approach.md), [ADR 0013](0013-extractor-side-frame-extraction.md), [ADR 0023](0023-langgraph-recommender-runtime.md).
 
