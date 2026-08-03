@@ -6,6 +6,31 @@ An agentic Barcelona event-discovery assistant. A user asks for events matching 
 
 The agent runtime lives under [`src/planazo/`](src/planazo/):
 
+### FFmpeg prerequisite
+
+Reel-frame extraction and its tests use the system `ffmpeg` and `ffprobe`
+executables. The Python `ffmpeg-python` package installed by `uv sync` is only
+a wrapper, so install FFmpeg and ensure both commands are on your `PATH` before
+running the full test suite:
+
+```bash
+# Windows (Winget)
+winget install --id Gyan.FFmpeg.Shared --exact
+
+# macOS (Homebrew)
+brew install ffmpeg
+
+# Debian / Ubuntu
+sudo apt update && sudo apt install -y ffmpeg
+```
+
+Verify the installation with:
+
+```bash
+ffmpeg -version
+ffprobe -version
+```
+
 ```bash
 uv sync
 uv run pytest
