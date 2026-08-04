@@ -1,6 +1,6 @@
 # ADR 0025 — RAG over the events catalog
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-04
 **Deciders:** Planazo team
 **Related:** [ADR 0003](0003-sqlite-domain-store.md), [ADR 0004](0004-three-store-memory-model.md), [ADR 0008](0008-domain-driven-module-layout.md), [ADR 0014](0014-deterministic-ranking-boundary.md), [ADR 0021](0021-recommender-tool-boundary-shrink.md), [ADR 0023](0023-langgraph-recommender-runtime.md).

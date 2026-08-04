@@ -499,3 +499,109 @@ def test_search_events_rejects_a_budget_cents_max_below_the_sentinel(db_file: Pa
     result = search_events(budget_cents_max=-5)
 
     assert result["error_type"] == "invalid_search_filter"
+
+
+# ------------------------------------------------------------
+# ADR 0025 — RAG-backed `search_events` when `query` is set
+# ------------------------------------------------------------
+
+
+def _seed_music_events(db_file: Path) -> None:
+    """Save three Barcelona music rows so the RAG path has semantic diversity."""
+    save_event(
+        title="Flamenco night at Palau Dalmases",
+        category="music",
+        source="seed",
+        source_url="https://seed.example/e/flamenco",
+        start_utc="2026-08-01T21:00:00+00:00",
+        end_utc="2026-08-01T23:00:00+00:00",
+        city="Barcelona",
+        confidence=0.9,
+        venue_name="Palau Dalmases",
+        tags=["flamenco", "live-music"],
+        description="Intimate flamenco performance in a Gothic Quarter palace.",
+    )
+    save_event(
+        title="Jazz jam at Jamboree",
+        category="music",
+        source="seed",
+        source_url="https://seed.example/e/jazz",
+        start_utc="2026-08-02T21:00:00+00:00",
+        end_utc="2026-08-02T23:00:00+00:00",
+        city="Barcelona",
+        confidence=0.9,
+        venue_name="Jamboree",
+        tags=["jazz", "jam-session"],
+        description="Weekly jazz jam session with resident quartet.",
+    )
+    save_event(
+        title="Techno all-nighter at Sala Apolo",
+        category="music",
+        source="seed",
+        source_url="https://seed.example/e/techno",
+        start_utc="2026-08-03T22:00:00+00:00",
+        end_utc="2026-08-04T04:00:00+00:00",
+        city="Barcelona",
+        confidence=0.9,
+        venue_name="Sala Apolo",
+        tags=["techno", "dj-set"],
+        description="Marathon techno night with three headliners.",
+    )
+
+
+def test_search_events_backward_compatible_without_query(db_file: Path) -> None:
+    """Omitting `query` keeps today's SQL-only filter behavior byte-for-byte."""
+    _seed_music_events(db_file)
+
+    result = search_events(category="music", city="Barcelona")
+
+    assert result["total"] == 3
+    events = result["events"]
+    assert isinstance(events, list)
+    # Earliest start_utc first — the SQL ORDER BY the RAG path bypasses.
+    titles = [event["title"] for event in events]
+    assert titles == [
+        "Flamenco night at Palau Dalmases",
+        "Jazz jam at Jamboree",
+        "Techno all-nighter at Sala Apolo",
+    ]
+
+
+def test_search_events_query_only_delegates_to_rag(db_file: Path) -> None:
+    """A `query` triggers the RAG path and returns semantically ranked rows."""
+    _seed_music_events(db_file)
+
+    result = search_events(query="flamenco show in the Gothic Quarter")
+
+    events = result["events"]
+    assert isinstance(events, list)
+    assert result["total"] == len(events)
+    assert events, "RAG path must return at least one event for a matching query"
+    assert events[0]["title"] == "Flamenco night at Palau Dalmases"
+
+
+def test_search_events_query_plus_hard_filters_applies_both(db_file: Path) -> None:
+    """Hard filters narrow the candidate set; RAG ranks within it."""
+    _seed_music_events(db_file)
+    # A Madrid jazz row that the `city="Barcelona"` filter must exclude before
+    # the RAG stage sees anything — proving the hard filter still gates.
+    save_event(
+        title="Jazz jam at Café Central",
+        category="music",
+        source="seed",
+        source_url="https://seed.example/e/madrid-jazz",
+        start_utc="2026-08-02T21:00:00+00:00",
+        end_utc="2026-08-02T23:00:00+00:00",
+        city="Madrid",
+        confidence=0.9,
+        venue_name="Café Central",
+        tags=["jazz"],
+        description="Nightly jazz set in Madrid.",
+    )
+
+    result = search_events(query="jazz jam session", city="Barcelona")
+
+    events = result["events"]
+    assert isinstance(events, list)
+    assert events, "hard-filter+query must still surface Barcelona jazz"
+    assert all(event["city"] == "Barcelona" for event in events)
