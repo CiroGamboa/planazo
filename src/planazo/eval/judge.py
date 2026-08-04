@@ -27,9 +27,11 @@ import json
 import os
 import time
 from collections.abc import Sequence
+from functools import lru_cache
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Final, Literal, Protocol
 
+import tiktoken
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
@@ -47,6 +49,28 @@ _STRICTER_REPROMPT = (
     'object of shape {"score": float in [0.0, 1.0], "rationale": string}. '
     "No prose, no code fences, no leading or trailing text."
 )
+
+# Hard prompt-size guard. Judge prompts include the bounded answer, up to
+# ~5 chunks, and the rubric — a realistic pass stays well under 4 000
+# tokens. A prompt above this ceiling means the caller trimmed nothing;
+# we refuse it rather than pay a wide-context LLM call for a bug upstream.
+_MAX_PROMPT_TOKENS: Final[int] = 8000
+_TIKTOKEN_ENCODING: Final[str] = "cl100k_base"
+
+
+@lru_cache(maxsize=1)
+def _tokenizer() -> tiktoken.Encoding:
+    """Cache the tiktoken encoder — first call loads BPE tables (~1 s)."""
+    return tiktoken.get_encoding(_TIKTOKEN_ENCODING)
+
+
+def count_prompt_tokens(prompt: str) -> int:
+    """Return the `cl100k_base` token count for `prompt`.
+
+    Exposed for the harness and tests; the judge itself uses this to enforce
+    ``_MAX_PROMPT_TOKENS`` before an LLM call is attempted.
+    """
+    return len(_tokenizer().encode(prompt))
 
 
 class JudgeResponse(BaseModel):
@@ -270,6 +294,18 @@ class OpenCodeJudge:
             fallback = JudgeResponse(
                 score=0.0,
                 rationale="judge_parse_failed: judge disabled (no live call made)",
+            )
+            write_cached_response(self._cache_root, cache_key, fallback, prompt_hash=prompt_hash)
+            return fallback
+
+        token_count = count_prompt_tokens(prompt)
+        if token_count > _MAX_PROMPT_TOKENS:
+            fallback = JudgeResponse(
+                score=0.0,
+                rationale=(
+                    f"judge_over_token_budget: prompt has {token_count} tokens, "
+                    f"cap is {_MAX_PROMPT_TOKENS} — upstream trim failed"
+                )[:1000],
             )
             write_cached_response(self._cache_root, cache_key, fallback, prompt_hash=prompt_hash)
             return fallback

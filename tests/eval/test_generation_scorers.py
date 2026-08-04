@@ -212,3 +212,87 @@ def test_judge_parse_failure_returns_score_zero_with_rationale(tmp_path: Path) -
     cached = read_cached_response(cache_root, key)
     assert cached is not None
     assert cached.score == 0.0
+
+
+def test_enabled_judge_retries_once_then_falls_back_on_repeated_bad_json(
+    tmp_path: Path,
+) -> None:
+    """Enabled judge: first `_invoke` returns garbage → retry with stricter reprompt →
+    still garbage → typed `judge_parse_failed` fallback, cached."""
+
+    cache_root = tmp_path / "judge_cache"
+    key = JudgeCacheKey(
+        metric="answer_relevance",
+        case_id="q042",
+        answer_hash="cafebabecafebabe",
+    )
+
+    calls: list[bool] = []
+
+    def _fake_invoke(_self: OpenCodeJudge, prompt: str, *, stricter: bool) -> str:
+        calls.append(stricter)
+        return "this is not JSON, please score me: seven"
+
+    judge = OpenCodeJudge(cache_root=cache_root, enabled=True)
+    # Bypass the real ChatOpenAI construction — the retry branch is what we
+    # care about, and it lives entirely in the OpenCodeJudge itself.
+    judge._chat_model = object()  # type: ignore[assignment]  # sentinel, never used
+    OpenCodeJudge._invoke = _fake_invoke  # type: ignore[method-assign]
+    try:
+        response = judge.judge("does not matter", cache_key=key)
+    finally:
+        # Restore the real method on the class so later tests are unaffected.
+        del OpenCodeJudge._invoke  # type: ignore[method-assign]
+
+    # Both attempts were made — first non-strict, then stricter.
+    assert calls == [False, True]
+    assert response.score == 0.0
+    assert response.rationale.startswith("judge_parse_failed:")
+
+    # The typed fallback was cached so a rerun does not repeat the pair of calls.
+    cached = read_cached_response(cache_root, key)
+    assert cached is not None
+    assert cached.score == 0.0
+    assert cached.rationale.startswith("judge_parse_failed:")
+
+
+def test_enabled_judge_refuses_prompt_over_token_budget(tmp_path: Path) -> None:
+    """Enabled judge: prompt above ``_MAX_PROMPT_TOKENS`` short-circuits to a
+    typed fallback without any LLM call — the tiktoken guard fires here."""
+
+    from planazo.eval.judge import count_prompt_tokens
+
+    cache_root = tmp_path / "judge_cache"
+    key = JudgeCacheKey(
+        metric="context_precision",
+        case_id="q999",
+        answer_hash="badf00dbadf00d00",
+    )
+
+    # 40 000 tokens of the same word — well over the 8 000-token guard.
+    oversize_prompt = ("token " * 40_000).strip()
+    assert count_prompt_tokens(oversize_prompt) > 8_000
+
+    invoked = 0
+
+    def _fake_invoke(_self: OpenCodeJudge, prompt: str, *, stricter: bool) -> str:
+        nonlocal invoked
+        invoked += 1
+        return '{"score": 1.0, "rationale": "should not be reached"}'
+
+    judge = OpenCodeJudge(cache_root=cache_root, enabled=True)
+    judge._chat_model = object()  # type: ignore[assignment]
+    OpenCodeJudge._invoke = _fake_invoke  # type: ignore[method-assign]
+    try:
+        response = judge.judge(oversize_prompt, cache_key=key)
+    finally:
+        del OpenCodeJudge._invoke  # type: ignore[method-assign]
+
+    assert invoked == 0, "oversize prompt must not reach the LLM"
+    assert response.score == 0.0
+    assert response.rationale.startswith("judge_over_token_budget:")
+
+    # Fallback is cached so subsequent runs stay cheap.
+    cached = read_cached_response(cache_root, key)
+    assert cached is not None
+    assert cached.rationale.startswith("judge_over_token_budget:")
