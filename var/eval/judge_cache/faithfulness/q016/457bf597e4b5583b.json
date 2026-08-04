@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "All listed events (OBC concert, string quartet matinee, opera gala, flamenco tablao, guitar recital) and their venues, descriptions, and times match the corresponding retrieved chunks [1]-[5]. No additional details are added beyond the chunks.",
+  "prompt_hash": "bf37c3fe2795d89a",
+  "written_at_utc": 1785875866
+}

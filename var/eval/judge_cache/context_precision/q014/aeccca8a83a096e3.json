@@ -1,0 +1,6 @@
+{
+  "score": 0.4,
+  "rationale": "Query asks for concerts at Sala Apolo the same night. Chunks [1] and [2] are both Sala Apolo concerts on 2026-08-08 (same night). Chunks [3]-[5] are different venues/off-topic (Razzmatazz, Filmoteca, Jamboree). So 2 of 5 are relevant → 0.4.",
+  "prompt_hash": "bc363fa896893fcc",
+  "written_at_utc": 1785875981
+}

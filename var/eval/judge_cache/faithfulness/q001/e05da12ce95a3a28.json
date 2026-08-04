@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "All listed events, descriptions, venues/locations, dates/times, and key attributes (free/comedy language, ghost tour ends at midnight, etc.) match the corresponding retrieved chunks [1]-[5]. No unsupported claims.",
+  "prompt_hash": "0efd456fe373cabf",
+  "written_at_utc": 1785875916
+}

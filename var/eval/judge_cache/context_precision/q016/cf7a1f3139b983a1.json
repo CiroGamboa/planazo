@@ -1,0 +1,6 @@
+{
+  "score": 0.6,
+  "rationale": "Query asks for a Palau de la Musica concert this week. Chunks [1] and [2] are concerts at Palau de la Musica on 2026-08-10 (this week). Chunk [3] is also at the venue but on 2026-08-19 (not this week). Chunks [4] and [5] are at Palau Dalmases (wrong venue). Thus ~2 of 5 are relevant; one partially.",
+  "prompt_hash": "f0443ce4c56993dd",
+  "written_at_utc": 1785875872
+}

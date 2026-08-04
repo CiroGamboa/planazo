@@ -1,0 +1,6 @@
+{
+  "score": 0.8,
+  "rationale": "Chunk [1] clearly matches a traditional flamenco show in the Gothic Quarter tonight (but time is Aug 6 21:00). Chunks [2] and [4] are tours (off-topic). Chunk [3] is flamenco but not explicitly traditional and is at Placa Reial (still Ciutat Vella). Chunk [5] is folk, not flamenco. So ~4 of 5 are at least loosely related to Gothic Quarter/Ciutat Vella music, but only [1] is full match; overall ~0.8.",
+  "prompt_hash": "35d6c21b6dcad3e8",
+  "written_at_utc": 1785875695
+}

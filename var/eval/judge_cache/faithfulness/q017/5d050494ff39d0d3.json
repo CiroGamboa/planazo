@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "All five listed meetups, including titles, free status, themes (lightning talks, SwiftUI, AI-founder/free drinks, diffusion model paper, open house/current cohort), venue (Palau Robert), and exact dates/times are explicitly supported by retrieved chunks [1]-[5].",
+  "prompt_hash": "f4462e492a12f05c",
+  "written_at_utc": 1785875879
+}

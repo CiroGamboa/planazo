@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "All five event entries (names, venues, descriptions, tags, and ISO times) match the corresponding retrieved chunks exactly. No extra unsupported details or contradictions detected.",
+  "prompt_hash": "466ab4e86be6ddd5",
+  "written_at_utc": 1785875806
+}

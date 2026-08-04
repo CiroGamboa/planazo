@@ -1,0 +1,6 @@
+{
+  "score": 0.35,
+  "rationale": "Answer lists multiple events, including two at Sala Apolo, but it doesn’t address the specific query “concerts at Sala Apolo the same night” (e.g., identifying which concerts share the same date/time). It’s more like a general schedule of nearby nights.",
+  "prompt_hash": "b44735a418996708",
+  "written_at_utc": 1785875979
+}

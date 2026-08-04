@@ -1,0 +1,6 @@
+{
+  "score": 0.2,
+  "rationale": "The query is only “budget jazz night” but the answer lists multiple jazz events; however, it doesn’t clearly target budget jazz nights specifically, and includes non-jazz (reggaeton) and various categories/dates without confirming budget focus or matching a single “night” request.",
+  "prompt_hash": "09d5fe8732d70e44",
+  "written_at_utc": 1785875808
+}

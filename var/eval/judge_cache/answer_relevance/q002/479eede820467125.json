@@ -1,0 +1,6 @@
+{
+  "score": 0.2,
+  "rationale": "The query is only \"techno night at Sala Apolo\" (singular, specific). The answer lists multiple different nights/venues and doesn’t clearly provide details specifically answering that one techno night request (it only includes one entry among several). Tangentially related but not directly focused.",
+  "prompt_hash": "f5c90359ab02610c",
+  "written_at_utc": 1785875704
+}

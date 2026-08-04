@@ -1,0 +1,6 @@
+{
+  "score": 0.15,
+  "rationale": "The answer lists several film events with dates/venues, but the original query is only 'BCN Film Fest' with no specific sub-question. It does not clearly provide the requested festival details (e.g., schedule/links/description) and includes possibly unrelated Filmoteca nights not explicitly identified as BCN Film Fest.",
+  "prompt_hash": "1b67c453daf4a8f3",
+  "written_at_utc": 1785875783
+}

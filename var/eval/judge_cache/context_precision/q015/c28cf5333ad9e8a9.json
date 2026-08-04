@@ -1,0 +1,6 @@
+{
+  "score": 0.2,
+  "rationale": "Query: jazz at Jamboree. Only chunk [1] is directly jazz at Jamboree. Chunks [3] is at Jamboree but not jazz. Chunks [2] and [4] are jazz but at Harlem Jazz Club; [5] is Cuban son at Harlem. So 1 of 5 relevant.",
+  "prompt_hash": "ea1b0e1cf0cd87dd",
+  "written_at_utc": 1785875860
+}

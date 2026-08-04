@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "All five listed events (titles, descriptions, venues, dates/times, and where specified price/free) are directly supported by retrieved chunks [1]–[5] with no conflicting or extra details.",
+  "prompt_hash": "0e40ad9367913c3b",
+  "written_at_utc": 1785875828
+}

@@ -1,0 +1,6 @@
+{
+  "score": 0.6,
+  "rationale": "Chunks [1] and [2] are flamenco shows in/near the Gothic Quarter and could answer tonight. [3] and [4] are walking tours (not shows), [5] is comedy. So 2 of 5 are relevant (~0.4), but [2] is still flamenco in Ciutat Vella; overall ~0.6.",
+  "prompt_hash": "eea320a3c34bd4cf",
+  "written_at_utc": 1785875921
+}

@@ -1,0 +1,6 @@
+{
+  "score": 0.6,
+  "rationale": "Chunk [1] directly matches “Sunday morning yoga in Ciutadella.” Chunks [3] is also related (outdoor pilates Sunday morning) though not yoga and has price/accuracy issues. Chunks [2],[4],[5] are different activities (picnic/family day/concert). About 2 of 5 are relevant enough → ~0.6.",
+  "prompt_hash": "a27af640909de144",
+  "written_at_utc": 1785875730
+}

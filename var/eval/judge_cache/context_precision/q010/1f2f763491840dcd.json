@@ -1,0 +1,6 @@
+{
+  "score": 0.6,
+  "rationale": "Query is “cheap flamenco”. Chunks [1] and [2] are clearly flamenco (music events) with prices 1000 and 2500—only [1] is explicitly cheap, but both are still relevant. Chunks [3]-[5] are salsa/reggaeton/cinema, not flamenco. Thus about 2/5 relevant.",
+  "prompt_hash": "f1834d82f269abbc",
+  "written_at_utc": 1785875795
+}
