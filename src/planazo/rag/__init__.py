@@ -13,3 +13,18 @@ one chunk per event, `k_rrf = 60`, retrieve depth 20, return depth 5, and a
 `rerank: bool` seam so the evaluation harness can measure the reranker's
 contribution in isolation.
 """
+
+from planazo.rag.models import Chunk, Hit, RetrievalResult
+from planazo.rag.rerank import CrossEncoderReranker
+from planazo.rag.retrieval import BM25Index, DenseIndex, HybridRetriever, rrf_fuse
+
+__all__ = [
+    "BM25Index",
+    "Chunk",
+    "CrossEncoderReranker",
+    "DenseIndex",
+    "Hit",
+    "HybridRetriever",
+    "RetrievalResult",
+    "rrf_fuse",
+]
