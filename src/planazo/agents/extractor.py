@@ -38,17 +38,31 @@ is not in `IRREVERSIBLE_TOOLS` (ADR 0002 + ADR 0005 decision 4).
 from __future__ import annotations
 
 import base64
+import json
 import logging
-from collections.abc import Callable
+import os
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from functools import wraps
 from pathlib import Path
 from typing import Any, Final, Literal, cast, get_args
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
-from agentlib.core import STRONG
-from planazo.agents.loop import LoopResult, StepRecord, run_loop
+from agentlib.core import BASE_URL, STRONG
+from planazo.agents.langgraph_runtime import (
+    ExtractorGraphInput,
+    ExtractorGraphState,
+    ToolCallable,
+    _message_text,
+    build_extractor_graph,
+    build_langchain_tools,
+    invoke_extractor_graph,
+)
+from planazo.agents.loop import LoopResult, StepRecord, tool_failure_result
 from planazo.catalog import ExtractionRunIndexEntry, record_extraction_run, save_event
 from planazo.catalog.models import Event
 from planazo.extraction.audit import ExtractionRunLogger
@@ -76,7 +90,6 @@ from planazo.sources.instagram.adapter import InstagramSource
 from planazo.sources.instagram.client import InstagramClient
 from planazo.sources.instagram.tools import build_fetch_instagram_post
 from planazo.storage import db
-from tools.schema import schema_for
 
 logger = logging.getLogger(__name__)
 
@@ -371,6 +384,172 @@ def _default_source() -> InstagramSource:
     return InstagramSource(load_config().sources["instagram"], client)
 
 
+def _build_extractor_chat_model(model: str, max_output_tokens: int) -> ChatOpenAI:
+    """Create the Extractor's Responses-compatible LangChain model client.
+
+    The Extractor talks to OpenCode via the Responses API so the multimodal
+    ``input_image`` content parts the ``post_tools`` node emits survive the
+    request-payload conversion unchanged. This is the monkeypatch seam the
+    Extractor's own tests use to script deterministic ``AIMessage`` sequences
+    without a live LLM.
+    """
+
+    api_key = os.environ.get("OPENCODE_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENCODE_API_KEY is not set. Add it to a .env file at the repo root.")
+    chat_model = ChatOpenAI(
+        model=model,
+        api_key=SecretStr(api_key),
+        base_url=BASE_URL,
+        use_responses_api=True,
+    )
+    return chat_model.model_copy(update={"max_tokens": max_output_tokens})
+
+
+def _instrument_extractor_tools(
+    registry: Mapping[str, ToolCallable],
+    *,
+    on_step: Callable[[StepRecord], None] | None,
+    current_step: Callable[[], int],
+    pending_fetches: list[StepRecord],
+) -> dict[str, ToolCallable]:
+    """Wrap each Extractor tool so its raw return, trace, and fetch queue land here.
+
+    The framework's ``ToolNode`` chooses and invokes only registered tools.
+    This adapter preserves the pre-framework contract every Planazo observer
+    depends on: the raw Python return is captured in a ``StepRecord`` before
+    ``ToolNode`` serializes it into a ``ToolMessage``, the ``on_step`` observer
+    fires from inside the wrapper (which is what the audit trail and
+    ``ExtractionRunLogger`` listen to), and a raising tool becomes a
+    ``tool_failure_result(...)`` marker so the graph never crashes. There is
+    no ``ApprovalGate`` here — ``save_event`` is a reversible catalog write
+    (ADR 0002, ADR 0005 §4).
+
+    Successful ``fetch_instagram_post`` dispatches append their ``StepRecord``
+    to ``pending_fetches``; the ``post_tools`` node drains that queue to run
+    the multimodal-injection hook. Non-fetch tools do not enqueue, so
+    ``post_tools`` sees an empty queue on every non-fetch visit and injects
+    nothing — matching the pre-framework behaviour where the injection hook
+    only fired on successful ``fetch_instagram_post`` calls.
+    """
+
+    instrumented: dict[str, ToolCallable] = {}
+    for name, function in registry.items():
+
+        @wraps(function)
+        def invoke(
+            *, _name: str = name, _function: ToolCallable = function, **arguments: object
+        ) -> object:
+            output: object
+            dispatched = False
+            try:
+                output = _function(**arguments)
+                json.dumps({"result": output})
+                dispatched = True
+            except Exception as exc:
+                output = tool_failure_result(f"{type(exc).__name__}: {exc}")
+            record = StepRecord(
+                step=current_step(),
+                tool=_name,
+                arguments=dict(arguments),
+                result=output,
+            )
+            if on_step is not None:
+                on_step(record)
+            if dispatched and _name == "fetch_instagram_post":
+                pending_fetches.append(record)
+            return output
+
+        instrumented[name] = invoke
+    return instrumented
+
+
+def _run_extractor_graph(
+    *,
+    url: str,
+    delegator_user_id: int,
+    run_id: str,
+    registry: Mapping[str, ToolCallable],
+    model: str,
+    max_steps: int,
+    max_output_tokens: int,
+    resolved_profile: MultimodalProfile,
+    on_step: Callable[[StepRecord], None] | None,
+    on_multimodal_send: Callable[..., None] | None,
+    system: str | None,
+) -> LoopResult:
+    """Run one Extractor pass through the typed LangGraph runtime.
+
+    Assembles the LangChain-registered tool set from instrumented wrappers,
+    builds the compiled graph with the multimodal-injection ``post_tools``
+    node, invokes it, and projects the final ``ExtractorGraphState`` onto the
+    ``LoopResult`` shape ``extract_once`` consumes downstream.
+    """
+
+    model_step = 0
+
+    def observe_model_step(step: int) -> None:
+        nonlocal model_step
+        model_step = step
+
+    pending_fetches: list[StepRecord] = []
+    multimodal_hook = _build_multimodal_hook(
+        url, profile=resolved_profile, on_multimodal_send=on_multimodal_send
+    )
+
+    def post_tools(state: ExtractorGraphState) -> list[BaseMessage]:
+        if not pending_fetches:
+            return []
+        drained = list(pending_fetches)
+        pending_fetches.clear()
+        injected: list[BaseMessage] = []
+        for record in drained:
+            messages = multimodal_hook(record)
+            if not messages:
+                continue
+            for message in messages:
+                content = message.get("content", [])
+                if not isinstance(content, list):
+                    continue
+                injected.append(HumanMessage(content=content))
+        return injected
+
+    tools = build_langchain_tools(
+        _instrument_extractor_tools(
+            registry,
+            on_step=on_step,
+            current_step=lambda: model_step,
+            pending_fetches=pending_fetches,
+        )
+    )
+    request = ExtractorGraphInput(
+        url=url,
+        delegator_user_id=delegator_user_id,
+        run_id=run_id,
+        system_prompt=system or "",
+        user_message=USER_MESSAGE,
+        max_model_steps=max_steps,
+    )
+    graph = build_extractor_graph(
+        _build_extractor_chat_model(model, max_output_tokens),
+        tools,
+        on_model_step=observe_model_step,
+        post_tools=post_tools,
+    )
+    state = invoke_extractor_graph(graph, request)
+    stopped = state["stopped"]
+    if stopped == "max_steps":
+        return LoopResult(answer=None, steps=state["model_steps"], stopped="max_steps")
+    final_message = state["messages"][-1]
+    if not isinstance(final_message, AIMessage):
+        raise TypeError("the Extractor graph ended without an AIMessage")
+    return LoopResult(
+        answer=_message_text(final_message),
+        steps=state["model_steps"],
+        stopped=cast(Literal["answered", "truncated"], stopped),
+    )
+
+
 def extract_once(
     url: str,
     delegator_user_id: int,
@@ -416,13 +595,8 @@ def extract_once(
     finally:
         conn.close()
 
-    fetch_schema, fetch_callable = build_fetch_instagram_post(resolved_source)
-    tool_schemas: list[dict[str, Any]] = [
-        fetch_schema,
-        schema_for(save_event),
-        schema_for(report_extraction_status),
-    ]
-    registry: dict[str, Any] = {
+    _fetch_schema, fetch_callable = build_fetch_instagram_post(resolved_source)
+    registry: dict[str, ToolCallable] = {
         "fetch_instagram_post": fetch_callable,
         "save_event": save_event,
         "report_extraction_status": report_extraction_status,
@@ -446,21 +620,22 @@ def extract_once(
         if on_step is not None:
             on_step(record)
 
-    # Capture wall-clock boundaries around `run_loop` so the `agent_runs`
-    # row's `started_at` / `ended_at` cover the full loop, including every
-    # tool dispatch (source fetch, save_event writes) — not just LLM turns.
+    # Capture wall-clock boundaries around the whole graph run so the
+    # `agent_runs` row's `started_at` / `ended_at` cover the full loop —
+    # graph-build cost, tool dispatches (source fetch, save_event writes),
+    # and every LLM turn.
     started_at = datetime.now(UTC)
-    loop_result = run_loop(
-        user_message=USER_MESSAGE,
-        tools=tool_schemas,
+    loop_result = _run_extractor_graph(
+        url=url,
+        delegator_user_id=delegator_user_id,
+        run_id=run_id,
         registry=registry,
         model=model,
         max_steps=MAX_STEPS,
         max_output_tokens=MAX_OUTPUT_TOKENS,
+        resolved_profile=resolved_profile,
         on_step=observe,
-        on_tool_output=_build_multimodal_hook(
-            url, profile=resolved_profile, on_multimodal_send=on_multimodal_send
-        ),
+        on_multimodal_send=on_multimodal_send,
         system=system_text,
     )
     ended_at = datetime.now(UTC)

@@ -13,12 +13,15 @@ from langchain_core.tools import BaseTool
 from pydantic import ValidationError
 
 from planazo.agents.langgraph_runtime import (
+    EXTRACTOR_NODES_PER_CYCLE,
+    RECOMMENDER_NODES_PER_CYCLE,
     PlanazoGraphState,
     RecommenderGraphInput,
     build_langchain_tools,
     build_recommender_graph,
     invoke_recommender_graph,
     open_recommender_checkpointer,
+    recursion_limit_for,
 )
 from planazo.query.models import SearchIntent
 
@@ -251,11 +254,57 @@ def test_graph_dispatches_the_final_tool_then_stops_at_the_model_step_cap() -> N
     )
     request = _request().model_copy(update={"max_model_steps": 1})
 
+    assert request.graph_config()["recursion_limit"] == recursion_limit_for(1, 3)
+    assert request.graph_config()["recursion_limit"] == 5
+
     state = invoke_recommender_graph(graph, request)
 
     assert state["model_steps"] == 1
     assert state["stopped"] == "max_steps"
     assert any(isinstance(message, ToolMessage) for message in state["messages"])
+
+
+def test_recommender_graph_reaches_step_cap_at_max_model_steps_eight() -> None:
+    graph = build_recommender_graph(
+        RepeatedToolModel(),
+        build_langchain_tools({"uppercase": _uppercase}),
+    )
+    request = _request().model_copy(update={"max_model_steps": 8})
+
+    state = invoke_recommender_graph(graph, request)
+
+    assert state["stopped"] == "max_steps"
+    assert state["model_steps"] == 8
+
+
+@pytest.mark.parametrize(
+    ("max_model_steps", "nodes_per_cycle", "expected_limit"),
+    [
+        (8, RECOMMENDER_NODES_PER_CYCLE, 26),
+        (32, EXTRACTOR_NODES_PER_CYCLE, 130),
+        (1, RECOMMENDER_NODES_PER_CYCLE, 5),
+        (1, EXTRACTOR_NODES_PER_CYCLE, 6),
+        (64, EXTRACTOR_NODES_PER_CYCLE, 258),
+    ],
+)
+def test_recursion_limit_for_is_topology_aware(
+    max_model_steps: int, nodes_per_cycle: int, expected_limit: int
+) -> None:
+    assert recursion_limit_for(max_model_steps, nodes_per_cycle) == expected_limit
+
+
+@pytest.mark.parametrize("bad_max_model_steps", [0, -1])
+def test_recursion_limit_for_rejects_non_positive_max_model_steps(
+    bad_max_model_steps: int,
+) -> None:
+    with pytest.raises(ValueError, match="max_model_steps must be >= 1"):
+        recursion_limit_for(bad_max_model_steps, RECOMMENDER_NODES_PER_CYCLE)
+
+
+@pytest.mark.parametrize("bad_nodes_per_cycle", [0, 1, -1])
+def test_recursion_limit_for_rejects_degenerate_topology(bad_nodes_per_cycle: int) -> None:
+    with pytest.raises(ValueError, match="nodes_per_cycle must be >= 2"):
+        recursion_limit_for(1, bad_nodes_per_cycle)
 
 
 def test_sqlite_checkpoint_resumes_a_stopped_tool_turn_after_graph_recreation(

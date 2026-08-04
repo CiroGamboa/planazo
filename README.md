@@ -61,7 +61,14 @@ Planazo identity; `--thread-id` makes the durable graph thread explicit.
 uv run planazo-agent --user-id 1 --thread-id demo-events "Find technology events in Barcelona this weekend."
 ```
 
-## LangGraph Recommender runtime
+## LangGraph agent runtimes
+
+Planazo's Recommender and Extractor both run on typed LangGraph `StateGraph`s.
+Each graph binds an OpenCode chat model to LangChain tools and lets the
+model—not application branching—dispatch tool calls through LangGraph's
+`ToolNode`.
+
+### Recommender runtime
 
 The Recommender is a custom, typed LangGraph `StateGraph`. It binds the cheap
 OpenCode chat model to LangChain tools. The model—not application branching—
@@ -94,7 +101,7 @@ flowchart LR
     Result --> User
 ```
 
-### Registered Recommender tools
+#### Registered Recommender tools
 
 | Tool | Purpose | Boundary |
 | --- | --- | --- |
@@ -109,7 +116,7 @@ flowchart LR
 The calendar tools are registered only with `--calendar`. The Recommender does
 not register `save_preference` or `dispatch_extraction`.
 
-### Event query: model selects `search_events`
+#### Event query: model selects `search_events`
 
 ```mermaid
 sequenceDiagram
@@ -127,7 +134,7 @@ sequenceDiagram
     G-->>U: Validated answer and filtered candidates
 ```
 
-### Preference-aware query: memory, then search
+#### Preference-aware query: memory, then search
 
 ```mermaid
 sequenceDiagram
@@ -149,7 +156,7 @@ sequenceDiagram
     G-->>U: Preference-aware recommendation
 ```
 
-### Interrupted graph: checkpoint and resumed turn
+#### Interrupted graph: checkpoint and resumed turn
 
 ```mermaid
 sequenceDiagram
@@ -168,7 +175,7 @@ sequenceDiagram
     G2-->>C: Complete answer without losing prior tool state
 ```
 
-### Demonstrate checkpoint resume
+#### Demonstrate checkpoint resume
 
 Use the same durable thread ID in both commands. The first is deliberately
 capped after one model turn; the second recreates the graph and resumes saved
@@ -188,6 +195,44 @@ uv run pytest tests/test_langgraph_runtime.py::test_sqlite_checkpoint_resumes_a_
 ```
 
 See [ADR 0023](docs/adr/0023-langgraph-recommender-runtime.md) for the runtime decision.
+
+### Extractor runtime
+
+The Extractor is a custom, typed LangGraph `StateGraph`. It binds the strong
+OpenCode chat model to LangChain tools—`fetch_instagram_post`, `save_event`,
+and `report_extraction_status`. The model—not application branching—decides
+which tool to call. LangGraph's `ToolNode` runs the selected call; after a
+successful `fetch_instagram_post`, the graph injects one multimodal
+`HumanMessage` carrying the fetched post's image, carousel slides, reel
+frames, or thumbnail fallback (per `MultimodalProfile`). The graph then
+returns to the model until it emits a terminal `save_event` sequence or a
+`report_extraction_status` call.
+
+```mermaid
+flowchart LR
+    Entry["Extractor entrypoint\nextract_once(url, delegator_user_id)"] --> Agent["agent node\nChatOpenAI.bind_tools(...)"]
+    Agent -->|"tool calls"| Tools["ToolNode"]
+    Tools --> Inject["inject_multimodal\n(post_tools node)"]
+    Inject --> Cap["enforce_step_cap"]
+    Cap -->|"running"| Agent
+    Cap -->|"answered / max_steps"| Done([END])
+    Agent -->|"no tool calls"| Done
+```
+
+Terminal state is trace-derived: the graph does not short-circuit on tool
+names. The composition root inspects the trace after the run and projects the
+final `ExtractorGraphState` into an `ExtractionResult`.
+
+#### Registered Extractor tools
+
+| Tool | Purpose | Boundary |
+| --- | --- | --- |
+| `fetch_instagram_post` | Read the raw post payload from the Instagram source adapter. | Successful call triggers the multimodal `HumanMessage` injection carrying image, carousel slides, reel frames, or thumbnail fallback (per `MultimodalProfile`). |
+| `save_event` | Persist an extracted `Event` to the catalog. | Reversible catalog write—no `ApprovalGate` ([ADR 0002](docs/adr/0002-event-tool-contracts-and-approval-gate.md), [ADR 0005](docs/adr/0005-multi-agent-shape.md) §4). |
+| `report_extraction_status` | Terminal unhappy signal for the run (needs_clarification / error branches). | Records the operator-facing status, error_type, and notes; ends the extraction without persisting an event. |
+
+The Extractor is single-shot: no checkpointing, no `thread_id`, no resume. See
+[ADR 0024](docs/adr/0024-langgraph-extractor-runtime.md) for the rationale.
 
 ## Working on the project
 
