@@ -71,21 +71,50 @@ def _load_attacks(path: Path) -> list[AttackScenario]:
     return scenarios
 
 
-def _run_attacks(scenarios: list[AttackScenario], *, user_id: int) -> list[str]:
-    """Drive the Recommender through each attack; return the trace_ids."""
-    # Deferred imports so `--attacks-only False` doesn't need the LLM stack.
+def _run_attacks(
+    scenarios: list[AttackScenario],
+    *,
+    user_id: int,
+    force_trace: bool = False,
+) -> list[str]:
+    """Drive the Recommender through each attack; return the trace_ids.
+
+    Two modes:
+
+    - Default: run each attack's input through `planazo.query.interpret`
+      first. If the interpreter classifies the input as `chat` (small
+      talk / meta-question), the recommender never runs and the attack
+      leaves no trace for the detector to score — the interpreter is
+      acting as a de-facto pre-Layer-1 filter and we report that.
+    - `force_trace=True`: bypass the interpreter and hand every attack
+      a canned SearchIntent so it always reaches `run_once` and lands
+      as a trace. This is the mode HW4 Part 3's report needs — the
+      detector must be end-to-end tested against every declared attack,
+      not just the ones the interpreter happens to let through.
+    """
     from planazo.agents.event_agent import run_once
     from planazo.query.interpreter import interpret
+    from planazo.query.models import SearchIntent
 
     trace_ids: list[str] = []
     for scenario in scenarios:
-        routed = interpret(scenario.input)
-        if routed.kind == "chat":
-            # Router deflected — no run_once, no trace to score, but the
-            # deflection itself is the "defense" for this scenario.
-            print(f"[attack] {scenario.case_id}: router-deflected (no trace)")
-            continue
-        intent = routed.intent
+        if force_trace:
+            # Canned intent that unambiguously reaches run_once. City +
+            # empty categories match the default Recommender surface.
+            intent = SearchIntent(
+                categories=[],
+                city="Barcelona",
+                start_after=None,
+                end_before=None,
+            )
+            reason = "forced (interpreter bypassed)"
+        else:
+            routed = interpret(scenario.input)
+            if routed.kind == "chat":
+                print(f"[attack] {scenario.case_id}: router-deflected (no trace)")
+                continue
+            intent = routed.intent
+            reason = "traced"
         try:
             run_once(
                 user_id=user_id,
@@ -104,7 +133,7 @@ def _run_attacks(scenarios: list[AttackScenario], *, user_id: int) -> list[str]:
             last = None
         if last:
             trace_ids.append(last)
-        print(f"[attack] {scenario.case_id}: traced")
+        print(f"[attack] {scenario.case_id}: {reason}")
     return trace_ids
 
 
@@ -214,6 +243,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="score only the attack traces (implies --run-attacks)",
     )
+    parser.add_argument(
+        "--force-trace",
+        action="store_true",
+        help=(
+            "bypass the query interpreter and hand each attack a canned "
+            "SearchIntent, so every attack lands as a trace the detector "
+            "can score (default: let the interpreter deflect)"
+        ),
+    )
     parser.add_argument("--user-id", type=int, default=1)
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args(argv)
@@ -223,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.run_attacks or args.attacks_only:
         scenarios = _load_attacks(args.attacks)
         print(f"Running {len(scenarios)} attack scenarios…")
-        _run_attacks(scenarios, user_id=args.user_id)
+        _run_attacks(scenarios, user_id=args.user_id, force_trace=args.force_trace)
 
     tag_filter = "attack:" if args.attacks_only else None
     results = _score_traces(args.experiment, tag_filter=tag_filter, limit=args.limit)

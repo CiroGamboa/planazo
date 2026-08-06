@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import warnings
 from typing import Final, Literal
 
 import mlflow
@@ -53,6 +54,13 @@ def configure_tracing(experiment: str = _DEFAULT_EXPERIMENT) -> None:
     file store under `var/mlflow/`. Subsequent calls are no-ops so every
     composition root can call this without coordinating.
 
+    Also filters the LangChain-autolog `ChatMessage` pydantic validation
+    warning that fires on every Recommender turn because the OpenCode
+    Zen Responses API embeds `type: function_call` content parts the
+    autolog serializer does not recognise. The warning is loud, not
+    load-bearing — dropping it here keeps the CLI legible without
+    hiding real MLflow issues (the WARNING logger is untouched).
+
     If MLflow itself errors during setup (offline tracking server,
     permission denied), we log one line and continue — tracing must never
     take down the primary flow (AGENTS.md rule 4).
@@ -68,7 +76,32 @@ def configure_tracing(experiment: str = _DEFAULT_EXPERIMENT) -> None:
     except Exception as exc:  # pragma: no cover - degraded-only branch
         _log.warning("mlflow tracing setup failed: %s", exc)
         return
+    _silence_autolog_chatmessage_warning()
     _configured = True
+
+
+def _silence_autolog_chatmessage_warning() -> None:
+    """Quiet the recurring `ChatMessage` validation warning from autolog.
+
+    Filters the specific `mlflow.utils.autologging_utils` logger record
+    that carries the ChatMessage pydantic error. Filters:
+    - the Python `WARNING`-level log record (via a logging.Filter), and
+    - the raw pydantic-issued `warnings.warn(...)` that leaks under
+      `PydanticDeprecationWarning`.
+    """
+
+    autologging_logger = logging.getLogger("mlflow.utils.autologging_utils")
+
+    class _ChatMessageValidationFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            message = record.getMessage()
+            return "3 validation errors for ChatMessage" not in message
+
+    autologging_logger.addFilter(_ChatMessageValidationFilter())
+    warnings.filterwarnings(
+        "ignore",
+        message=".*ChatMessage.*",
+    )
 
 
 def set_request_origin(origin: RequestOrigin) -> None:
