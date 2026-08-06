@@ -1,0 +1,33 @@
+# Keep the docker build context small so image rebuilds stay fast.
+#
+# The compose build sends the whole repo root as context to every service's
+# Dockerfile — anything not needed at image build time (state, caches, tests,
+# scratch, secrets) belongs here.
+#
+# `data/` and `docs/` ARE needed in the image (see docker/app.Dockerfile
+# comment) so they are NOT ignored.
+
+.git
+.gitignore
+.venv
+.mypy_cache
+.pytest_cache
+.ruff_cache
+**/__pycache__
+**/*.pyc
+**/*.pyo
+
+# Runtime state — bind-mounted at run time, never baked in.
+var
+scratch
+
+# Never bake secrets into an image layer.
+.env
+
+# Not needed at runtime.
+tests
+.github
+.claude
+LICENSE
+HOMEWORK_DEMO_GUIDE.md
+S6_SUBMISSION_ANA_KARLA.md

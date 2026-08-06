@@ -1,22 +1,95 @@
-# Docker Compose services for Planazo's source adapters.
+# Docker Compose orchestration for the whole Planazo system.
 #
-# Each source runs in its own image so a Meta break (Instagram) does not
-# affect a TikTok / news / Meetup adapter. `data/sources.yaml` is bind-mounted
-# read-only so an operator edits the config on the host and the container
-# picks it up on next run (ADR 0006, decision 3).
+# `docker compose up -d` starts the three long-running processes — the
+# Telegram bot, the scheduler tick loop, and the daily curator loop — with
+# no host-side Python, uv, ffmpeg, or cron. Bind-mounted `./data` (config)
+# and `./var` (SQLite + JSONL logs + memory store) are the whole state
+# footprint; copy those two folders plus `.env` to another machine and the
+# app is portable.
+#
+# Three on-demand services are behind compose profiles so `up` stays focused:
+#   docker compose run --rm agent --user-id 1 "find tech events this weekend"
+#   docker compose run --rm monitor --dry-run
+#   docker compose --profile sources run --rm sources-instagram --url <URL>
+#
+# Every source adapter still ships as its own image so a Meta break on one
+# adapter cannot take down others (ADR 0006). The rest of the system shares
+# a single `planazo-app` image (ADR 0026).
+
+# Shared block for every Planazo-app-image service. YAML anchors mean each
+# service body stays 2–3 lines.
+x-planazo: &planazo
+  image: planazo-app:local
+  build:
+    context: .
+    dockerfile: docker/app.Dockerfile
+  env_file: .env
+  volumes:
+    - ./data:/app/data:ro
+    - ./var:/app/var
+  restart: unless-stopped
 
 services:
+  # ── Always-on services (started by `docker compose up`) ─────────────────
+
+  bot:
+    <<: *planazo
+    command: ["uv", "run", "--no-dev", "python", "-m", "planazo.bot"]
+
+  scheduler:
+    <<: *planazo
+    # In-container shell loop — one line, zero extra deps, matches host-cron
+    # semantics (fail-loud + restart on next tick via `restart:
+    # unless-stopped`). Most ticks no-op on the cadence gate in
+    # data/sources.yaml, matching the README-package.md guidance.
+    environment:
+      PLANAZO_SCHEDULER_INTERVAL_S: "${PLANAZO_SCHEDULER_INTERVAL_S:-900}"
+    command:
+      - /bin/sh
+      - -c
+      - 'set -e; while true; do uv run --no-dev planazo-scheduler --tick; sleep "$$PLANAZO_SCHEDULER_INTERVAL_S"; done'
+
+  curator:
+    <<: *planazo
+    environment:
+      PLANAZO_CURATOR_INTERVAL_S: "${PLANAZO_CURATOR_INTERVAL_S:-86400}"
+    command:
+      - /bin/sh
+      - -c
+      - 'set -e; while true; do uv run --no-dev planazo-curator --tick; sleep "$$PLANAZO_CURATOR_INTERVAL_S"; done'
+
+  # ── On-demand services (opt-in via `docker compose run`) ────────────────
+
+  # `docker compose run --rm agent --user-id 1 "<prompt>"` — one-shot
+  # recommender loop, or omit the prompt for an interactive REPL.
+  agent:
+    <<: *planazo
+    profiles: ["cli"]
+    restart: "no"
+    entrypoint: ["uv", "run", "--no-dev", "planazo-agent"]
+    command: []
+
+  # `docker compose run --rm monitor --dry-run` — LLM-as-judge diagnostic
+  # over recent runs (or seeded canned runs with --dry-run).
+  monitor:
+    <<: *planazo
+    profiles: ["cli"]
+    restart: "no"
+    entrypoint: ["uv", "run", "--no-dev", "planazo-monitor"]
+    command: []
+
+  # ── Source adapters — one image per source (ADR 0006) ──────────────────
+
+  # `docker compose --profile sources run --rm sources-instagram --url <URL>`.
+  # Kept behind a profile so it does not run on `up` — the always-on
+  # scheduler service already handles routine ingestion.
   sources-instagram:
     image: planazo-sources-instagram:local
     build:
       context: .
       dockerfile: docker/sources-instagram.Dockerfile
+    profiles: ["sources"]
     restart: "no"
-    # `docker compose up sources-instagram` prints the resolved fetch plan for
-    # every configured account and exits 0 (no network calls). To fetch one
-    # specific post, use `docker compose run --rm sources-instagram --url <URL>`
-    # — the entrypoint accepts either mode; up ⇒ plan, run --url ⇒ fetch.
-    command: ["--dry-run"]
     environment:
       # Session cookie for logged-in fetch; unset → anonymous mode (ADR 0006,
       # decision 5). Copy the value from a logged-in browser session's
