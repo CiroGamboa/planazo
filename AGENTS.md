@@ -59,18 +59,22 @@ Copy [`.env.example`](.env.example) to `.env` at the repo root — `env_file: .e
 **Native (for source hacking — needs Python 3.12, `uv`, and `ffmpeg` on `PATH`):**
 
 ```
-uv sync                                          # install
-uv run pytest                                    # tests (LLM mocked; live tests are opt-in, see README-package.md)
-uv run ruff check                                # lint
-uv run ruff format                               # format
-uv run mypy src                                  # types
-uv run planazo-agent "<prompt>"                  # run the agent loop once
-uv run planazo-agent                             # interactive REPL
-uv run python -m planazo.bot                     # start the Telegram bot
-uv run planazo-scheduler --tick                  # run one scheduled ingestion tick over data/sources.yaml
-uv run planazo-scheduler --once <URL> --verbose  # single-post demo with step-by-step narrative log (see ADR 0017)
-uv run planazo-curator --tick --dry-run --verbose  # dry-run one curator tick with narrative log (see ADR 0020)
-uv run planazo-curator --tick                    # daily catalog-curator tick — soft-deletes stale events, merges dupes, corrects categories
+uv sync                                              # install
+uv run pytest                                        # tests (LLM mocked; live tests are opt-in, see README-package.md)
+uv run ruff check                                    # lint
+uv run ruff format                                   # format
+uv run mypy src                                      # types
+uv run planazo-agent "<prompt>"                      # run the agent loop once
+uv run planazo-agent                                 # interactive REPL
+uv run python -m planazo.bot                         # start the Telegram bot
+uv run planazo-scheduler --tick                      # one scheduled ingestion tick over data/sources.yaml
+uv run planazo-scheduler --once <URL> --verbose      # single-post demo with step-by-step narrative log (see ADR 0017)
+uv run planazo-curator --tick --dry-run --verbose    # dry-run one curator tick with narrative log (see ADR 0020)
+uv run planazo-curator --tick                        # daily catalog-curator tick — soft-deletes stale events, merges dupes, corrects categories
+uv run planazo-agent-eval --runs 3 --temperature 0.7 # HW4 Part 1 — 36 traces + pass@3 / pass^3 table (ADR 0027)
+uv run python scripts/run_trace_scorers.py           # HW4 Part 2 — scorer feedback attached to each trace
+uv run python scripts/run_safety_batch.py --run-attacks  # HW4 Part 3 — attacks + FP count
+uv run mlflow ui --backend-store-uri file:./var/mlflow --port 5000  # open MLflow UI
 ```
 
 ## Development Workflow

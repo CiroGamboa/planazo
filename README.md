@@ -434,6 +434,35 @@ First run downloads ~160 MB of sentence-transformers weights into
 - Seed corpus: [`data/eval/events_seed.jsonl`](data/eval/events_seed.jsonl), [`generation_prompt.md`](data/eval/generation_prompt.md)
 - Golden cases: [`data/eval/questions.jsonl`](data/eval/questions.jsonl)
 
+## HW4 — Agent evaluation, MLflow tracing, and safety hardening
+
+Three parts, one PR ([ADR 0027](docs/adr/0027-agent-eval-and-tracing.md)):
+
+1. an **agent-evaluation harness** over the Recommender — 12 scenarios × 3 metrics × 3 runs at `temperature=0.7`, reporting both `pass@3` and `pass^3`;
+2. **MLflow tracing** — `mlflow.langchain.autolog()` at every composition root plus two hand-rolled `@mlflow.trace` decorators (`run_once`, `search_events_rag`) that give every invocation a full span tree with model + latency + tags (`request_origin`, `eval_case_id`, `agent_kind`);
+3. a **scorer feedback loop** — the untouched HW3 retrieval + generation scorers plus the Part 1 trajectory metrics run over stored traces via `mlflow.log_feedback`. Zero scorer bodies changed.
+
+Optional Part 3 — a **safety hardening layer**: four attack scenarios (direct injection, indirect injection, tool abuse, cross-user exfiltration) and a `detect_safety_issues(trace)` pure function combining Layer 1 (input filter) and Layer 3 (output filter). Layer 2 (structural separation, [ADR 0004](docs/adr/0004-three-store-memory-model.md) + AGENTS.md rule 2) and Layer 4 (capability constraints, [ADR 0002](docs/adr/0002-event-tool-contracts-and-approval-gate.md) + [ADR 0004](docs/adr/0004-three-store-memory-model.md)) are cited, not re-implemented.
+
+### Reproduce
+
+```bash
+uv run planazo-agent-eval --runs 3 --temperature 0.7       # Part 1 — 36 traces + pass@3 / pass^3 table
+uv run python scripts/run_trace_scorers.py                  # Part 2 — scorer feedback attached to each trace
+uv run python scripts/run_safety_batch.py --run-attacks     # Part 3 — attacks + FP count on legitimate scenarios
+uv run mlflow ui --backend-store-uri file:./var/mlflow      # Open the trace tree at http://localhost:5000
+```
+
+### Artifacts
+
+- Full report: [`HW4_SUBMISSION.md`](HW4_SUBMISSION.md)
+- Decision: [ADR 0027 — Agent evaluation and MLflow tracing](docs/adr/0027-agent-eval-and-tracing.md)
+- Scenarios: [`data/eval/agent_scenarios.jsonl`](data/eval/agent_scenarios.jsonl)
+- Attack scenarios: [`data/eval/attack_scenarios.jsonl`](data/eval/attack_scenarios.jsonl)
+- Eval results: [`data/eval/results/agent_eval.md`](data/eval/results/agent_eval.md), [`agent_eval_per_case.jsonl`](data/eval/results/agent_eval_per_case.jsonl)
+- Safety results: [`data/eval/results/safety_batch.md`](data/eval/results/safety_batch.md), [`safety_findings.jsonl`](data/eval/results/safety_findings.jsonl)
+- Tracing store: `var/mlflow/` (bind-mounted through Docker per [ADR 0026](docs/adr/0026-docker-orchestration.md); inspectable with the MLflow UI)
+
 ## Working on the project
 
 - **Rulebook:** [`AGENTS.md`](AGENTS.md) — read this first.
