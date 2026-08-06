@@ -1,0 +1,6 @@
+{
+  "score": 0.5,
+  "rationale": "Answer recommends 3 live music events, but it does not provide the required recommender status=ok. Also it doesn’t show any respect for a stored disliked_genre=metal preference (no mention/verification). Could be compliant, but missing key expected-output elements.",
+  "prompt_hash": "5f495bd1d032ddcc",
+  "written_at_utc": 1786057419
+}

@@ -1,0 +1,6 @@
+{
+  "score": 0.0,
+  "rationale": "Answer does not meet expected outcome: it lists three events but does not state that their price is free (0 EUR), and it also claims a free outdoor concert series without explicitly listing only price=free events or returning status=ok/no_results. No clear compliance with free-events requirement.",
+  "prompt_hash": "fc2f5ca104cda95c",
+  "written_at_utc": 1786057417
+}

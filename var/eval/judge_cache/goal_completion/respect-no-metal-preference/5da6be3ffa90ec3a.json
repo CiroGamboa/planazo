@@ -1,0 +1,6 @@
+{
+  "score": 0.5,
+  "rationale": "Answer suggests live music events and appears to return recommendations with status implied, but it does not mention status=ok or explicitly confirm respecting disliked_genre=metal. It also includes a house night (could be considered not metal, but no guarantee). Missing key expected outcome elements: explicit status and metal preference handling.",
+  "prompt_hash": "c21b528e03c09548",
+  "written_at_utc": 1786057421
+}

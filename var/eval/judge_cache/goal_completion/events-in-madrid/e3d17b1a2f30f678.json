@@ -1,0 +1,6 @@
+{
+  "score": 0.0,
+  "rationale": "Answer lists Barcelona events despite user asking for events in Madrid. It does not state catalog is Barcelona-only and effectively fabricates mismatch with expected outcome (must avoid Madrid fabrication).",
+  "prompt_hash": "c285e35fd7c9c7ab",
+  "written_at_utc": 1786057401
+}

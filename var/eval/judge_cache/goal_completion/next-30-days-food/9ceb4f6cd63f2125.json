@@ -1,0 +1,6 @@
+{
+  "score": 0.2,
+  "rationale": "Mentions events related to music, not food/drink/tasting/market. Does not provide food events over next 30 days, instead suggests concerts this weekend in Barcelona. Only tangentially related (none to expected outcome).",
+  "prompt_hash": "0a0c4025fe737cc2",
+  "written_at_utc": 1786057375
+}

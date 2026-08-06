@@ -1,0 +1,6 @@
+{
+  "score": 0.5,
+  "rationale": "Answer lists live music events (Barcelona) and avoids metal, but it does not provide the required status=ok from the recommender and does not confirm respecting a stored disliked_genre=metal preference. Meets some outcome elements but misses key expected fields/verification.",
+  "prompt_hash": "c044929d31e530b3",
+  "written_at_utc": 1786057423
+}

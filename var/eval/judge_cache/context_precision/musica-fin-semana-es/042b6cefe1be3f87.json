@@ -1,0 +1,6 @@
+{
+  "score": 0.67,
+  "rationale": "Query asks for music over the weekend in Barcelona. All 3 chunks are music events in Barcelona (Sala Apolo, Parc de la Ciutadella, Palau de la Musica) scheduled in August dates that could fall on weekends. No clear off-topic noise, but uncertainty about which dates are that specific weekend.",
+  "prompt_hash": "7fa27e36b5ea7142",
+  "written_at_utc": 1786057437
+}

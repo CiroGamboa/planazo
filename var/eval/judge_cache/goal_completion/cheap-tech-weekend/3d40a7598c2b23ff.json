@@ -1,0 +1,6 @@
+{
+  "score": 0.5,
+  "rationale": "Mentions free-to-low-cost events in Barcelona, which matches the price/location requirement. However, it doesn’t clearly name specific tech events (e.g., meetup/workshop) or give enough concrete details to verify “tech events,” and lacks an explicit status=ok output. Ambiguous vs expected.",
+  "prompt_hash": "8ce0f11d4e463586",
+  "written_at_utc": 1786057451
+}

@@ -1,0 +1,6 @@
+{
+  "score": 0.0,
+  "rationale": "Answer invents specific events (venues and event types) despite no prior event list being available or any clarifying question. It does not ask a clarifying question nor state it lacks access; it fabricates details.",
+  "prompt_hash": "982ca2758983ef8f",
+  "written_at_utc": 1786057395
+}

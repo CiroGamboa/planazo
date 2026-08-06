@@ -1,0 +1,6 @@
+{
+  "score": 0.5,
+  "rationale": "Answer says a trusted location is required before applying radius and no request was made. This aligns with the idea of preflight abort, but it does not explicitly return status=error with error_type=missing_search_origin, nor does it explicitly ignore the radius and provide events. Ambiguous between acceptable branches.",
+  "prompt_hash": "5a25d700249036c9",
+  "written_at_utc": 1786057410
+}
