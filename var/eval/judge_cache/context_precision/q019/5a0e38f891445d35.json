@@ -1,0 +1,6 @@
+{
+  "score": 0.0,
+  "rationale": "Query is for opera in Milan tomorrow. All chunks are unrelated: an opera gala in Barcelona (not Milan, not tomorrow), and other non-opera events in Barcelona/other categories. None match location (Milan) or timeframe (tomorrow) for opera.",
+  "prompt_hash": "ebe2aab355a86dfe",
+  "written_at_utc": 1785876005
+}

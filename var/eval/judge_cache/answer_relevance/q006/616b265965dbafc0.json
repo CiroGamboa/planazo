@@ -1,0 +1,6 @@
+{
+  "score": 0.0,
+  "rationale": "The query is just 'OBC concert' with no specified time or location. The answer lists multiple concerts and events, mostly unrelated to a specific OBC concert (only one mentions OBC and several are improv/chamber/comedy). It doesn’t directly answer with a single, specific OBC concert.",
+  "prompt_hash": "27cc6c9c737674d9",
+  "written_at_utc": 1785875750
+}

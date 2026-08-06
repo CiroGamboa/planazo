@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "All listed events and details (names, types/descriptions, venues, dates/times, and locations) match the retrieved chunks exactly: Flamenco at Palau Dalmases (chunk1), free walking tour meet at cathedral steps (chunk2), nuevo flamenco at Jamboree (chunk3), ghost tour ending at midnight (chunk4), folk night at Antic Teatre (chunk5).",
+  "prompt_hash": "5420bcabcb4d151f",
+  "written_at_utc": 1785875691
+}

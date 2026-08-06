@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "Query asks for a techno night at Sala Apolo. Chunk [1] exactly matches (Techno all-nighter at Sala Apolo). Other chunks are different venues/genres, but they don’t affect the needed matching set? Actually only [1] is relevant; others are off-topic—so relevant fraction is 1/5 = 0.2.",
+  "prompt_hash": "563c7b32732ad6e0",
+  "written_at_utc": 1785875708
+}

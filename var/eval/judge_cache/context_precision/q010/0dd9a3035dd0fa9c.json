@@ -1,0 +1,6 @@
+{
+  "score": 0.6,
+  "rationale": "Query: “cheap flamenco”. Chunks 1 and 2 are directly flamenco-related (though prices are high). Chunk 3–5 are salsa/indie/electronic/rumba, not flamenco. So 2 of 5 are relevant → 0.4; but both are plausible for answering cheap/flamenco options, giving slight credit → 0.6.",
+  "prompt_hash": "d67cc91976972a21",
+  "written_at_utc": 1785875964
+}

@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "All five listed events (names, descriptions, venues, and ISO times) are exactly supported by retrieved chunks [1]-[5]. No additional or altered details beyond what the chunks state.",
+  "prompt_hash": "1ed246fa67b31628",
+  "written_at_utc": 1785875934
+}

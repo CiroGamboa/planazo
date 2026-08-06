@@ -1,0 +1,6 @@
+{
+  "score": 0.6,
+  "rationale": "Query is \"MACBA opening\". Chunks 1,3 are clearly MACBA openings/talks related to contemporary photography at MACBA. Chunk 2 is a MACBA workshop (not an opening). Chunk 4 is also at MACBA but a ceramics class (not an opening). Chunk 5 is a different venue (Palau Robert). 2/5 clearly relevant to the idea; about 3/5 loosely related => ~0.6.",
+  "prompt_hash": "77cbda173ddbbdf6",
+  "written_at_utc": 1785875772
+}

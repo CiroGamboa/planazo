@@ -1,0 +1,6 @@
+{
+  "score": 0.4,
+  "rationale": "Query: concerts at Sala Apolo the same night. Chunks [1] and [2] are concerts at Sala Apolo on 2026-08-08 (same night). [3]-[5] are other venues/dates, so irrelevant. 2/5 relevant ≈0.4.",
+  "prompt_hash": "0f0133682699b4d9",
+  "written_at_utc": 1785875849
+}

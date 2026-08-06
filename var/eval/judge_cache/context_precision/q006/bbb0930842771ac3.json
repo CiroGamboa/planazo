@@ -1,0 +1,6 @@
+{
+  "score": 0.2,
+  "rationale": "Only chunk [1] clearly matches the query “OBC concert” (OBC orchestra at Palau de la Musica). Chunks [2]-[5] are other unrelated concerts/events (free acoustic, DJs/FIB, rumba, film festival). Thus ~1 of 5 are relevant.",
+  "prompt_hash": "9e12982920ebd699",
+  "written_at_utc": 1785875939
+}

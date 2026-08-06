@@ -1,0 +1,6 @@
+{
+  "score": 0.15,
+  "rationale": "The query is \"MACBA opening\" but the answer lists multiple unrelated events (workshops, talks, a Palau Robert opening, various dates) without clearly identifying the specific MACBA opening the user asked for. Some items are about openings at MACBA, but the response is broad and unfocused.",
+  "prompt_hash": "a1204383298ba7e4",
+  "written_at_utc": 1785875770
+}

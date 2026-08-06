@@ -1,0 +1,6 @@
+{
+  "score": 0.6,
+  "rationale": "Query is vague (“budget jazz night”), but chunks 1-4 are jazz events with explicit prices/budget-friendly cues (1 pricey but still jazz night/brunch; 2 budget-friendly; 3/4 jazz). Chunk 5 is reggaeton, not jazz. So 4 of 5 are relevant ≈0.8; but 1 is brunch-family not clearly “night budget,” so reduce to ~0.6.",
+  "prompt_hash": "fac180685d634fbe",
+  "written_at_utc": 1785875972
+}

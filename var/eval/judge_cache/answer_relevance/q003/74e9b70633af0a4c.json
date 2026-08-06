@@ -1,0 +1,6 @@
+{
+  "score": 0.55,
+  "rationale": "The query “startup pitch night” is specifically about that event, but the answer lists several different startup-related events (pitch night plus dinners, open house, meetup, hackathon) without clearly focusing on a single pitch night matching the request details. Tangentially relevant but not directly addressing the specific ask.",
+  "prompt_hash": "2d691ea8916a2c65",
+  "written_at_utc": 1785875717
+}

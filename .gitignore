@@ -18,7 +18,13 @@ lib/
 lib64/
 parts/
 sdist/
-var/
+# `var/` is Planazo's runtime state root — sqlite dbs and jsonl audit
+# logs land here at wall-clock time. Ignore every file at the top level
+# and every subdirectory except `var/eval/`, whose judge-cache tree ships
+# alongside the eval results so a rerun of the generation harness is
+# reproducible from a fresh checkout without an OpenCode key.
+var/*
+!var/eval/
 wheels/
 share/python-wheels/
 *.egg-info/

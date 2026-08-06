@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "All listed events, descriptions, venues, and times/prices match the corresponding retrieved chunks [1]-[5] with no additional unsupported details.",
+  "prompt_hash": "8069070fc13f13ec",
+  "written_at_utc": 1785875976
+}

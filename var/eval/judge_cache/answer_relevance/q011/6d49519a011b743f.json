@@ -1,0 +1,6 @@
+{
+  "score": 0.6,
+  "rationale": "The query is just “budget jazz night” but the answer lists multiple jazz-related events with times/venues and mentions “budget-friendly” for one. It’s on-topic (jazz nights) but doesn’t clearly target a specific budget constraint or “night” consistently (includes brunch) and lacks a direct budget-focused recommendation.",
+  "prompt_hash": "07336a95566bbd71",
+  "written_at_utc": 1785875970
+}

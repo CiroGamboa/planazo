@@ -1,0 +1,6 @@
+{
+  "score": 0.8,
+  "rationale": "Query: \"budget jazz night\". Chunks [1] bebop night at Jamboree (jazz, budget-friendly) fits well. [2] jazz brunch is jazz and could be budget-focused. [3] jazz jam is jazz but not explicitly budget. [4] Cuban son isn’t jazz. [5] reggaeton club night isn’t jazz. 3 of 5 mostly relevant => 0.6-0.8; give 0.8 since 1 clearly matches and 2-3 are jazz nights.",
+  "prompt_hash": "8928f31d8ca73898",
+  "written_at_utc": 1785875811
+}

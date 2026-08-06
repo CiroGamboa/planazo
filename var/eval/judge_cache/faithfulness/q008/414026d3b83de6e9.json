@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "All listed events, descriptions, venues, and times in the answer are directly supported by the corresponding retrieved chunks [1]-[5]. No contradictory or additional ungrounded details beyond the chunks.",
+  "prompt_hash": "04aae1bc164b1243",
+  "written_at_utc": 1785875768
+}

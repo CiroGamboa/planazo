@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "All five event listings (names, descriptions, venues, dates/times) match the retrieved chunks exactly. No extra or conflicting details are added beyond what’s in the chunks.",
+  "prompt_hash": "00573ee91122afa4",
+  "written_at_utc": 1785875855
+}

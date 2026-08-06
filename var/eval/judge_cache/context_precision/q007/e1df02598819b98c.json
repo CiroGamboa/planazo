@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "All chunks are event listings and the only query term “FIB pre-party” matches chunk 1 exactly (“FIB pre-party at Nitsa”). The remaining chunks are other pre-party/nightlife events but not clearly relevant; however the set contains at least one exact match and most appear to be festival pre-party style nightlife listings.",
+  "prompt_hash": "de15fcbe12f59b7f",
+  "written_at_utc": 1785875948
+}

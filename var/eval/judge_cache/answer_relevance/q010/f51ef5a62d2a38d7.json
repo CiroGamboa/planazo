@@ -1,0 +1,6 @@
+{
+  "score": 0.6,
+  "rationale": "The query \"cheap flamenco\" asks for low-cost flamenco options. The answer includes several flamenco-related listings (notably two flamenco shows), but it also adds non-flamenco events (salsa, film, reggaeton), and provides specific dates/venues without clearly focusing on cheapest options. Partially addresses the intent but is diluted.",
+  "prompt_hash": "db2f7640bf4cfbc7",
+  "written_at_utc": 1785875793
+}

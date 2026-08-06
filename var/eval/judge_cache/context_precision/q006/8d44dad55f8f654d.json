@@ -1,0 +1,6 @@
+{
+  "score": 0.2,
+  "rationale": "Query is just \"OBC concert\". Chunk 1 explicitly matches an OBC (or OBC-branded) concert. Chunks 2-5 are other events (improv, chamber music, open-air concert, comedy) not clearly OBC concerts, so only 1 of 5 is relevant.",
+  "prompt_hash": "7d66b410c19914b4",
+  "written_at_utc": 1785875753
+}

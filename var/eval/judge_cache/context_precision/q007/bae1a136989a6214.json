@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "Chunk [1] explicitly matches “FIB pre-party”. The other chunks are different events (K-pop party, startup pitch, basketball game, bebop night) and thus would be noise, but since the query likely expects only the FIB pre-party item, [1] is the relevant hit.",
+  "prompt_hash": "6120dbec7468d27f",
+  "written_at_utc": 1785875762
+}

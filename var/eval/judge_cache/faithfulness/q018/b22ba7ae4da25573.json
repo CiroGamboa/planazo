@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "All five listed events (names, activities, free status, locations, and times) match the retrieved chunks exactly. Basketball venue is Camp Nou in chunk 3; yoga and pilates are in Parc de la Ciutadella with correct times; prices/amenities align where provided.",
+  "prompt_hash": "c197a3bac3336cc5",
+  "written_at_utc": 1785875994
+}

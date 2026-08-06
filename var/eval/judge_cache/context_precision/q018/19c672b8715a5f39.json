@@ -1,0 +1,6 @@
+{
+  "score": 0.6,
+  "rationale": "Query asks for free outdoor sports. Chunks [1]-[4] are clearly free and outdoor sports/fitness (running, basketball pickup, yoga). Chunk [5] is outdoor pilates but lists price 800, not free, so it’s not relevant. 4 of 5 ≈ 0.8, but since #5 conflicts with “free,” overall estimate slightly lower at 0.6.",
+  "prompt_hash": "d2a17abd16e92c9b",
+  "written_at_utc": 1785875997
+}

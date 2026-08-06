@@ -169,17 +169,20 @@ def search_events(
     title_contains: str = "",
     budget_cents_max: int = -1,
     max_results: int = 20,
+    query: str = "",
 ) -> dict[str, object]:
-    """Search the shared event store for events matching the given filters.
+    """Search Planazo events over the shared event store.
 
-    Call this to find events that are already stored, for example to answer
-    "what tech events are on in Barcelona this week": pass `category` and/or
-    `city` to narrow by those fields and an ISO-8601 `start_after` to exclude
-    anything starting earlier. An empty string means "no filter on that
-    field", so calling this with no arguments returns the earliest
-    `max_results` events. An empty `events` list means nothing stored matches,
-    not that the search failed. Do NOT call this to save an event (it has no
-    write behaviour).
+    Provide `query` for semantic search over event details (title,
+    description, venue, tags, category, time, price) — hybrid dense + BM25
+    retrieval with cross-encoder reranking, per ADR 0025 — and optionally
+    narrow with hard filters (`category`, `city`, ISO-8601 `start_after`,
+    `venue_name`, `tag`, `title_contains`, `budget_cents_max`). Hard
+    filters gate the candidate set first, then `query` ranks within it.
+    An empty `query` falls back to today's SQL-only behavior — the earliest
+    `max_results` matching events. An empty `events` list means nothing
+    stored matches, not that the search failed. Do NOT call this to save
+    an event (it has no write behaviour).
 
     Extra filters (all optional; sentinel = no filter):
     - `venue_name` — exact match on the venue name (empty = no filter).
@@ -189,6 +192,8 @@ def search_events(
       `title` (empty = no filter).
     - `budget_cents_max` — upper bound on `price_cents` (inclusive); pass
       `-1` for no filter, `0` to search free events only.
+    - `query` — natural-language question ranked by RAG over the events
+      themselves; empty means "no semantic ranking".
     """
     parsed_start_after: datetime | None = None
     if start_after:
@@ -240,5 +245,12 @@ def search_events(
             return {"error_type": "search_store_unavailable", "message": type(exc).__name__}
     finally:
         conn.close()
+
+    if query.strip():
+        # Import locally so the retrieval-stack dependency (sentence-transformers,
+        # torch, rank-bm25) is only paid when a caller asks for semantic ranking.
+        from planazo.catalog.rag import search_events_rag
+
+        found = search_events_rag(found, query, rerank=True, k=max_results)
 
     return {"events": [event.model_dump(mode="json") for event in found], "total": len(found)}

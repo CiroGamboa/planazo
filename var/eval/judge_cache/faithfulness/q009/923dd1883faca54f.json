@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "All listed events (names, descriptions, venues, and exact timestamps) match the retrieved chunks: [1]-[5] fully support every factual claim in the answer. No extra or contradictory details appear.",
+  "prompt_hash": "3d5fa79d5f2e2889",
+  "written_at_utc": 1785875781
+}

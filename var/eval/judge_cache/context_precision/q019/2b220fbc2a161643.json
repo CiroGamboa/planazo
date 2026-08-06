@@ -1,0 +1,6 @@
+{
+  "score": 0.25,
+  "rationale": "Query: opera in Milan tomorrow. Retrieved chunks are mostly unrelated: 2 are opera but in Barcelona (Palau de la Musica) with dates Aug 10/19, not Milan/tomorrow. Remaining 3 are film nights in Barcelona. Only chunk [1] is plausibly opera, but wrong city/date, so overall ~1/4 relevant.",
+  "prompt_hash": "e6ec90393c3dbda9",
+  "written_at_utc": 1785875903
+}

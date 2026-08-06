@@ -548,22 +548,28 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
         city: str = "",
         start_after: str = "",
         max_results: int = intent.limit if intent.limit is not None else 20,
+        query: str = "",
     ) -> dict[str, object]:
         """Search the shared event store — Recommender's read-only tool.
 
-        Bounded projection of `catalog.tools.search_events`: exposes only the
-        four filters the Recommender's LLM currently reasons about. Pass
+        Bounded projection of `catalog.tools.search_events`: exposes the
+        four hard filters plus one natural-language `query`. Pass
         `category` (one of the `EventCategory` Literals), `city`, an
-        ISO-8601 `start_after` timestamp, and a `max_results` cap. The
-        default follows the validated intent's user-stated count when one
-        was given, so a query like "give me 3 events" fetches around 3
-        rather than the Recommender's own unbounded-search default of 20.
+        ISO-8601 `start_after` timestamp, a `max_results` cap, and — for
+        semantic search over event title/description/venue/tags — a
+        free-text `query`. The default `max_results` follows the validated
+        intent's user-stated count when one was given, so a query like
+        "give me 3 events" fetches around 3 rather than the Recommender's
+        own unbounded-search default of 20. An empty `query` skips
+        semantic ranking and falls back to today's earliest-first
+        SQL-filtered order (ADR 0025).
         """
         return catalog_search_events(
             category=category,
             city=city,
             start_after=start_after,
             max_results=max_results,
+            query=query,
         )
 
     registry: dict[str, Callable[..., dict[str, object]]] = {"search_events": search_events}

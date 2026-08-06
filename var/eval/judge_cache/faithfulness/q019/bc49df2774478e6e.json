@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "All five listed events (names, venues, dates/times, and described programs) are directly supported by retrieved chunks [1]-[5] with no extra unstated facts.",
+  "prompt_hash": "52ebdc5e6504ec2a",
+  "written_at_utc": 1785875899
+}

@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "All listed events (Opera gala, Guitar recital, Chamber music, Ghost tour, Modernista walk) with their venues, descriptions, and exact dates/times are directly supported by retrieved chunks [1]-[5]. No extra unverifiable details beyond what chunks state.",
+  "prompt_hash": "85fffcfb63599bc6",
+  "written_at_utc": 1785876002
+}

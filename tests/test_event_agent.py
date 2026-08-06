@@ -306,6 +306,30 @@ def test_run_once_tool_set_matches_adr_0021_shrink(
     assert "dispatch_extraction" not in names
 
 
+def test_recommender_search_events_closure_accepts_query_kwarg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0025: the Recommender-registered `search_events` accepts `query`.
+
+    The tool name is preserved (still `search_events`, not `search_events_rag`)
+    so no LLM-visible rename lands; the new kwarg is what surfaces the
+    RAG path to the model.
+    """
+    import inspect
+
+    captured_registry: dict[str, Any] = {}
+
+    def capture(**kwargs: Any) -> LoopResult:
+        captured_registry.update(kwargs["registry"])
+        return _answered()
+
+    monkeypatch.setattr(event_agent, "_run_recommender_graph", capture)
+    event_agent.run_once(7, _intent(), record_runs=False)
+
+    tool = captured_registry["search_events"]
+    assert "query" in inspect.signature(tool).parameters
+
+
 def test_ask_user_keeps_the_first_valid_question_and_returns_typed_later_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

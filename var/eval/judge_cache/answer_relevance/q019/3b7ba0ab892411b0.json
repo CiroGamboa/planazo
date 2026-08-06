@@ -1,0 +1,6 @@
+{
+  "score": 0.0,
+  "rationale": "Query asks for opera in Milan tomorrow. The answer lists unrelated events mostly in Barcelona/Catalunya, and none are opera in Milan tomorrow. Wrong location and likely wrong date.",
+  "prompt_hash": "3525779c422ba589",
+  "written_at_utc": 1785875901
+}
