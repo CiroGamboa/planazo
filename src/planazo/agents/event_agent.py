@@ -33,6 +33,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
+import mlflow
 from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, SecretStr, TypeAdapter, ValidationError, model_validator
@@ -321,8 +322,19 @@ def _filter_candidates(events: tuple[Event, ...], intent: SearchIntent) -> tuple
     return radius_filtered.events[:cap]
 
 
-def _build_recommender_chat_model(model: str, max_output_tokens: int | None) -> ChatOpenAI:
-    """Create the Recommender's Responses-compatible LangChain model client."""
+def _build_recommender_chat_model(
+    model: str,
+    max_output_tokens: int | None,
+    *,
+    temperature: float | None = None,
+) -> ChatOpenAI:
+    """Create the Recommender's Responses-compatible LangChain model client.
+
+    The optional ``temperature`` kwarg is a boundary knob for the HW4 agent
+    eval harness — it needs to sweep temperature above 0 to observe
+    across-run variance for its ``pass@3`` / ``pass^3`` reliability
+    signal. When ``None`` the chat model uses the provider's default.
+    """
 
     api_key = os.environ.get("OPENCODE_API_KEY")
     if not api_key:
@@ -333,7 +345,10 @@ def _build_recommender_chat_model(model: str, max_output_tokens: int | None) -> 
         base_url=BASE_URL,
         use_responses_api=True,
     )
-    return chat_model.model_copy(update={"max_tokens": max_output_tokens})
+    updates: dict[str, Any] = {"max_tokens": max_output_tokens}
+    if temperature is not None:
+        updates["temperature"] = temperature
+    return chat_model.model_copy(update=updates)
 
 
 def _instrument_recommender_tools(
@@ -398,6 +413,7 @@ def _run_recommender_graph(
     system: str | None,
     thread_id: str,
     checkpoint_path: str | Path | None,
+    temperature: float | None = None,
 ) -> LoopResult:
     """Run one Recommender turn through the typed LangGraph runtime."""
 
@@ -425,7 +441,7 @@ def _run_recommender_graph(
     )
     with open_recommender_checkpointer(checkpoint_path) as checkpointer:
         graph = build_recommender_graph(
-            _build_recommender_chat_model(model, max_output_tokens),
+            _build_recommender_chat_model(model, max_output_tokens, temperature=temperature),
             tools,
             checkpointer=checkpointer,
             on_model_step=observe_model_step,
@@ -444,6 +460,32 @@ def _run_recommender_graph(
     )
 
 
+def _tag_current_trace(run_context: Mapping[str, Any]) -> None:
+    """Push trace tags declared by the caller onto the current MLflow trace.
+
+    Kept as a helper (rather than inlined into `run_once`) so the surface
+    stays visible next to the decorator and so unit tests can call it
+    directly. Reads three optional keys from `run_context`:
+    `request_origin`, `eval_case_id`. `agent_kind` is always
+    `"recommender"` for this composition root.
+    """
+
+    from planazo.observability.tracing import (
+        set_agent_kind,
+        set_eval_case_id,
+        set_request_origin,
+    )
+
+    set_agent_kind("recommender")
+    origin = run_context.get("request_origin")
+    if origin in ("bot", "cli", "eval", "batch"):
+        set_request_origin(origin)  # type: ignore[arg-type]
+    eval_case_id = run_context.get("eval_case_id")
+    if isinstance(eval_case_id, str) and eval_case_id:
+        set_eval_case_id(eval_case_id)
+
+
+@mlflow.trace(name="recommender.run_once", span_type="AGENT")
 def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> RecommenderResult:
     """Run one observe -> reason -> act -> verify pass for `user_message`.
 
@@ -512,6 +554,12 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
       to the ignored `data/langgraph/recommender-checkpoints.sqlite3`, never the
       Planazo domain database.
     """
+    # Trace tags — set as soon as this call's trace becomes the current one.
+    # Request origin + eval case id come from run_context so the CLI, bot, and
+    # eval harness can each identify themselves without importing mlflow here
+    # or mutating a module-level global.
+    _tag_current_trace(run_context)
+
     # An active radius's trust boundary is evaluated before all other reads.
     if intent.radius_km is not None and intent.origin is None:
         return _preflight_error("missing_search_origin")
@@ -649,6 +697,7 @@ def run_once(user_id: int, intent: SearchIntent, **run_context: Any) -> Recommen
         system=system_text or None,
         thread_id=thread_id,
         checkpoint_path=run_context.get("checkpoint_path"),
+        temperature=run_context.get("temperature"),
     )
     ended_at = datetime.now(UTC)
     if logger is not None:
