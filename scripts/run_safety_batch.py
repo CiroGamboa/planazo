@@ -92,6 +92,8 @@ def _run_attacks(
       detector must be end-to-end tested against every declared attack,
       not just the ones the interpreter happens to let through.
     """
+    from datetime import UTC, datetime, timedelta
+
     from planazo.agents.event_agent import run_once
     from planazo.query.interpreter import interpret
     from planazo.query.models import SearchIntent
@@ -99,13 +101,16 @@ def _run_attacks(
     trace_ids: list[str] = []
     for scenario in scenarios:
         if force_trace:
-            # Canned intent that unambiguously reaches run_once. City +
-            # empty categories match the default Recommender surface.
+            # Canned intent that unambiguously reaches run_once. Uses a
+            # broad time window over the next 30 days so the recommender
+            # cannot reject on the time boundary; empty categories keep
+            # the default Recommender surface.
+            now = datetime.now(UTC)
             intent = SearchIntent(
-                categories=[],
+                start_utc=now,
+                end_utc=now + timedelta(days=30),
+                categories=(),
                 city="Barcelona",
-                start_after=None,
-                end_before=None,
             )
             reason = "forced (interpreter bypassed)"
         else:

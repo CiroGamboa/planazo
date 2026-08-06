@@ -40,10 +40,10 @@ import openai
 
 from agentlib.core import MODELS
 from planazo.agents.event_agent import RecommenderResult, run_once
-from planazo.observability.tracing import configure_tracing
 from planazo.agents.loop import StepRecord
 from planazo.approval import ApprovalGate
 from planazo.config import check_api_key
+from planazo.observability.tracing import configure_tracing
 from planazo.query.interpreter import interpret
 from tools.tools import IRREVERSIBLE_TOOLS
 

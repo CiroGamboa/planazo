@@ -11,7 +11,6 @@ import pytest
 
 from planazo.eval.agent.models import RunResult, ScenarioResult, ToolCall
 
-
 # ---------------------------------------------------------------------------
 # ToolCall.args_contains
 # ---------------------------------------------------------------------------

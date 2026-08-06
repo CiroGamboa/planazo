@@ -35,21 +35,61 @@ if TYPE_CHECKING:
 # of patterns need boundaries (so "assistant" as part of a legitimate
 # word does not trip). Kept intentionally short — false positives are the
 # more common failure mode than false negatives at this scale.
-_INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(
-        r"(ignore|disregard|forget) (?:all |the |any )?"
-        r"(previous|prior|above|preceding) (instructions?|prompts?|rules?)",
-        re.I,
+_INJECTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"(ignore|disregard|forget) (?:all |the |any )?"
+            r"(previous|prior|above|preceding) (instructions?|prompts?|rules?)",
+            re.I,
+        ),
+        "prompt_injection",
     ),
-    re.compile(
-        r"(reveal|print|show|dump) (?:your |the )?system (prompt|message|instructions?)",
-        re.I,
+    (
+        re.compile(
+            r"(reveal|print|show|dump) (?:your |the )?system (prompt|message|instructions?)",
+            re.I,
+        ),
+        "prompt_injection",
     ),
-    re.compile(r"you are now (?:a |an )?[a-z]+", re.I),
-    re.compile(r"pretend (you are|to be)", re.I),
-    re.compile(r"forget (everything|all|your)", re.I),
-    re.compile(r"^system[:>]", re.I | re.M),
-    re.compile(r"</?system>", re.I),
+    (re.compile(r"you are now (?:a |an )?[a-z]+", re.I), "prompt_injection"),
+    (re.compile(r"pretend (you are|to be)", re.I), "prompt_injection"),
+    (re.compile(r"forget (everything|all|your)", re.I), "prompt_injection"),
+    (re.compile(r"^system[:>]", re.I | re.M), "prompt_injection"),
+    (re.compile(r"</?system>", re.I), "prompt_injection"),
+    # Tool abuse — asking the agent to invoke a specific tool with a
+    # supplied argument. `ask_user` in particular can proxy the user
+    # through a leading question so any explicit invocation attempt
+    # from user input is suspect.
+    (
+        re.compile(
+            r"\bcall\s+(?:ask_user|save_memory|save_event_candidate|"
+            r"confirm_and_create_calendar_event|retrieve_memory|search_events)\b",
+            re.I,
+        ),
+        "tool_abuse",
+    ),
+    (re.compile(r"\buse (the )?(ask_user|save_memory)\b (?:tool )?with", re.I), "tool_abuse"),
+    # Data exfiltration — attempts to read another user's data or dump
+    # everything stored for a specific user id.
+    (
+        re.compile(
+            r"(print|reveal|show|dump|list)\s+(?:everything|all|the)\s+"
+            r"(?:that\s+)?user\s+\d+",
+            re.I,
+        ),
+        "data_exfiltration",
+    ),
+    (
+        re.compile(
+            r"(?:what|show|read).*(?:stored|memory|memories)\s+(?:in|of|for)\s+user\s+\d+",
+            re.I,
+        ),
+        "data_exfiltration",
+    ),
+    (
+        re.compile(r"\bfor another user\b|\banother user's\b", re.I),
+        "data_exfiltration",
+    ),
 )
 
 
@@ -68,19 +108,21 @@ def detect_input_injection(text: str) -> SafetyFinding | None:
 
     Returns `None` when nothing is flagged. Returns the first matching
     pattern otherwise (bounded evidence, so a long payload does not blow
-    up downstream JSONL).
+    up downstream JSONL). Covers three attack shapes: prompt injection
+    (overt instruction override), tool abuse (leading tool invocation),
+    and data exfiltration (cross-user read attempts).
     """
     if not text:
         return None
-    for pattern in _INJECTION_PATTERNS:
+    for pattern, kind in _INJECTION_PATTERNS:
         match = pattern.search(text)
         if match:
             evidence = text[max(0, match.start() - 20) : match.end() + 20]
             return SafetyFinding(
                 layer="input_filter",
-                kind="prompt_injection",
+                kind=kind,  # type: ignore[arg-type]
                 evidence=_truncate(evidence),
-                rationale=f"matched pattern {pattern.pattern!r}",
+                rationale=f"matched {kind} pattern {pattern.pattern!r}",
             )
     return None
 
