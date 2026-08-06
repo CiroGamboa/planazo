@@ -40,7 +40,23 @@ The system is agentic in the strict sense: **observe → reason → act → veri
 
 ## Setup & Commands
 
-The agent runtime lives under `src/planazo/` — see [`README-package.md`](README-package.md) for the full picture. Extraction requires an `ffmpeg` binary on `PATH` (macOS: `brew install ffmpeg`; Linux: `apt-get install ffmpeg`) — the Extractor materializes reel frames on the host that runs `planazo-agent`. From the repo root:
+The agent runtime lives under `src/planazo/` — see [`README-package.md`](README-package.md) for the full picture. Docker is the canonical run shape (ADR 0026); native `uv run …` still works when you are hacking on the source.
+
+**Docker (recommended — no host Python, uv, ffmpeg, or cron required):**
+
+```
+docker compose up -d                                                    # bot + scheduler + curator, all long-running
+docker compose logs -f bot                                              # tail the Telegram bot
+docker compose run --rm agent --user-id 1 "<prompt>"                    # one-shot recommender
+docker compose run --rm agent --user-id 1                               # interactive recommender REPL
+docker compose run --rm monitor --dry-run                               # grade recent runs
+docker compose --profile sources run --rm sources-instagram --url <URL>  # fetch one Instagram post
+docker compose down                                                     # stop everything
+```
+
+Copy [`.env.example`](.env.example) to `.env` at the repo root — `env_file: .env` in `compose.yaml` feeds the process env of every service. `OPENCODE_API_KEY` is required by `agentlib` for anything that calls the LLM; `TELEGRAM_BOT_TOKEN` is required to start the Telegram bot, which prints one line and exits 1 without it. `data/bot.yaml` is the bot's committed, Pydantic-validated copy and config source — a malformed file stops the process before it opens a Telegram connection. `data/` is bind-mounted read-only, `var/` (SQLite DB + JSONL logs + memory store) is bind-mounted read-write, so state survives rebuilds and is inspectable on the host.
+
+**Native (for source hacking — needs Python 3.12, `uv`, and `ffmpeg` on `PATH`):**
 
 ```
 uv sync                                          # install
@@ -55,10 +71,7 @@ uv run planazo-scheduler --tick                  # run one scheduled ingestion t
 uv run planazo-scheduler --once <URL> --verbose  # single-post demo with step-by-step narrative log (see ADR 0017)
 uv run planazo-curator --tick --dry-run --verbose  # dry-run one curator tick with narrative log (see ADR 0020)
 uv run planazo-curator --tick                    # daily catalog-curator tick — soft-deletes stale events, merges dupes, corrects categories
-docker compose up sources-instagram              # run the Instagram source adapter one-shot
 ```
-
-Environment variables live in a `.env` at the repo root — copy [`.env.example`](.env.example). `OPENCODE_API_KEY` is required by `agentlib` for anything that calls the LLM; `TELEGRAM_BOT_TOKEN` is required to start the Telegram bot, which prints one line and exits 1 without it. `data/bot.yaml` is the bot's committed, Pydantic-validated copy and config source — a malformed file stops the process before it opens a Telegram connection.
 
 ## Development Workflow
 

@@ -4,16 +4,33 @@ The agent runtime that powers Planazo's event discovery: it calls source/extract
 
 The current Recommender loop is being refactored onto a typed LangGraph `StateGraph` with LangChain tools and persistent SQLite checkpoints for the Agentic AI Systems HW1; [ADR 0023](docs/adr/0023-langgraph-recommender-runtime.md) records the boundary. The bot, domain models, approval policy, and validation guardrails remain Planazo code rather than framework defaults.
 
-## Quick start
+## Quick start (Docker)
+
+Docker is the canonical run shape (ADR 0026). No host Python, `uv`, `ffmpeg`, or cron required — just Docker and a populated `.env`.
 
 ```bash
-uv sync                                                                  # install
+cp .env.example .env                                                    # fill in TELEGRAM_BOT_TOKEN + OPENCODE_API_KEY
+docker compose up -d                                                    # bot + scheduler + curator, all long-running
+docker compose logs -f bot                                              # tail the Telegram bot
+docker compose run --rm agent --user-id 1 --calendar "find tech events this weekend"  # one-shot recommender
+docker compose run --rm agent --user-id 1                               # interactive recommender REPL
+docker compose run --rm monitor --dry-run                               # grade canned seed runs
+docker compose run --rm monitor --dry-run --run-id seed-injection-near-miss  # one-call monitor smoke test
+docker compose down                                                     # stop everything
+```
+
+`env_file: .env` in `compose.yaml` feeds the process env of every service. `data/` is bind-mounted read-only (config source of truth on host), `var/` is bind-mounted read-write (SQLite DB at `var/planazo.db`, JSONL audit logs, and `var/memory/` all survive `down`/`up`). `docker compose up` starts three long-running services — `bot`, `scheduler`, `curator` — using in-container sleep loops instead of host cron; intervals default to 15 min and 1 day and are overridable via `PLANAZO_SCHEDULER_INTERVAL_S` / `PLANAZO_CURATOR_INTERVAL_S` in `.env`.
+
+## Quick start (native, for source hacking)
+
+```bash
+uv sync                                                                  # install (needs Python 3.12 and ffmpeg on PATH)
 uv run planazo-agent --user-id 1 --calendar "find tech events this weekend"  # one-shot
 uv run planazo-agent --user-id 1                                          # interactive REPL
 uv run planazo-monitor --since 24h                                       # grade recent runs
 uv run planazo-monitor --dry-run                                         # grade canned seed runs
 uv run planazo-monitor --dry-run --run-id seed-injection-near-miss       # one-call monitor smoke test
-uv run planazo-scheduler --tick                                          # one scheduled-ingestion tick (host-cron entry point)
+uv run planazo-scheduler --tick                                          # one scheduled-ingestion tick
 ```
 
 `agentlib` (the LLM wrapper) needs `OPENCODE_API_KEY` set in a `.env` file at the repo root; copy `../.env.example`. If the key is unset, the CLI prints one actionable line and exits without calling the provider; if the key is present but invalid or the provider errors, it prints a single-line message — never a traceback.
@@ -129,24 +146,27 @@ uv run pytest -m live tests/test_sources_instagram_live.py -v -s        # fetche
 
 Each source runs in its own Docker container so a Meta break (Instagram) does not affect a TikTok / news / Meetup adapter. `data/sources.yaml` names every source's cadence, per-media-type strategy, and account list; `docker/sources-<name>.Dockerfile` builds the image; `compose.yaml` wires the bind-mount and env vars.
 
-Instagram is the first landed adapter:
+Instagram is the first landed adapter. It sits behind the `sources` compose profile so it does not run on `docker compose up` (the always-on `scheduler` service already handles routine ingestion — see the next section):
 
 ```bash
-docker compose up sources-instagram                                                 # print resolved fetch plan (no network)
-docker compose run --rm sources-instagram --url https://instagram.com/p/ABC/        # fetch one post; RawPost JSON on stdout
-INSTAGRAM_SESSION_ID=<value> docker compose run --rm sources-instagram --url <URL>  # same, with a logged-in session cookie
-uv run planazo-sources-instagram --dry-run                                          # host-side dry-run (no container)
-uv run planazo-sources-instagram --url https://instagram.com/p/ABC/                 # host-side fetch (no container)
+docker compose --profile sources run --rm sources-instagram --dry-run                              # print resolved fetch plan (no network)
+docker compose --profile sources run --rm sources-instagram --url https://instagram.com/p/ABC/     # fetch one post; RawPost JSON on stdout
+uv run planazo-sources-instagram --dry-run                                                         # host-side dry-run (no container)
+uv run planazo-sources-instagram --url https://instagram.com/p/ABC/                                # host-side fetch (no container)
 ```
 
-`docker compose up sources-instagram` defaults to `--dry-run` — it resolves the plan from `data/sources.yaml` and exits 0 without any network calls. Use `docker compose run --rm sources-instagram --url <URL>` to fetch one specific post; `--dry-run` and `--url` are mutually exclusive and exactly one is required per invocation. `INSTAGRAM_SESSION_ID` is optional — copy the `sessionid` cookie from a logged-in Instagram browser session into `.env` when a public-account fetch returns `auth_failed`, otherwise leave it unset. The CLI never writes anywhere; `--url` prints one line of `RawPost.model_dump_json()` (happy path) or the typed error dict — `{"error_type": "…", "message": "…", "url": "…"}` — to stdout. See [ADR 0006 — Instagram extraction approach](docs/adr/0006-instagram-extraction-approach.md).
+`--dry-run` resolves the plan from `data/sources.yaml` and exits 0 without any network calls. `--dry-run` and `--url` are mutually exclusive and exactly one is required per invocation. `INSTAGRAM_SESSION_ID` is optional — set it in `.env` (compose picks it up via `env_file`) when a public-account fetch returns `auth_failed`, otherwise leave it unset. The CLI never writes anywhere; `--url` prints one line of `RawPost.model_dump_json()` (happy path) or the typed error dict — `{"error_type": "…", "message": "…", "url": "…"}` — to stdout. See [ADR 0006 — Instagram extraction approach](docs/adr/0006-instagram-extraction-approach.md) and [ADR 0026 — Docker orchestration](docs/adr/0026-docker-orchestration.md).
 
 ## Scheduled ingestion
 
-`planazo-scheduler` is the host-cron entry point for periodic ingestion: on every `--tick` it reads `data/sources.yaml`, walks the configured `posts:` + `accounts:` blocks, routes each account through `AccountConfig.backend` to one of two discovery backends (`anonymous` via `curl_cffi` + Meta's `web_profile_info`, or `hikerapi` via the paid multi-key HikerAPI pool), pre-checks discovered URLs against `events_exist_for_source_url` to skip already-persisted URLs, and dispatches survivors into `extract_once` under a seeded system user (`telegram_user_id="system"`). One `SchedulerRunRecord` line per source URL processed lands in `var/scheduler_runs.jsonl` for human tailing. See [ADR 0011 — Scheduled ingestion](docs/adr/0011-scheduled-ingestion.md) and [ADR 0014 — Instagram discovery backends](docs/adr/0014-instagram-discovery-backends.md).
+`planazo-scheduler` runs periodic ingestion: on every `--tick` it reads `data/sources.yaml`, walks the configured `posts:` + `accounts:` blocks, routes each account through `AccountConfig.backend` to one of two discovery backends (`anonymous` via `curl_cffi` + Meta's `web_profile_info`, or `hikerapi` via the paid multi-key HikerAPI pool), pre-checks discovered URLs against `events_exist_for_source_url` to skip already-persisted URLs, and dispatches survivors into `extract_once` under a seeded system user (`telegram_user_id="system"`). One `SchedulerRunRecord` line per source URL processed lands in `var/scheduler_runs.jsonl` for human tailing. See [ADR 0011 — Scheduled ingestion](docs/adr/0011-scheduled-ingestion.md) and [ADR 0014 — Instagram discovery backends](docs/adr/0014-instagram-discovery-backends.md).
+
+Under Docker (the recommended shape), `docker compose up -d` starts the `scheduler` service — an in-container `while true; do planazo-scheduler --tick; sleep 900; done` loop, no host cron required. Override the interval by setting `PLANAZO_SCHEDULER_INTERVAL_S` in `.env`. See [ADR 0026 — Docker orchestration](docs/adr/0026-docker-orchestration.md).
+
+Manual ticks (native or from inside the `agent` container) for diagnostics:
 
 ```bash
-uv run planazo-scheduler --tick                                          # one-shot tick over sources.yaml
+uv run planazo-scheduler --tick                                          # one-shot tick over sources.yaml (native)
 uv run planazo-scheduler --once https://www.instagram.com/p/ABC/         # diagnostic single-URL run (bypasses cadence)
 uv run planazo-scheduler --once https://www.instagram.com/reel/ABC/      # same, for a reel URL
 uv run planazo-scheduler --once https://www.instagram.com/acct/          # single-account run (must be in sources.yaml)
@@ -157,18 +177,7 @@ Exit codes: `0` when the tick completed (regardless of per-URL outcomes — oper
 
 `hikerapi` accounts need one or more `PLANAZO_IG_HIKER_API_KEY[_N]` env vars set — every distinct value across the singular `PLANAZO_IG_HIKER_API_KEY` and any numbered `PLANAZO_IG_HIKER_API_KEY_1`, `_2`, ... peers becomes a pool member. On each HikerAPI call the client draws uniformly at random from the non-retired keys; a 401/403/429 retires the drawing key for five minutes and the request retries against a fresh draw.
 
-Wire the tick into cron every 15 minutes (adjust the path and cadence to your host):
-
-```
-# macOS: `crontab -e`; Linux: `sudo crontab -e -u planazo`
-*/15 * * * * cd /path/to/planazo && /usr/local/bin/uv run planazo-scheduler --tick >> var/scheduler.log 2>&1
-```
-
-Notes for the cron entry:
-
-- Use the absolute path to `uv` — cron's `PATH` is minimal and `uv` will not be found via `PATH` lookup unless the crontab is configured with `PATH=` at the top. `which uv` on the host that runs cron gives the path to paste.
-- `var/scheduler.log` accumulates cron stdout/stderr; rotate it with `logrotate` (Linux) or `newsyslog` (macOS) if the host runs the tick long enough for the file to matter. `var/scheduler_runs.jsonl` — the per-URL structured audit log — is the primary artifact and is never rotated automatically.
-- The default cadence in `sources.yaml` is 6 hours per account; a 15-minute cron interval means most ticks are no-ops that short-circuit on the cadence gate (each still writes one `gate_reason="cadence_not_ready"` record per configured URL).
+The default cadence in `sources.yaml` is 6 hours per account; a 15-minute tick interval means most ticks are no-ops that short-circuit on the cadence gate (each still writes one `gate_reason="cadence_not_ready"` record per configured URL). `var/scheduler_runs.jsonl` — the per-URL structured audit log — is the primary artifact and is never rotated automatically.
 
 ## Memory model demos
 
