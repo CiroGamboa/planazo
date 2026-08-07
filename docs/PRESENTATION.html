@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Planazo — Project Presentation</title>
+
+<!-- reveal.js core + a dark theme, pinned to a specific version. -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/moon.css" id="reveal-theme" />
+
+<style>
+  :root {
+    --accent-good: #7bd88f;
+    --accent-attention: #f5c86a;
+    --accent-danger: #ef6c6c;
+    --panel-bg: rgba(255, 255, 255, 0.05);
+    --panel-border: rgba(255, 255, 255, 0.15);
+  }
+
+  /* Tighten reveal defaults so a lot of content fits without shrinking. */
+  .reveal h1 { font-size: 2.2em; letter-spacing: 0.5px; }
+  .reveal h2 { font-size: 1.6em; }
+  .reveal h3 { font-size: 1.2em; }
+  .reveal p, .reveal li { font-size: 0.85em; line-height: 1.4; }
+  .reveal .tiny { font-size: 0.65em; opacity: 0.75; }
+  .reveal .callout {
+    background: var(--panel-bg);
+    border-left: 4px solid var(--accent-attention);
+    padding: 0.6em 1em;
+    margin-top: 0.6em;
+    text-align: left;
+    font-size: 0.75em;
+    border-radius: 4px;
+  }
+  .reveal .callout.good { border-left-color: var(--accent-good); }
+  .reveal .callout.warn { border-left-color: var(--accent-danger); }
+
+  /* Three-card layout for slide 4. */
+  .reveal .card-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1em;
+    margin-top: 0.4em;
+  }
+  .reveal .card {
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 0.8em;
+    text-align: left;
+  }
+  .reveal .card h3 { margin: 0 0 0.4em 0; color: var(--accent-good); }
+  .reveal .card ul { padding-left: 1em; margin: 0; }
+  .reveal .card li { font-size: 0.7em; margin-bottom: 0.35em; }
+
+  /* Metric grid used on the numbers slides. */
+  .reveal .metric-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.6em;
+    margin-top: 0.6em;
+  }
+  .reveal .metric {
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 0.6em;
+  }
+  .reveal .metric .value {
+    font-size: 1.6em;
+    font-weight: 700;
+    color: var(--accent-good);
+    display: block;
+  }
+  .reveal .metric .value.attention { color: var(--accent-attention); }
+  .reveal .metric .value.danger { color: var(--accent-danger); }
+  .reveal .metric .label {
+    font-size: 0.7em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    opacity: 0.75;
+    display: block;
+    margin-top: 0.2em;
+  }
+
+  .reveal table {
+    font-size: 0.7em;
+    margin: 0 auto;
+  }
+  .reveal table th, .reveal table td {
+    padding: 0.4em 0.6em;
+    border: 1px solid var(--panel-border);
+  }
+  .reveal table th { background: var(--panel-bg); }
+
+  /* Split layout for slide 13. */
+  .reveal .split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1em;
+    margin-top: 0.6em;
+  }
+  .reveal .split .card { text-align: center; }
+  .reveal .split .big-num {
+    font-size: 1.8em;
+    font-weight: 700;
+    display: block;
+    margin: 0.2em 0;
+  }
+  .reveal .split .big-num.good { color: var(--accent-good); }
+  .reveal .split .big-num.attention { color: var(--accent-attention); }
+
+  /* Command block at the bottom of the recap slide. */
+  .reveal pre code {
+    font-size: 0.65em;
+    line-height: 1.5;
+    padding: 0.8em;
+  }
+
+  /* Tag chips shown next to the tracing diagram. */
+  .reveal .chip {
+    display: inline-block;
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 999px;
+    padding: 0.2em 0.7em;
+    font-size: 0.65em;
+    margin: 0.15em;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+
+  .reveal .footnote {
+    position: absolute;
+    bottom: 0.6em;
+    right: 1em;
+    font-size: 0.55em;
+    opacity: 0.55;
+  }
+
+  /* Mermaid outputs inline SVG; keep it centered and sized. */
+  .reveal pre.mermaid { background: transparent !important; }
+  .reveal .mermaid svg { max-width: 100% !important; height: auto !important; }
+</style>
+</head>
+
+<body>
+
+<div class="reveal">
+<div class="slides">
+
+<!-- ============================================================ -->
+<!-- 1. Title -->
+<!-- ============================================================ -->
+<section>
+  <h1>Planazo</h1>
+  <h3 style="opacity: 0.9;">An agentic event-discovery assistant for Barcelona</h3>
+  <p class="tiny" style="margin-top: 1.2em;">
+    Recommender · Extractor · Curator · RAG · MLflow tracing · Safety
+  </p>
+  <p style="margin-top: 2.4em; font-size: 0.85em;">
+    Ciro Gamboa · Daniel Vetencourt · Ana Karla Caballero
+  </p>
+  <p class="tiny" style="opacity: 0.75; margin-top: 0.4em;">
+    Agentic Systems — Harbour Space University
+  </p>
+  <p class="tiny" style="margin-top: 2em; opacity: 0.45;">
+    Use ← → or space to navigate. Press <b>S</b> for speaker notes, <b>F</b> for fullscreen, <b>ESC</b> for overview.
+  </p>
+</section>
+
+<!-- ============================================================ -->
+<!-- 2. What / Why -->
+<!-- ============================================================ -->
+<section>
+  <h2>What is Planazo?</h2>
+  <p>
+    A user asks in natural language for events matching a time window and interests.
+    Planazo interprets the intent, retrieves candidates from a validated catalog, ranks them, and returns a bounded answer.
+  </p>
+  <pre class="mermaid" style="margin-top: 1.2em;">
+flowchart LR
+  U(["User"]) --> B(["Telegram bot"])
+  B --> A(["Recommender agent"])
+  A --> D[("SQLite catalog")]
+  A --> R(["Ranked answer"])
+  R --> U
+  style A fill:#254a5b,stroke:#7bd88f,color:#fff
+  style R fill:#3a3a2a,stroke:#f5c86a,color:#fff
+  </pre>
+</section>
+
+<!-- ============================================================ -->
+<!-- 3. System-level architecture -->
+<!-- ============================================================ -->
+<section>
+  <h2>System architecture</h2>
+  <pre class="mermaid">
+flowchart LR
+  User([User])
+  Bot([Telegram bot])
+  Interp([Interpreter<br/>SearchIntent])
+  Rec([Recommender<br/>LangGraph])
+  Cat[(SQLite events)]
+  Mem[(Per-user memory)]
+  Rules[Markdown rules]
+
+  User --> Bot --> Interp --> Rec
+  Rec -.push context.-> Rules
+  Rec --> Cat
+  Rec --> Mem
+  Rec --> Ans(["Ranked answer"])
+  Ans --> User
+
+  Sched[Scheduler tick] --> IG[Instagram source]
+  IG --> Ext([Extractor<br/>LangGraph])
+  Ext --> Cat
+
+  Cur[Daily cron] --> Curator([Curator<br/>LangGraph])
+  Curator --> Cat
+
+  style Rec fill:#254a5b,stroke:#7bd88f,color:#fff
+  style Ext fill:#254a5b,stroke:#7bd88f,color:#fff
+  style Curator fill:#254a5b,stroke:#7bd88f,color:#fff
+  </pre>
+</section>
+
+<!-- ============================================================ -->
+<!-- 4. The three agents -->
+<!-- ============================================================ -->
+<section>
+  <h2>Three agents, three jobs</h2>
+  <div class="card-row">
+    <div class="card">
+      <h3>Recommender</h3>
+      <ul>
+        <li><b>Does:</b> answers a user query, ranks events, returns a bounded response</li>
+        <li><b>Runs:</b> every user turn (bot / CLI)</li>
+        <li><b>Tools:</b> <code>search_events</code>, memory (retrieve / save), <code>ask_user</code></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Extractor</h3>
+      <ul>
+        <li><b>Does:</b> turns a raw Instagram post into validated event rows</li>
+        <li><b>Runs:</b> on-demand from the scheduler</li>
+        <li><b>Tools:</b> <code>fetch_instagram_post</code>, <code>save_event</code>, <code>report_extraction_status</code></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Curator</h3>
+      <ul>
+        <li><b>Does:</b> soft-deletes stale events, merges dupes, fixes categories</li>
+        <li><b>Runs:</b> daily cron</li>
+        <li><b>Tools:</b> six catalog read + write tools, admin-scoped</li>
+      </ul>
+    </div>
+  </div>
+  <p class="tiny" style="margin-top: 1em;">All three run on typed LangGraph <code>StateGraph</code>s — ADR 0023 (Recommender), ADR 0024 (Extractor).</p>
+</section>
+
+<!-- ============================================================ -->
+<!-- 5. Recommender tool set -->
+<!-- ============================================================ -->
+<section>
+  <h2>Recommender — tool set</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Tool</th>
+        <th>Purpose</th>
+        <th>Boundary</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>search_events</code></td><td>Read from the catalog (RAG-backed)</td><td>Read-only</td></tr>
+      <tr><td><code>retrieve_memory</code></td><td>Read this user's saved facts</td><td>Closed over <code>user_id</code></td></tr>
+      <tr><td><code>save_memory</code></td><td>Remember one fact about this user</td><td>Closed over <code>user_id</code></td></tr>
+      <tr><td><code>retrieve_notes</code></td><td>Read notes on a specific event</td><td>Closed over <code>user_id</code></td></tr>
+      <tr><td><code>save_note</code></td><td>Save one note against an event</td><td>Closed over <code>user_id</code></td></tr>
+      <tr><td><code>ask_user</code></td><td>Record one non-blocking clarification</td><td>First valid question wins</td></tr>
+    </tbody>
+  </table>
+  <div class="callout" style="margin-top: 1em;">
+    Memory tools are <b>closures over <code>user_id</code></b> — the LLM can never point them at another user (ADR 0004). No tool the Recommender exposes today is irreversible or externally visible.
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 6. The agentic loop -->
+<!-- ============================================================ -->
+<section>
+  <h2>The agentic loop</h2>
+  <pre class="mermaid">
+flowchart LR
+  Obs(["observe<br/>read intent + rules + prefs"])
+  Reas(["reason<br/>ChatOpenAI + bound tools"])
+  Act(["act<br/>ToolNode dispatch"])
+  Ver(["verify<br/>Pydantic + typed errors"])
+  Done(["final answer"])
+
+  Obs --> Reas
+  Reas -- "tool call" --> Act
+  Act --> Ver
+  Ver --> Reas
+  Reas -- "no tool call" --> Done
+
+  style Reas fill:#254a5b,stroke:#7bd88f,color:#fff
+  style Act fill:#3a2a3a,stroke:#f5c86a,color:#fff
+  style Done fill:#2a3a2a,stroke:#7bd88f,color:#fff
+  </pre>
+  <p class="tiny">The LangGraph state graph makes this loop <b>explicit</b> — every arrow is a node/edge in a typed graph, not implicit control flow.</p>
+</section>
+
+<!-- ============================================================ -->
+<!-- 7. RAG — what and why -->
+<!-- ============================================================ -->
+<section>
+  <h2>RAG — what and why</h2>
+  <p>
+    Retrieval-Augmented Generation: fetch relevant events at query time, hand them to the LLM as grounded context.
+  </p>
+  <div class="card-row" style="grid-template-columns: 1fr 1fr;">
+    <div class="card">
+      <h3 style="color: var(--accent-danger);">Before RAG</h3>
+      <p class="tiny">Category filter only. "<i>recital at Palau de la Musica</i>" → nothing matches "recital" as a category.</p>
+    </div>
+    <div class="card">
+      <h3 style="color: var(--accent-good);">With RAG</h3>
+      <p class="tiny">Hybrid semantic + lexical search. Finds the classical-chamber-music event at Palau even without keyword overlap.</p>
+    </div>
+  </div>
+  <p class="tiny" style="margin-top: 1em;">ADR 0025 — hard filters (category, city, date) still gate the candidate set <em>before</em> RAG ranks within it.</p>
+</section>
+
+<!-- ============================================================ -->
+<!-- 8. RAG — corpus and chunking -->
+<!-- ============================================================ -->
+<section>
+  <h2>RAG — corpus &amp; chunking</h2>
+  <div class="card-row" style="grid-template-columns: 1fr 1fr;">
+    <div class="card">
+      <h3>Sources</h3>
+      <ul>
+        <li>SQLite <code>events</code> table at <code>var/planazo.db</code></li>
+        <li>Populated by: <code>scripts/seed_events.py</code> (60 demo events) + Extractor (Instagram, when live)</li>
+        <li>Separate eval corpus at <code>data/eval/events_seed.jsonl</code> — <b>120 events</b></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Chunking</h3>
+      <ul>
+        <li><b>One chunk per event</b> — the row is the atomic semantic unit</li>
+        <li>Chunk ID = event ID (no resolver needed)</li>
+        <li>Chunk text: <code>title. description. Venue: … Category: … Tags: … Time: … Price: …</code></li>
+      </ul>
+    </div>
+  </div>
+  <div class="callout" style="margin-top: 1em;">
+    No overlap, no windowing. Events are small; splitting one across chunks would lose the join between title + venue + time.
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 9. RAG — search flow -->
+<!-- ============================================================ -->
+<section>
+  <h2>RAG — search flow</h2>
+  <pre class="mermaid">
+flowchart LR
+  Q(["Query"])
+  HF{{"Hard filters<br/>category · city · date · price"}}
+  D(["Dense retriever<br/>sentence-transformers"])
+  B(["BM25 retriever<br/>rank-bm25"])
+  RRF(["Reciprocal Rank Fusion<br/>1 / (60 + rank)"])
+  Top20(["top-20 candidates"])
+  X(["Cross-encoder reranker<br/>MiniLM-L-6-v2"])
+  Top5(["top-5 events"])
+
+  Q --> HF --> D
+  HF --> B
+  D --> RRF
+  B --> RRF
+  RRF --> Top20 --> X --> Top5
+
+  style D fill:#254a5b,stroke:#7bd88f,color:#fff
+  style B fill:#254a5b,stroke:#7bd88f,color:#fff
+  style X fill:#3a2a3a,stroke:#f5c86a,color:#fff
+  style Top5 fill:#2a3a2a,stroke:#7bd88f,color:#fff
+  </pre>
+  <p class="tiny">Dense = meaning ("recital" ≈ "concert"). BM25 = exact terms (venue names, acronyms). RRF combines the two rankings; the reranker gives the final ordering.</p>
+</section>
+
+<!-- ============================================================ -->
+<!-- 10. Eval — HW3 retrieval metrics -->
+<!-- ============================================================ -->
+<section>
+  <h2>Eval — RAG retrieval</h2>
+  <p class="tiny">20 golden queries on the 120-event corpus. rerank = <b>on</b>.</p>
+  <table>
+    <thead>
+      <tr><th>k</th><th>hit@k</th><th>precision@k</th><th>recall@k</th><th>MRR</th><th>nDCG@k</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>1</td><td>1.000</td><td>1.000</td><td>0.690</td><td>1.000</td><td>1.000</td></tr>
+      <tr><td>3</td><td>1.000</td><td>0.556</td><td>0.875</td><td>1.000</td><td>0.967</td></tr>
+      <tr style="background: rgba(123, 216, 143, 0.10);"><td><b>5</b></td><td><b>1.000</b></td><td><b>0.411</b></td><td><b>0.958</b></td><td><b>1.000</b></td><td><b>0.974</b></td></tr>
+      <tr><td>10</td><td>1.000</td><td>0.228</td><td>1.000</td><td>1.000</td><td>0.988</td></tr>
+    </tbody>
+  </table>
+  <div class="callout good" style="margin-top: 0.8em;">
+    Reranker lifts MRR from <b>0.944 → 1.000</b> — the first golden hit consistently lands at rank 1 once the cross-encoder runs.
+  </div>
+  <aside class="notes">
+    hit@k = "any golden in top-k". precision@k drops as k grows because there is a fixed number of golden events per query. Recall@k rises to 1.0 by k=10.
+  </aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- 11. Eval — HW3 generation metrics -->
+<!-- ============================================================ -->
+<section>
+  <h2>Eval — RAG generation (LLM-as-judge)</h2>
+  <p class="tiny">Same 20 golden queries. Judge = <code>OpenCodeJudge</code> (cheap model), cached per (metric, case_id, answer_hash).</p>
+  <div class="metric-grid">
+    <div class="metric">
+      <span class="value">0.985</span>
+      <span class="label">Faithfulness (rerank on)</span>
+    </div>
+    <div class="metric">
+      <span class="value attention">0.333</span>
+      <span class="label">Answer relevance (rerank on)</span>
+    </div>
+    <div class="metric">
+      <span class="value">0.693</span>
+      <span class="label">Context precision (rerank on)</span>
+    </div>
+  </div>
+  <div class="callout warn" style="margin-top: 1em;">
+    Faithfulness is high — the model does not invent facts. Answer relevance is a real weakness: the model retrieves well but summarises loosely.
+  </div>
+  <aside class="notes">
+    Answer relevance = "does the answer address the user's question". Faithfulness = "does it stick to the retrieved chunks". They can diverge — a factually grounded answer can still miss the ask.
+  </aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- 12. Eval — HW4 agent (pass@3 vs pass^3) -->
+<!-- ============================================================ -->
+<section>
+  <h2>Eval — Agent trajectory</h2>
+  <p class="tiny">12 scenarios × 3 runs at <b>temperature = 0.7</b>. Threshold: tool_selection ≥ 0.5.</p>
+  <div class="metric-grid" style="grid-template-columns: repeat(3, 1fr);">
+    <div class="metric">
+      <span class="value">2 / 12</span>
+      <span class="label">Reliable (pass^3)</span>
+    </div>
+    <div class="metric">
+      <span class="value attention">2 / 12</span>
+      <span class="label">Flaky (pass@3, not pass^3)</span>
+    </div>
+    <div class="metric">
+      <span class="value danger">8 / 12</span>
+      <span class="label">Hard-fail (pass@3 = no)</span>
+    </div>
+  </div>
+  <div class="callout" style="margin-top: 1em;">
+    T=0 gives the same answer 3×; T=0.7 exposes real variance. <b>pass^3</b> ("all 3 pass") is the actual reliability signal — <b>pass@3</b> alone is optimistic.
+  </div>
+  <p class="tiny" style="margin-top: 0.6em;">Metrics: tool_selection_accuracy · trajectory_precision · trajectory_recall · goal_completion (LLM-judge).</p>
+  <aside class="notes">
+    Hard-fail cases show error_type=search_not_completed — the LLM decided not to call search_events. Real product signal, not a scorer bug. Next iteration should tune the prompt or add a stricter tool-forcing policy.
+  </aside>
+</section>
+
+<!-- ============================================================ -->
+<!-- 13. Eval — "tools ≠ outcome" insight -->
+<!-- ============================================================ -->
+<section>
+  <h2>Tools ≠ outcome</h2>
+  <p class="tiny">Trajectory metrics grade <i>what the agent did</i>. goal_completion grades <i>what the user saw</i>. They can disagree.</p>
+  <div class="split">
+    <div class="card">
+      <div style="font-size: 0.75em; opacity: 0.8;"><code>tell-me-more-about-2</code></div>
+      <span class="big-num good">1.0</span>
+      <span class="label" style="font-size: 0.65em; opacity: 0.8;">tool_selection / precision / recall</span>
+      <span class="big-num attention" style="margin-top: 0.4em;">0.0</span>
+      <span class="label" style="font-size: 0.65em; opacity: 0.8;">goal_completion</span>
+      <p class="tiny" style="margin-top: 0.6em;">Called the right tool. But "#2" refers to a prior turn that the eval harness doesn't thread — the answer couldn't satisfy the ask.</p>
+    </div>
+    <div class="card">
+      <div style="font-size: 0.75em; opacity: 0.8;"><code>first-date-ambiguous</code></div>
+      <span class="big-num attention">0.0</span>
+      <span class="label" style="font-size: 0.65em; opacity: 0.8;">tool_selection / precision / recall</span>
+      <span class="big-num good" style="margin-top: 0.4em;">0.767</span>
+      <span class="label" style="font-size: 0.65em; opacity: 0.8;">goal_completion</span>
+      <p class="tiny" style="margin-top: 0.6em;">Skipped the expected clarification. But the direct answer still satisfies "recommend something for a first date".</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 14. MLflow tracing -->
+<!-- ============================================================ -->
+<section>
+  <h2>MLflow tracing</h2>
+  <p class="tiny">Every agent turn lands as a trace — a tree of spans — in <code>var/mlflow/</code>. Browsable in the MLflow UI.</p>
+  <pre class="mermaid">
+flowchart TB
+  Root([recommender.run_once — AGENT])
+  Lg([LangGraph — CHAIN])
+  Ag1([agent_1 — CHAIN])
+  Llm1([ChatOpenAI — CHAT_MODEL<br/>gpt-5.4-nano · latency ms])
+  Tools([tools — CHAIN])
+  T1([retrieve_memory — TOOL])
+  T2([search_events — TOOL])
+  Rag([search_events_rag — RETRIEVER<br/>ranked event ids])
+  Ag2([agent_2 — CHAIN])
+  Llm2([ChatOpenAI — CHAT_MODEL])
+
+  Root --> Lg
+  Lg --> Ag1 --> Llm1
+  Lg --> Tools --> T1
+  Tools --> T2 --> Rag
+  Lg --> Ag2 --> Llm2
+
+  style Root fill:#254a5b,stroke:#7bd88f,color:#fff
+  style Rag fill:#3a2a3a,stroke:#f5c86a,color:#fff
+  </pre>
+  <div style="margin-top: 0.6em;">
+    <span class="chip">request_origin = cli · bot · eval · batch</span>
+    <span class="chip">eval_case_id = &lt;scenario&gt;-run-&lt;N&gt;</span>
+    <span class="chip">agent_kind = recommender · extractor · curator</span>
+  </div>
+  <p class="tiny" style="margin-top: 0.4em;"><code>mlflow.langchain.autolog()</code> + two hand-rolled <code>@mlflow.trace</code>s. Scorer feedback attaches back as <code>feedback.&lt;metric&gt;</code> tags.</p>
+</section>
+
+<!-- ============================================================ -->
+<!-- 15. Safety hardening -->
+<!-- ============================================================ -->
+<section>
+  <h2>Safety — 4 attacks × 4 defense layers</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Attack</th>
+        <th>Caught by</th>
+        <th>How</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>direct-injection</code></td>
+        <td>Layer 1 — input filter</td>
+        <td>Regex: "ignore previous instructions…"</td>
+      </tr>
+      <tr>
+        <td><code>tool-abuse</code></td>
+        <td>Layer 1 — input filter</td>
+        <td>Regex: "call ask_user with…"</td>
+      </tr>
+      <tr>
+        <td><code>exfiltration</code></td>
+        <td>Layer 1 — input filter</td>
+        <td>Regex: "print everything user 2…"</td>
+      </tr>
+      <tr>
+        <td><code>indirect-injection</code></td>
+        <td>Layer 2 — structural (cited)</td>
+        <td>Retrieved text never enters the system role — ADR 0004</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="metric-grid" style="margin-top: 0.8em; grid-template-columns: repeat(3, 1fr);">
+    <div class="metric">
+      <span class="value">4 / 4</span>
+      <span class="label">Attacks caught</span>
+    </div>
+    <div class="metric">
+      <span class="value">0 / 36</span>
+      <span class="label">False positives on legitimate traces</span>
+    </div>
+    <div class="metric">
+      <span class="value">2 + 2</span>
+      <span class="label">Live layers · cited layers</span>
+    </div>
+  </div>
+  <p class="tiny" style="margin-top: 0.5em;">Layer 3 = output filter (secret patterns). Layer 4 = capability constraints (memory closure, approval gate). Cited to ADR 0002 + 0004 — invariants live once.</p>
+</section>
+
+<!-- ============================================================ -->
+<!-- 16. Recap + reproduce -->
+<!-- ============================================================ -->
+<section>
+  <h2>Recap</h2>
+  <ul style="text-align: left; max-width: 700px; margin: 0 auto;">
+    <li><b>Agents</b> — 3 LangGraph state graphs (Recommender, Extractor, Curator), typed boundaries at every tool.</li>
+    <li><b>RAG</b> — hybrid dense + BM25 with RRF fusion, then cross-encoder rerank. One chunk per event.</li>
+    <li><b>Eval</b> — retrieval + generation metrics (HW3) plus tool_selection + trajectory + goal_completion (HW4).</li>
+    <li><b>Reliability</b> — <code>pass^3</code> at T=0.7 exposes flakes that <code>pass@3</code> hides.</li>
+    <li><b>Safety</b> — 4/4 attacks caught, 0 false positives, 2 layers live + 2 cited.</li>
+    <li><b>Observability</b> — every run is an MLflow trace with three join-key tags.</li>
+  </ul>
+  <p class="tiny" style="margin-top: 1em;"><b>Reproduce the full pipeline in 4 commands:</b></p>
+  <pre style="font-size: 0.55em; text-align: left; max-width: 750px; margin: 0.4em auto;"><code>uv run python scripts/seed_events.py                          # 1. seed 60 events into var/planazo.db
+uv run planazo-agent-eval --runs 3 --temperature 0.7          # 2. 12 × 3 = 36 traces + pass@3 / pass^3 table
+uv run python scripts/run_trace_scorers.py                    # 3. attach scorer feedback to every trace
+uv run python scripts/run_safety_batch.py --run-attacks --force-trace  # 4. 4 attacks + FP count</code></pre>
+  <p class="tiny" style="margin-top: 0.8em; opacity: 0.7;">Full walk-through: <code>docs/LEARNING-GUIDE.md</code> · Decisions: <code>docs/adr/</code> (0023, 0024, 0025, 0026, 0027) · Report: <code>HW4_SUBMISSION.md</code></p>
+</section>
+
+</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.2.1/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    themeVariables: {
+      fontSize: '14px',
+      background: 'transparent',
+    },
+    flowchart: { curve: 'basis', htmlLabels: true },
+  });
+
+  Reveal.initialize({
+    hash: true,
+    slideNumber: 'c/t',
+    width: 1280,
+    height: 800,
+    margin: 0.06,
+    controls: true,
+    progress: true,
+    transition: 'slide',
+    plugins: [],
+  }).then(async () => {
+    await mermaid.run({ querySelector: 'pre.mermaid' });
+  });
+</script>
+
+</body>
+</html>
