@@ -1,0 +1,6 @@
+{
+  "score": 0.33,
+  "rationale": "Query asks for cheap tech events this weekend (unspecified location). Chunk [1] is free tech networking and likely qualifies, but dates are after weekend (2026-08-19). Chunks [2] and [3] are expensive (1000, 12000) and also not clearly “cheap.” Only [1] is potentially relevant; overall ~1/3.",
+  "prompt_hash": "073fc12c67e87f0f",
+  "written_at_utc": 1786057446
+}

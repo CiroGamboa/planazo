@@ -1,0 +1,6 @@
+{
+  "score": 0.0,
+  "rationale": "Expected: list only free events (price=free/0 EUR) or explicitly state no free events tonight. Actual: mentions three events but gives no indication they are free and claims “including a free outdoor concert,” without filtering the other two as free. Does not meet the required constraint.",
+  "prompt_hash": "5c8561186191b410",
+  "written_at_utc": 1786057413
+}

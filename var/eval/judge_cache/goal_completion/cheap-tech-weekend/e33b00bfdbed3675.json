@@ -1,0 +1,6 @@
+{
+  "score": 0.5,
+  "rationale": "Mentions Barcelona and free-to-low-cost events and claims they fit the weekend/tonight window, but provides no specific tech events (names/summaries tied to tech) beyond a generic outdoor concert plus vague cultural/meetup options. Also lacks any explicit “status=ok” field and may be ambiguous on tech relevance.",
+  "prompt_hash": "4a3d14ce4ddaf1ec",
+  "written_at_utc": 1786057449
+}

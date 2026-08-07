@@ -1,0 +1,6 @@
+{
+  "score": 0.0,
+  "rationale": "Answer does not meet expected outcome: it lists specific events but does not indicate any are free (0 EUR) or explicitly state no free events tonight. Also no status=ok/no_results is provided as required.",
+  "prompt_hash": "9198c69737b5a50e",
+  "written_at_utc": 1786057415
+}

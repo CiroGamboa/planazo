@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "The answer picks a broad-but-safe category (music) and returns a small list of three date ideas. It also aligns with the intent (concert/recital) without needing clarification, satisfying one acceptable expected-outcome branch.",
+  "prompt_hash": "f9ae22c5786c93d9",
+  "written_at_utc": 1786057406
+}

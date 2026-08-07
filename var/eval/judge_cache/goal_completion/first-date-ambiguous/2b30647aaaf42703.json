@@ -1,0 +1,6 @@
+{
+  "score": 0.5,
+  "rationale": "Answer gives specific live music events, matching the broad safe category (music). However, it does not satisfy the alternative of asking for clarification, and the user asked generally “a first date” with no location/date constraints; response assumes Barcelona/weekend window, making it partially misaligned/ambiguous.",
+  "prompt_hash": "9570d0191df5b155",
+  "written_at_utc": 1786057409
+}

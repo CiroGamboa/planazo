@@ -1,0 +1,6 @@
+{
+  "score": 0.8,
+  "rationale": "Answer gives a small list of first-date-friendly options (live music) and does not require clarification. However it assumes Barcelona/context and provides more specific event claims without asking for preferences, which makes it slightly less universally safe for the ambiguous request.",
+  "prompt_hash": "de39d2d04a6d7157",
+  "written_at_utc": 1786057405
+}

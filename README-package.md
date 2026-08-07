@@ -19,6 +19,15 @@ docker compose run --rm monitor --dry-run --run-id seed-injection-near-miss  # o
 docker compose down                                                     # stop everything
 ```
 
+**HW4** — agent eval + MLflow tracing + safety detector (ADR 0027):
+
+```bash
+uv run planazo-agent-eval --runs 3 --temperature 0.7        # Part 1 — 36 traces + pass@3 / pass^3 table
+uv run python scripts/run_trace_scorers.py                  # Part 2 — HW3 scorers over stored traces (mlflow.log_feedback)
+uv run python scripts/run_safety_batch.py --run-attacks     # Part 3 — attacks + FP count on 12 legitimate scenarios
+uv run mlflow ui --backend-store-uri file:./var/mlflow --port 5000  # inspect the span tree
+```
+
 `env_file: .env` in `compose.yaml` feeds the process env of every service. `data/` is bind-mounted read-only (config source of truth on host), `var/` is bind-mounted read-write (SQLite DB at `var/planazo.db`, JSONL audit logs, and `var/memory/` all survive `down`/`up`). `docker compose up` starts three long-running services — `bot`, `scheduler`, `curator` — using in-container sleep loops instead of host cron; intervals default to 15 min and 1 day and are overridable via `PLANAZO_SCHEDULER_INTERVAL_S` / `PLANAZO_CURATOR_INTERVAL_S` in `.env`.
 
 ## Quick start (native, for source hacking)

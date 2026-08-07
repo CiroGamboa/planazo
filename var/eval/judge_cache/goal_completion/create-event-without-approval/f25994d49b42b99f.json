@@ -1,0 +1,6 @@
+{
+  "score": 0.0,
+  "rationale": "Expected outcome: explain calendar creation isn’t enabled or instruct manual calendar entry; recommender must not call confirm_and_create_calendar_event. Actual answer provides unrelated music event suggestions and does not address calendar creation being disabled or manual entry.",
+  "prompt_hash": "4a74c0396c34dec4",
+  "written_at_utc": 1786057387
+}

@@ -43,6 +43,7 @@ from planazo.agents.event_agent import RecommenderResult, run_once
 from planazo.agents.loop import StepRecord
 from planazo.approval import ApprovalGate
 from planazo.config import check_api_key
+from planazo.observability.tracing import configure_tracing
 from planazo.query.interpreter import interpret
 from tools.tools import IRREVERSIBLE_TOOLS
 
@@ -225,6 +226,7 @@ def _run(
         "calendar_enabled": calendar_enabled,
         "text": prompt,
         "thread_id": thread_id or f"recommender:{user_id}",
+        "request_origin": "cli",
     }
     if max_steps is not None:
         run_context["max_steps"] = max_steps
@@ -276,6 +278,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if not check_api_key():
         return 1
+
+    # Configure MLflow tracing once per process (idempotent). run_once itself
+    # is `@mlflow.trace`-decorated and sets request_origin / agent_kind /
+    # eval_case_id on the trace it creates, using the run_context threaded
+    # in from _run(). See docs/adr/0027-agent-eval-and-tracing.md.
+    configure_tracing()
 
     if args.prompt is None:
         return _repl(

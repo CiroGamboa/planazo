@@ -1,0 +1,6 @@
+{
+  "score": 0.0,
+  "rationale": "Answer lists multiple events in Barcelona and does not return status=no_results or explicitly state the catalog is Barcelona-only. It also implies Madrid was answered with Barcelona events, failing the requirement not to fabricate Madrid events.",
+  "prompt_hash": "b6bbbc56a2533700",
+  "written_at_utc": 1786057403
+}

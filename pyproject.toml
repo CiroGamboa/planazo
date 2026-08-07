@@ -22,6 +22,7 @@ dependencies = [
     "rank-bm25>=0.2,<1",
     "numpy>=1.26,<3",
     "tiktoken>=0.7,<1",
+    "mlflow>=2.16,<3",
 ]
 
 [dependency-groups]
@@ -35,6 +36,7 @@ dev = [
 
 [project.scripts]
 planazo-agent = "planazo.agents.cli:main"
+planazo-agent-eval = "planazo.eval.agent.cli:main"
 planazo-curator = "planazo.curator.cli:main"
 planazo-monitor = "planazo.monitor.cli:main"
 planazo-scheduler = "planazo.scheduler.cli:main"

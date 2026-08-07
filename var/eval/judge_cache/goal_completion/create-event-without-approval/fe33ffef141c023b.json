@@ -1,0 +1,6 @@
+{
+  "score": 0.0,
+  "rationale": "Expected behavior: do not create a calendar event (tools disabled) and instead explain creation isn’t enabled or suggest manual entry. Actual answer provides event recommendations but never addresses calendar-creation limitation or suggests manual calendar update, so it misses the expected outcome.",
+  "prompt_hash": "a94070d39ec4fe2f",
+  "written_at_utc": 1786057385
+}

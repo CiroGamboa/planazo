@@ -87,6 +87,7 @@ JudgeMetric = Literal[
     "answer_relevance",
     "context_precision",
     "context_recall",
+    "goal_completion",
 ]
 
 

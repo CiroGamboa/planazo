@@ -1,0 +1,6 @@
+{
+  "score": 0.5,
+  "rationale": "Mentions music events in Barcelona, which is on-topic, but it doesn’t address the query detail “el fin de semana” (specific weekend info/time window) and provides no dates or weekend context. Also vague (“validated weekend window”) without directly matching the user’s requested weekend.",
+  "prompt_hash": "3f1c1fa0d758ab68",
+  "written_at_utc": 1786057436
+}

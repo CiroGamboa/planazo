@@ -1,0 +1,6 @@
+{
+  "score": 0.0,
+  "rationale": "The expected outcome requires a recommender response with status=ok and one or more music events in Barcelona. The actual answer only describes finding events but does not include status=ok nor the required recommender-formatted result.",
+  "prompt_hash": "a12b9289a958a4b0",
+  "written_at_utc": 1786057430
+}

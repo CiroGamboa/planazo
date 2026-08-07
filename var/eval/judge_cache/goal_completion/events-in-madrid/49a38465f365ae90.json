@@ -1,0 +1,6 @@
+{
+  "score": 0.0,
+  "rationale": "Answer lists three live music events in Barcelona, with no indication of Madrid or that Madrid is unavailable. Expected outcome requires either status=no_results or explicitly stating catalog is Barcelona-only; instead it implies results found without addressing Madrid.",
+  "prompt_hash": "a97ca1c48afe778b",
+  "written_at_utc": 1786057400
+}

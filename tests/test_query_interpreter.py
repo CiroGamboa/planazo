@@ -373,11 +373,12 @@ def test_only_the_cli_surface_imports_the_interpreter_outside_planazo_query() ->
     # only ever reach the tree through `planazo.query.interpreter` (or
     # `planazo.query import interpret` from the package `__init__`).
     #
-    # Two legitimate importers today: `agents/cli.py` (the terminal
-    # surface's `/find` REPL) and `conversation/service.py` (the
-    # multi-turn `/find` composition root the bot's `handle_find`
-    # calls — see ADR 0016). Both are surfaces above the Recommender
-    # that own the interpreter's one call per user turn.
+    # Three legitimate importers today: `agents/cli.py` (the terminal
+    # surface's `/find` REPL), `conversation/service.py` (the multi-turn
+    # `/find` composition root the bot's `handle_find` calls — see
+    # ADR 0016), and `eval/agent/runner.py` (the HW4 agent-eval harness
+    # runner — surfaces above the Recommender, calls `interpret` once per
+    # eval scenario input — see ADR 0027).
     query_dir = Path(query_interpreter.__file__).resolve().parent
     src_root = query_dir.parent.parent  # src/
     offenders: list[tuple[Path, str]] = []
@@ -389,13 +390,16 @@ def test_only_the_cli_surface_imports_the_interpreter_outside_planazo_query() ->
             if pattern in text:
                 offenders.append((py, pattern))
     agents_dir = Path(event_agent.__file__).parent
-    conversation_dir = agents_dir.parent / "conversation"
+    planazo_dir = agents_dir.parent
+    conversation_dir = planazo_dir / "conversation"
+    eval_agent_dir = planazo_dir / "eval" / "agent"
     # `Path.rglob` gives no ordering guarantee, so compare as a set rather
     # than an exact list — the invariant is which files import the
     # runtime, not the filesystem's traversal order.
     assert set(offenders) == {
         (agents_dir / "cli.py", "planazo.query.interpreter"),
         (conversation_dir / "service.py", "planazo.query.interpreter"),
+        (eval_agent_dir / "runner.py", "planazo.query.interpreter"),
     }, f"unexpected interpreter-runtime import: {offenders}"
 
 

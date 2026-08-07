@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import mlflow
+
 from planazo.catalog.models import Event
 from planazo.rag import (
     Chunk,
@@ -79,6 +81,7 @@ def build_event_chunks(events: Sequence[Event]) -> list[Chunk]:
     return chunks
 
 
+@mlflow.trace(name="search_events_rag", span_type="RETRIEVER")
 def search_events_rag(
     events: Sequence[Event],
     query: str,

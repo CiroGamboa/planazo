@@ -1,0 +1,6 @@
+{
+  "score": 1.0,
+  "rationale": "Answer provides multiple music events specifically in Barcelona (Palau de la Musica, Sala Apolo, Parc de la Ciutadella) and implies they match the weekend window. Meets the expected outcome of returning status=ok with one or more Barcelona music events, in Spanish.",
+  "prompt_hash": "b6706130ca2b974e",
+  "written_at_utc": 1786057439
+}
