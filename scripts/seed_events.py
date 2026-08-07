@@ -1,11 +1,11 @@
-"""Seed the domain store with 25 realistic Barcelona events for E2E demos.
+"""Seed the domain store with 60 realistic Barcelona events for E2E demos.
 
 Idempotent: a second run against the same DB inserts nothing new — the
 composite `UNIQUE(source_url, event_index_in_post)` on `events` turns
 every second-attempt row into an `sqlite3.IntegrityError` that this
-script catches and counts as "skipped". A fresh DB inserts 25 rows and
-prints `Inserted 25 events, skipped 0 (already present).`; a re-run
-against the same DB prints `Inserted 0 events, skipped 25 (already
+script catches and counts as "skipped". A fresh DB inserts 60 rows and
+prints `Inserted 60 events, skipped 0 (already present).`; a re-run
+against the same DB prints `Inserted 0 events, skipped 60 (already
 present).`.
 
 Every row carries `source = "seed"` so operators can distinguish these
@@ -14,19 +14,23 @@ Extractor. The `source_url` is a synthetic `seed://event/<slug>` scheme
 — guaranteed unique per event and never collides with a real
 Instagram permalink.
 
-Category mix (matches `query.models.EventCategory`):
-- tech          — 5 rows
-- cultural      — 5 rows
-- music         — 5 rows
-- networking    — 3 rows
-- sports        — 4 rows
-- other         — 3 rows
+Category mix (matches `query.models.EventCategory`) — evenly balanced
+so any single-category query has a comparable candidate pool:
+
+- tech          — 10 rows
+- cultural      — 10 rows
+- music         — 10 rows
+- networking    — 10 rows
+- sports        — 10 rows
+- other         — 10 rows
 
 Start times span the next 30 days (relative to today) so a query for
 "this weekend" or "next week" always finds candidates. Venue names,
 coordinates, and price cents are varied so the ranker's proximity /
-freshness / preference axes all have something to differentiate on
-when it lands in a follow-up ticket.
+freshness / preference axes all have something to differentiate on.
+Rows carry short descriptions so the RAG retriever's embedding + BM25
+paths have enough textual signal to rank by meaning as well as by
+category.
 
 Run: `uv run python scripts/seed_events.py`.
 """
@@ -55,6 +59,16 @@ _BARCELONA_VENUES: dict[str, tuple[float, float]] = {
     "Palau de la Musica": (41.3874, 2.1750),
     "Camp Nou": (41.3809, 2.1228),
     "Pier 01 Barcelona Tech City": (41.3781, 2.1897),
+    "Parc Güell": (41.4145, 2.1527),
+    "Sagrada Familia": (41.4036, 2.1744),
+    "Barceloneta Beach": (41.3762, 2.1899),
+    "El Born Cultural Centre": (41.3844, 2.1815),
+    "Casa Batlló": (41.3917, 2.1650),
+    "Fabra i Coats": (41.4373, 2.1861),
+    "Antiga Fàbrica Estrella Damm": (41.4055, 2.1836),
+    "MNAC": (41.3689, 2.1536),
+    "La Rambla": (41.3818, 2.1720),
+    "Bogatell Skatepark": (41.3944, 2.2043),
 }
 
 
@@ -95,9 +109,9 @@ def _event(
 
 
 def _catalog(now: datetime) -> list[Event]:
-    """The 25-event catalog — one deterministic list, all fields spelled out."""
+    """The 60-event catalog — one deterministic list, all fields spelled out."""
     return [
-        # ---- tech (5) ----
+        # ---- tech (10) ----
         _event(
             slug="ai-meetup-2026",
             title="Barcelona AI Builders Meetup",
@@ -154,7 +168,67 @@ def _catalog(now: datetime) -> list[Event]:
             now=now,
             tags=["diversity", "networking"],
         ),
-        # ---- cultural (5) ----
+        _event(
+            slug="python-bcn-meetup",
+            title="Python Barcelona Monthly Meetup",
+            category="tech",
+            days_from_now=8,
+            duration_hours=3,
+            price_cents=0,
+            venue="Pier 01 Barcelona Tech City",
+            now=now,
+            tags=["python", "meetup"],
+            description="Community meetup for Python developers — lightning talks, Q&A, pizza.",
+        ),
+        _event(
+            slug="data-engineering-summit",
+            title="Data Engineering Summit Barcelona",
+            category="tech",
+            days_from_now=16,
+            duration_hours=6,
+            price_cents=8500,
+            venue="Fabra i Coats",
+            now=now,
+            tags=["data", "engineering", "conference"],
+            description="One-day summit for data engineers — pipelines, warehouses, real-time.",
+        ),
+        _event(
+            slug="cybersecurity-conf",
+            title="Barcelona Cybersecurity Conference",
+            category="tech",
+            days_from_now=23,
+            duration_hours=8,
+            price_cents=15000,
+            venue="CCCB",
+            now=now,
+            tags=["security", "conference"],
+            description="Cybersecurity — red teaming, incident response, threat intel.",
+        ),
+        _event(
+            slug="ml-ops-workshop",
+            title="ML in Production — Hands-on Workshop",
+            category="tech",
+            days_from_now=6,
+            duration_hours=5,
+            price_cents=4500,
+            venue="Antiga Fàbrica Estrella Damm",
+            now=now,
+            tags=["ml", "mlops", "workshop"],
+            description="Hands-on: deploying and monitoring ML models at scale.",
+        ),
+        _event(
+            slug="web3-builders-night",
+            title="Web3 Builders Night",
+            category="tech",
+            days_from_now=26,
+            duration_hours=3,
+            price_cents=500,
+            venue="Pier 01 Barcelona Tech City",
+            now=now,
+            tags=["web3", "blockchain", "meetup"],
+            description="Casual builder meetup — smart-contract demos, DeFi, on-chain analytics.",
+        ),
+        # ---- cultural (10) ----
         _event(
             slug="macba-exhibition-2026",
             title="Contemporary Art Exhibition at MACBA",
@@ -210,7 +284,67 @@ def _catalog(now: datetime) -> list[Event]:
             now=now,
             tags=["theatre"],
         ),
-        # ---- music (5) ----
+        _event(
+            slug="gaudi-walking-tour",
+            title="Gaudi Architecture Walking Tour",
+            category="cultural",
+            days_from_now=3,
+            duration_hours=3,
+            price_cents=2000,
+            venue="Sagrada Familia",
+            now=now,
+            tags=["gaudi", "architecture", "tour"],
+            description="Gaudi masterpieces: Casa Batlló, La Pedrera, Sagrada Familia.",
+        ),
+        _event(
+            slug="photo-exhibition-batllo",
+            title="Photography Exhibition at Casa Batlló",
+            category="cultural",
+            days_from_now=9,
+            duration_hours=4,
+            price_cents=1500,
+            venue="Casa Batlló",
+            now=now,
+            tags=["photography", "exhibition"],
+            description="Contemporary photography — Catalan cities, documentary lens.",
+        ),
+        _event(
+            slug="poetry-slam-born",
+            title="Poetry Slam Night at El Born",
+            category="cultural",
+            days_from_now=15,
+            duration_hours=2,
+            price_cents=500,
+            venue="El Born Cultural Centre",
+            now=now,
+            tags=["poetry", "spoken-word"],
+            description="Bilingual poetry slam — CA, ES, EN open mic + featured poets.",
+        ),
+        _event(
+            slug="documentary-screening-mnac",
+            title="Documentary Film Screening at MNAC",
+            category="cultural",
+            days_from_now=19,
+            duration_hours=3,
+            price_cents=800,
+            venue="MNAC",
+            now=now,
+            tags=["documentary", "film"],
+            description="Documentary evening — social-impact films followed by a director Q&A.",
+        ),
+        _event(
+            slug="literary-festival-rambla",
+            title="Barcelona Literary Festival",
+            category="cultural",
+            days_from_now=26,
+            duration_hours=6,
+            price_cents=0,
+            venue="La Rambla",
+            now=now,
+            tags=["literature", "festival", "free"],
+            description="Open-air literary festival — readings, signings, book stalls.",
+        ),
+        # ---- music (10) ----
         _event(
             slug="apolo-techno-friday",
             title="Techno Friday at Sala Apolo",
@@ -266,7 +400,67 @@ def _catalog(now: datetime) -> list[Event]:
             now=now,
             tags=["outdoor", "free"],
         ),
-        # ---- networking (3) ----
+        _event(
+            slug="jazz-apolo",
+            title="Jazz Night at Sala Apolo",
+            category="music",
+            days_from_now=4,
+            duration_hours=4,
+            price_cents=1800,
+            venue="Sala Apolo",
+            now=now,
+            tags=["jazz", "live"],
+            description="Live jazz trio — bebop, blues, and Catalan jazz standards.",
+        ),
+        _event(
+            slug="flamenco-poble-espanyol",
+            title="Traditional Flamenco Show",
+            category="music",
+            days_from_now=11,
+            duration_hours=2,
+            price_cents=2800,
+            venue="Poble Espanyol",
+            now=now,
+            tags=["flamenco", "traditional"],
+            description="Traditional flamenco performance — guitar, cante, and baile with tapas.",
+        ),
+        _event(
+            slug="open-mic-born",
+            title="Open Mic Night at El Born",
+            category="music",
+            days_from_now=13,
+            duration_hours=3,
+            price_cents=300,
+            venue="El Born Cultural Centre",
+            now=now,
+            tags=["open-mic", "acoustic"],
+            description="Weekly open mic — singer-songwriters and acoustic sets in a small room.",
+        ),
+        _event(
+            slug="symphony-palau",
+            title="Symphony Orchestra at Palau de la Musica",
+            category="music",
+            days_from_now=21,
+            duration_hours=3,
+            price_cents=4200,
+            venue="Palau de la Musica",
+            now=now,
+            tags=["classical", "symphony", "orchestra"],
+            description="Full-orchestra evening — Mahler and Falla in the Modernista concert hall.",
+        ),
+        _event(
+            slug="reggaeton-razz",
+            title="Reggaeton Saturday at Razzmatazz",
+            category="music",
+            days_from_now=27,
+            duration_hours=6,
+            price_cents=2000,
+            venue="Razzmatazz",
+            now=now,
+            tags=["reggaeton", "club", "latin"],
+            description="Latin club night — reggaeton, dembow, and Latin pop hits.",
+        ),
+        # ---- networking (10) ----
         _event(
             slug="expat-mixer",
             title="Barcelona Expat Networking Mixer",
@@ -300,7 +494,91 @@ def _catalog(now: datetime) -> list[Event]:
             now=now,
             tags=["freelance", "meetup"],
         ),
-        # ---- sports (4) ----
+        _event(
+            slug="product-managers-circle",
+            title="Product Managers Circle",
+            category="networking",
+            days_from_now=5,
+            duration_hours=2,
+            price_cents=1500,
+            venue="Pier 01 Barcelona Tech City",
+            now=now,
+            tags=["product", "management"],
+            description="Product managers circle — one topic, small groups, shareouts.",
+        ),
+        _event(
+            slug="data-scientists-meetup",
+            title="Barcelona Data Scientists Meetup",
+            category="networking",
+            days_from_now=10,
+            duration_hours=3,
+            price_cents=0,
+            venue="Antiga Fàbrica Estrella Damm",
+            now=now,
+            tags=["data-science", "meetup"],
+            description="Data practitioners — deep-dive talk then open networking.",
+        ),
+        _event(
+            slug="designers-coffee",
+            title="Designers Coffee Chat",
+            category="networking",
+            days_from_now=13,
+            duration_hours=2,
+            price_cents=500,
+            venue=None,
+            now=now,
+            tags=["design", "coffee"],
+            description="Coffee-hour meetup for UX, product, and visual designers.",
+        ),
+        _event(
+            slug="content-creators-bcn",
+            title="Content Creators Barcelona",
+            category="networking",
+            days_from_now=17,
+            duration_hours=2,
+            price_cents=1000,
+            venue="El Born Cultural Centre",
+            now=now,
+            tags=["content", "creators", "social"],
+            description="Meetup for content creators — YouTubers, podcasters, newsletter writers.",
+        ),
+        _event(
+            slug="sales-marketing-mixer",
+            title="Sales & Marketing Mixer",
+            category="networking",
+            days_from_now=20,
+            duration_hours=3,
+            price_cents=1200,
+            venue="Antiga Fàbrica Estrella Damm",
+            now=now,
+            tags=["sales", "marketing"],
+            description="After-work mixer for B2B sales and marketing professionals.",
+        ),
+        _event(
+            slug="international-students-welcome",
+            title="International Students Welcome Night",
+            category="networking",
+            days_from_now=6,
+            duration_hours=3,
+            price_cents=500,
+            venue="Poble Espanyol",
+            now=now,
+            tags=["students", "international", "welcome"],
+            description="Welcome mixer for international students in Barcelona.",
+        ),
+        _event(
+            slug="language-exchange",
+            title="Language Exchange Tuesdays",
+            category="networking",
+            days_from_now=23,
+            duration_hours=2,
+            price_cents=0,
+            venue=None,
+            now=now,
+            tags=["language", "exchange", "free"],
+            description="Rotating groups — CA, ES, EN, and FR practice tables.",
+        ),
+        # ---- sports (10) ----
         _event(
             slug="fc-barcelona-match",
             title="FC Barcelona Home Match",
@@ -345,7 +623,79 @@ def _catalog(now: datetime) -> list[Event]:
             now=now,
             tags=["cycling", "tour"],
         ),
-        # ---- other (3) ----
+        _event(
+            slug="beach-volleyball-tournament",
+            title="Beach Volleyball Open Tournament",
+            category="sports",
+            days_from_now=7,
+            duration_hours=6,
+            price_cents=1000,
+            venue="Barceloneta Beach",
+            now=now,
+            tags=["volleyball", "beach", "tournament"],
+            description="Amateur beach volleyball tournament — 2v2 pools, all levels welcome.",
+        ),
+        _event(
+            slug="basketball-pickup",
+            title="Weekly Basketball Pickup Games",
+            category="sports",
+            days_from_now=2,
+            duration_hours=2,
+            price_cents=0,
+            venue="Parc de la Ciutadella",
+            now=now,
+            tags=["basketball", "pickup", "free"],
+            description="Open pickup basketball — five-on-five rotations at the outdoor courts.",
+        ),
+        _event(
+            slug="marathon-training-run",
+            title="Barcelona Marathon Training Group Run",
+            category="sports",
+            days_from_now=10,
+            duration_hours=2,
+            price_cents=500,
+            venue="Parc de la Ciutadella",
+            now=now,
+            tags=["running", "marathon", "training"],
+            description="Structured long run with pacers — 15 km loop, coach-led warmups.",
+        ),
+        _event(
+            slug="padel-open-play",
+            title="Padel Club Open Play Night",
+            category="sports",
+            days_from_now=16,
+            duration_hours=3,
+            price_cents=1500,
+            venue=None,
+            now=now,
+            tags=["padel", "racket"],
+            description="Open padel play — rotating doubles matches, court fees included.",
+        ),
+        _event(
+            slug="boxing-fitness-class",
+            title="Boxing Fitness Class",
+            category="sports",
+            days_from_now=21,
+            duration_hours=1,
+            price_cents=1200,
+            venue=None,
+            now=now,
+            tags=["boxing", "fitness"],
+            description="Beginner-friendly boxing fitness — pads, bags, footwork drills.",
+        ),
+        _event(
+            slug="rock-climbing-meetup",
+            title="Indoor Rock Climbing Meetup",
+            category="sports",
+            days_from_now=26,
+            duration_hours=3,
+            price_cents=2000,
+            venue=None,
+            now=now,
+            tags=["climbing", "bouldering", "indoor"],
+            description="Bouldering + top-rope — all levels welcome.",
+        ),
+        # ---- other (10) ----
         _event(
             slug="sant-antoni-farmers",
             title="Sant Antoni Farmers Market Sunday",
@@ -378,6 +728,90 @@ def _catalog(now: datetime) -> list[Event]:
             venue=None,
             now=now,
             tags=["wine", "tasting"],
+        ),
+        _event(
+            slug="vegan-food-fest",
+            title="Vegan Food Festival",
+            category="other",
+            days_from_now=4,
+            duration_hours=8,
+            price_cents=500,
+            venue="Poble Espanyol",
+            now=now,
+            tags=["food", "vegan", "festival"],
+            description="Two-dozen vegan food stalls plus chef demos and a sustainability panel.",
+        ),
+        _event(
+            slug="craft-beer-tasting",
+            title="Craft Beer Tasting at Antiga Fàbrica",
+            category="other",
+            days_from_now=8,
+            duration_hours=3,
+            price_cents=2500,
+            venue="Antiga Fàbrica Estrella Damm",
+            now=now,
+            tags=["beer", "tasting"],
+            description="Ten Catalan breweries — guided flights + Q&A with brewers.",
+        ),
+        _event(
+            slug="coffee-tasting",
+            title="Specialty Coffee Cupping",
+            category="other",
+            days_from_now=14,
+            duration_hours=2,
+            price_cents=1500,
+            venue=None,
+            now=now,
+            tags=["coffee", "cupping"],
+            description="Coffee cupping — three origins, blind-taste protocol.",
+        ),
+        _event(
+            slug="book-club-born",
+            title="Book Club — Contemporary Fiction",
+            category="other",
+            days_from_now=18,
+            duration_hours=2,
+            price_cents=0,
+            venue="El Born Cultural Centre",
+            now=now,
+            tags=["books", "reading", "free"],
+            description="This month's pick — contemporary novel in ES / CA / EN.",
+        ),
+        _event(
+            slug="board-games-night",
+            title="Board Games Night",
+            category="other",
+            days_from_now=22,
+            duration_hours=4,
+            price_cents=500,
+            venue=None,
+            now=now,
+            tags=["games", "board-games"],
+            description="Casual board games night — bring your own or borrow from the shelf.",
+        ),
+        _event(
+            slug="improv-comedy",
+            title="Improv Comedy Night",
+            category="other",
+            days_from_now=25,
+            duration_hours=2,
+            price_cents=1500,
+            venue="El Born Cultural Centre",
+            now=now,
+            tags=["comedy", "improv"],
+            description="Bilingual improv comedy — audience prompts, short + long-form.",
+        ),
+        _event(
+            slug="trivia-night",
+            title="Trivia Night at the Pub",
+            category="other",
+            days_from_now=29,
+            duration_hours=3,
+            price_cents=500,
+            venue=None,
+            now=now,
+            tags=["trivia", "pub"],
+            description="Team trivia night — six rounds, mixed general knowledge, small prizes.",
         ),
     ]
 
