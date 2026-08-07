@@ -32,6 +32,17 @@ Rows carry short descriptions so the RAG retriever's embedding + BM25
 paths have enough textual signal to rank by meaning as well as by
 category.
 
+Same-day (`days_from_now=0`) picks — six of the 60 events are anchored
+to *today* 19:00 UTC so a "tonight" or "this evening" query always
+has candidates in its window. Chosen for demo coverage across four
+categories: `ai-meetup-2026` + `rust-workshop-2026` (tech),
+`apolo-techno-friday` + `jazz-apolo` (music),
+`macba-exhibition-2026` (cultural), `basketball-pickup` (sports).
+Idempotency caveat: the seed inserts by `source_url` uniqueness, so a
+re-seed against an existing DB keeps the *original* start_utc of these
+rows. To refresh today's date on a returning-user machine, delete
+`var/planazo.db` before re-seeding.
+
 Run: `uv run python scripts/seed_events.py`.
 """
 
@@ -39,7 +50,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 from planazo.catalog.models import Event
 from planazo.catalog.repository import insert_event
@@ -85,8 +96,15 @@ def _event(
     tags: list[str] | None = None,
     description: str | None = None,
 ) -> Event:
-    """Build one seeded `Event` deterministically from its slug + offset."""
-    start = now + timedelta(days=days_from_now, hours=19)  # 19:00 UTC ≈ 21:00 CEST
+    """Build one seeded `Event` deterministically from its slug + offset.
+
+    Start time is anchored to 19:00 UTC (21:00 CEST — evening) regardless
+    of when the seed script runs. Using `now + timedelta(hours=19)` here
+    would have made the wall-clock time depend on the seed run's time of
+    day, breaking every "tonight" / "this evening" query.
+    """
+    base_date = (now + timedelta(days=days_from_now)).date()
+    start = datetime.combine(base_date, time(19, 0), tzinfo=UTC)
     end = start + timedelta(hours=duration_hours)
     coords = _BARCELONA_VENUES.get(venue) if venue else None
     return Event(
@@ -116,7 +134,7 @@ def _catalog(now: datetime) -> list[Event]:
             slug="ai-meetup-2026",
             title="Barcelona AI Builders Meetup",
             category="tech",
-            days_from_now=2,
+            days_from_now=0,  # tonight — see docstring "Same-day (`days_from_now=0`) picks"
             duration_hours=3,
             price_cents=0,
             venue="Pier 01 Barcelona Tech City",
@@ -128,7 +146,7 @@ def _catalog(now: datetime) -> list[Event]:
             slug="rust-workshop-2026",
             title="Introduction to Rust Systems Programming",
             category="tech",
-            days_from_now=5,
+            days_from_now=0,  # tonight
             duration_hours=4,
             price_cents=2500,
             venue="Pier 01 Barcelona Tech City",
@@ -233,7 +251,7 @@ def _catalog(now: datetime) -> list[Event]:
             slug="macba-exhibition-2026",
             title="Contemporary Art Exhibition at MACBA",
             category="cultural",
-            days_from_now=1,
+            days_from_now=0,  # tonight
             duration_hours=4,
             price_cents=1200,
             venue="MACBA",
@@ -349,7 +367,7 @@ def _catalog(now: datetime) -> list[Event]:
             slug="apolo-techno-friday",
             title="Techno Friday at Sala Apolo",
             category="music",
-            days_from_now=3,
+            days_from_now=0,  # tonight
             duration_hours=6,
             price_cents=1800,
             venue="Sala Apolo",
@@ -404,7 +422,7 @@ def _catalog(now: datetime) -> list[Event]:
             slug="jazz-apolo",
             title="Jazz Night at Sala Apolo",
             category="music",
-            days_from_now=4,
+            days_from_now=0,  # tonight — favourite target for /prefs demos
             duration_hours=4,
             price_cents=1800,
             venue="Sala Apolo",
@@ -639,7 +657,7 @@ def _catalog(now: datetime) -> list[Event]:
             slug="basketball-pickup",
             title="Weekly Basketball Pickup Games",
             category="sports",
-            days_from_now=2,
+            days_from_now=0,  # tonight
             duration_hours=2,
             price_cents=0,
             venue="Parc de la Ciutadella",
