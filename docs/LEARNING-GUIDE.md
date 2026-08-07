@@ -51,7 +51,7 @@ Planazo is a Python project. Here is every important library it uses and why:
 
 ### Talking to the LLM
 
-**Common confusion up front:** Planazo does **not** use Anthropic's Claude / Haiku / Opus / Sonnet, and it does **not** talk to `api.anthropic.com`. If you were looking for "the Haiku API" in this codebase, it isn't there. There is one LLM, one API, one key. Here is exactly what that is:
+There is one LLM, one API shape, one key. Here is exactly what:
 
 | Piece | Value | Where it's set |
 | --- | --- | --- |
@@ -61,12 +61,10 @@ Planazo is a Python project. Here is every important library it uses and why:
 | Actual provider | **OpenCode Zen** at `https://opencode.ai/zen/v1` | Same file. |
 | Auth | `OPENCODE_API_KEY` env var (from `.env`) | [`src/agentlib/core.py:36`](../src/agentlib/core.py). |
 
-OpenCode Zen is a course-provided proxy that speaks the OpenAI API shape, so we can point the `openai` Python client at it and everything Just Works. That is why the SDK we import is `openai`, and why LangChain's `ChatOpenAI` class is the LLM wrapper — but the model being called on the other end is a GPT-5.4 family model routed through OpenCode Zen, not any Anthropic model. Decision recorded in [ADR 0001](adr/0001-agent-runtime-layout-and-provider.md).
-
-With that cleared up:
+OpenCode Zen is a course-provided proxy that speaks the OpenAI API shape, so we can point the `openai` Python client at it and everything Just Works. That is why the SDK we import is `openai` and why LangChain's `ChatOpenAI` class is the LLM wrapper — but the model on the other end is a GPT-5.4 family model routed through OpenCode Zen. Decision recorded in [ADR 0001](adr/0001-agent-runtime-layout-and-provider.md).
 
 - **`openai`** — the Python SDK for the OpenAI-style HTTP API. Used with `base_url="https://opencode.ai/zen/v1"` so all traffic goes through OpenCode Zen.
-- **`langchain`** and **`langchain-openai`** — an abstraction layer *over* the OpenAI SDK. Instead of writing "connect to OpenAI, format messages this way, parse the response that way" ourselves, LangChain does the plumbing. `ChatOpenAI` is the specific class we instantiate; it points at the OpenCode Zen base URL just like the raw SDK does.
+- **`langchain`** and **`langchain-openai`** — an abstraction layer *over* the OpenAI SDK. Instead of writing "connect, format messages, parse the response" ourselves, LangChain does the plumbing.
 - **`langgraph`** — a bigger sister of LangChain. It lets you describe an agent as a **graph of steps** (nodes and edges) rather than a `while` loop. Node: "call the LLM". Node: "call a tool". Edge: "if the LLM asked for a tool, go there; otherwise stop". Both the Recommender ([ADR 0023](adr/0023-langgraph-recommender-runtime.md)) and the Extractor ([ADR 0024](adr/0024-langgraph-extractor-runtime.md)) are LangGraph graphs.
 - **`langgraph-checkpoint-sqlite`** — lets a LangGraph agent pause and resume (saves the graph's state to a small SQLite file). We use it so a multi-turn conversation can continue where it left off.
 - **`tiktoken`** — counts tokens (roughly, word-pieces) so we can measure how much text we send/receive. We use it as a *fallback* estimator when the OpenCode Zen response does not include a token-usage field (see the [HW4 report](../HW4_SUBMISSION.md) note on this).
@@ -86,32 +84,16 @@ With that cleared up:
 - **SQLite** (via Python's built-in `sqlite3`) — the event catalog lives at `var/planazo.db`. One database file. No server. See [ADR 0003](adr/0003-sqlite-domain-store.md).
 - **Plain JSONL files** (one JSON object per line) — used for audit logs (every scheduler tick, every curator tick) and for a "memory docstore" per user. See [ADR 0004](adr/0004-three-store-memory-model.md).
 
-### Talking to Instagram (wired, currently against placeholder accounts)
+### Talking to Instagram
 
-**Honest state.** The Instagram ingestion pipeline is fully coded, and the scheduler container starts a `--tick` loop on `docker compose up`. But `data/sources.yaml` today contains **placeholder account URLs and post URLs** (`PLACEHOLDER_CREATOR_ACCOUNT`, `PLACEHOLDER_SHORTCODE_2`, etc.). Every tick hits those, gets a 404 from Instagram, records a typed `not_found` line in `var/scheduler_runs.jsonl`, and moves on. **Zero real Instagram posts are being fetched today.** Whoever operates a real deployment needs to replace the placeholders with real venue accounts before any events actually flow in from Instagram.
+**Honest state.** The Instagram pipeline is fully coded and the scheduler runs it on a loop, but `data/sources.yaml` today lists placeholder URLs (`PLACEHOLDER_CREATOR_ACCOUNT`, `PLACEHOLDER_SHORTCODE_2`). Every tick returns a typed `not_found` and moves on — no real Instagram posts are ingested until someone edits `sources.yaml` with real accounts.
 
-That said, the libraries below are legitimately loaded and exercised by the code (both by unit tests and by the placeholder ticks). They are not dead code — they are just currently pointed at a stub configuration.
+- **`instaloader`** — fetches a single Instagram post's metadata. See [ADR 0006](adr/0006-instagram-extraction-approach.md).
+- **`curl-cffi`** — HTTP client that impersonates a Chrome TLS fingerprint. Used for the *anonymous* discovery backend against Meta's `web_profile_info` endpoint. See [ADR 0014](adr/0014-instagram-discovery-backends.md).
+- **HikerAPI** (not a Python package — a paid third-party HTTP service at `api.hikerapi.com`) — called directly via `httpx` from `hiker_client.py`, used for business venue accounts the anonymous backend cannot resolve. Keys via `PLANAZO_IG_HIKER_API_KEY_*` env vars.
+- **`ffmpeg-python`** — thin wrapper over the `ffmpeg` binary. Used to extract still frames from reel videos so the multimodal LLM can look at them.
 
-- **`instaloader`** — pure-Python library that fetches a single Instagram post's metadata (title, caption, media URLs). Used by [`src/planazo/sources/instagram/client.py`](../src/planazo/sources/instagram/client.py) to resolve a `Post.from_shortcode(...)` when a specific post URL is scheduled. See [ADR 0006](adr/0006-instagram-extraction-approach.md).
-- **`curl-cffi`** — a Python HTTP client that pretends to be a real Chrome browser (right TLS fingerprint, right cookies). Some Instagram endpoints reject the default `requests` library because it looks like a bot. Used by [`src/planazo/sources/instagram/anon_client.py`](../src/planazo/sources/instagram/anon_client.py) for anonymous account discovery via Meta's `web_profile_info` endpoint. See [ADR 0014](adr/0014-instagram-discovery-backends.md).
-- **`httpx`** (already listed) — the HTTP client used by [`src/planazo/sources/instagram/hiker_client.py`](../src/planazo/sources/instagram/hiker_client.py) to call HikerAPI (a paid third-party Instagram API) for business venue accounts that reject anonymous access.
-- **`ffmpeg-python`** — a thin wrapper around the `ffmpeg` binary (installed at the OS level). Used by [`src/planazo/extraction/frames.py`](../src/planazo/extraction/frames.py) to extract still frames from reel videos so the multimodal LLM can look at them.
-
-**The nine files under `src/planazo/sources/instagram/` and what each does** — the module has enough files that it looks larger than it is; here is the map so you can see every file has one clear job.
-
-| File | Role |
-| --- | --- |
-| `adapter.py` | `InstagramSource` — the concrete implementation of the generic `EventSource` protocol (ADR 0010). |
-| `client.py` | Thin wrapper over `instaloader.Instaloader`. The scraper swap point. |
-| `model_view.py` | Pydantic projection of the fields we consume from an `instaloader.Post`. Validates at the boundary. |
-| `discovery.py` | Structural protocol for "account URL → recent post URLs". |
-| `anon_client.py` | The default discovery client — `curl_cffi` + Meta's `web_profile_info`. |
-| `hiker_client.py` | The paid discovery client — HikerAPI with a multi-key pool for rate-limit rotation. |
-| `tools.py` | Wraps the adapter as an LLM-facing tool (`fetch_instagram_post`) for the Extractor. |
-| `cli.py` | The `planazo-sources-instagram` console command — one-shot fetch of a single URL. |
-| `narrative.py` | Stdout narrator used by `planazo-scheduler --once --verbose` for the demo mode (ADR 0017). |
-
-Nothing on that list is unused: the scheduler imports `anon_client`, `hiker_client`, `discovery`, `narrative`; the Extractor imports `adapter`, `client`, `tools`; and the container CLI imports `adapter` + `client`.
+All four libraries are imported and reachable — the scheduler and the Extractor both use them — they are just currently pointed at placeholder accounts.
 
 ### Talking to Telegram
 
@@ -451,36 +433,52 @@ The [older ADRs](adr/) (0001 through 0022) cover the earlier decisions the recen
 
 ## 11. Running everything on your machine
 
-If Docker is installed and you have an `OPENCODE_API_KEY` + `TELEGRAM_BOT_TOKEN` in a `.env` file:
+Follow these steps in order on a fresh checkout — a colleague can go from `git clone` to a working agent + eval + safety run with no other setup.
 
 ```bash
-# Bring up the whole system
-docker compose up -d
+# 1. Install dependencies (Python 3.12 + uv required; ffmpeg on PATH if you use Docker)
+uv sync
 
-# Interactive one-shot agent call
-docker compose run --rm agent --user-id 1 "find tech events this weekend"
+# 2. Populate .env — copy the example and fill in the two required keys
+cp .env.example .env
+#    then edit .env to set:
+#      OPENCODE_API_KEY=...   (from OpenCode Zen)
+#      TELEGRAM_BOT_TOKEN=... (only if you want the bot; not needed for the eval)
 
-# Open the MLflow UI to see traces
-uv run mlflow ui --backend-store-uri file:./var/mlflow --port 5000
+# 3. Seed the events catalog — puts 25 realistic Barcelona events into var/planazo.db
+#    Idempotent: a second run inserts 0 rows. Every eval scenario in the HW4 suite
+#    expects this seed data to be present, otherwise the recommender has an empty
+#    catalog and every search returns no results.
+uv run python scripts/seed_events.py
 
-# Run the HW4 eval harness (36 real LLM calls)
+# 4. Sanity-check: run one interactive agent turn
+uv run planazo-agent --user-id 1 "find tech events this weekend"
+
+# 5. Run the HW4 agent eval (12 scenarios × 3 runs = 36 real LLM calls, ~5-10 min)
 uv run planazo-agent-eval --runs 3 --temperature 0.7
 
-# Attach scorer feedback to every stored trace
+# 6. Attach scorer feedback (Part 1 metrics + goal_completion + HW3 generation
+#    scorers) back onto every stored trace
 uv run python scripts/run_trace_scorers.py
 
-# Drive the 4 safety attacks and count findings
+# 7. Drive the 4 safety attack scenarios and count findings + false positives
 uv run python scripts/run_safety_batch.py --run-attacks --force-trace
+
+# 8. Open the MLflow UI to browse the trace tree, tags, and feedback
+uv run mlflow ui --backend-store-uri file:./var/mlflow --port 5000
+#    then open http://localhost:5000
 ```
 
-If you'd rather run natively without Docker (needs Python 3.12 + `uv` + `ffmpeg` on `PATH`):
+Docker path (no host Python required, `.env` still needed):
 
 ```bash
-uv sync                                          # install everything
-uv run planazo-agent --user-id 1 "..."           # same as the compose command
+cp .env.example .env                            # same as step 2 above
+docker compose up -d                            # bot + scheduler + curator all running
+docker compose run --rm agent uv run python scripts/seed_events.py   # step 3 inside the container
+docker compose run --rm agent --user-id 1 "find tech events this weekend"
 ```
 
-Tests, lint, types:
+Tests, lint, types (native path only — Docker doesn't ship the test suite):
 
 ```bash
 uv run pytest        # 1360 tests currently
