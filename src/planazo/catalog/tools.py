@@ -251,6 +251,12 @@ def search_events(
         # torch, rank-bm25) is only paid when a caller asks for semantic ranking.
         from planazo.catalog.rag import search_events_rag
 
-        found = search_events_rag(found, query, rerank=True, k=max_results)
+        # Cap RAG output at 5 (ADR 0025 default). The `max_results` param
+        # controls the SQL LIMIT that runs before RAG — we want enough
+        # candidates flowing INTO the reranker for it to work with, but
+        # RAG itself should output the reranker's designed top-5 shortlist.
+        # A smaller `max_results` (e.g. the user explicitly asked for 3)
+        # is respected via min().
+        found = search_events_rag(found, query, rerank=True, k=min(max_results, 5))
 
     return {"events": [event.model_dump(mode="json") for event in found], "total": len(found)}
