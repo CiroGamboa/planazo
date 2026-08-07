@@ -469,5 +469,5 @@ uv run mlflow ui --backend-store-uri file:./var/mlflow      # Open the trace tre
 - **Product spec:** [`docs/PLANAZO-PROJECT-CONTEXT.md`](docs/PLANAZO-PROJECT-CONTEXT.md).
 - **Decisions:** [`docs/adr/`](docs/adr/) — numbered architecture decision records.
 - **New to the code?** — [`docs/LEARNING-GUIDE.md`](docs/LEARNING-GUIDE.md) walks through HW1 / HW3 / HW4 in plain language, defining each concept and library on first use and pointing at real files.
-- **Presenting the project?** — [`docs/PRESENTATION.html`](docs/PRESENTATION.html) is a 16-slide reveal.js deck (architecture · RAG · eval) — open the file in a browser, arrow keys advance.
+- **Presenting the project?** — [`docs/PRESENTATION.html`](docs/PRESENTATION.html) is a 16-slide reveal.js deck (architecture · RAG · eval) — open the file in a browser, arrow keys advance. Speaker script in [`docs/PRESENTATION-SCRIPT.md`](docs/PRESENTATION-SCRIPT.md).
 - **Tickets:** GitHub Issues. Use `/writing-development-tickets` in Claude Code to scope one, `/executing-development-tickets` to drive it end-to-end.
