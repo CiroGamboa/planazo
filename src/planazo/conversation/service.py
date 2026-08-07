@@ -281,7 +281,7 @@ def _run_and_capture(
     so the Recommender's LLM can reason over nuance the interpreter's
     structured `SearchIntent` fields don't capture.
     """
-    result = run_once(user_id, intent, text=text)
+    result = run_once(user_id, intent, text=text, request_origin="bot")
     # Best-effort: the audit surface is Rule 4 best-effort, so the
     # newest agent_runs row may be missing for a run that had a
     # legitimate best-effort audit failure. Falling back to `None`

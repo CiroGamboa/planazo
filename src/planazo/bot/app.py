@@ -54,6 +54,7 @@ from planazo.bot.registration import handle_register
 from planazo.bot.surface import surface_for
 from planazo.config import read_bot_token
 from planazo.interfaces.surface import UserSurface
+from planazo.observability.tracing import configure_tracing
 from planazo.storage import db
 
 # `Any`: PTB's own generic defaults for the user-, chat-, and bot-data slots,
@@ -226,5 +227,9 @@ def main() -> int:
     token = read_bot_token()
     if token is None:
         return 1
+    # Configure MLflow tracing once per process (idempotent; no-op if it fails).
+    # Every /find turn runs `run_once`, which is @mlflow.trace-decorated and
+    # sets request_origin="bot" on the trace it creates. See ADR 0027.
+    configure_tracing()
     build_application(token, config).run_polling()
     return 0
