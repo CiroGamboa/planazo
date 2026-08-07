@@ -468,4 +468,5 @@ uv run mlflow ui --backend-store-uri file:./var/mlflow      # Open the trace tre
 - **Rulebook:** [`AGENTS.md`](AGENTS.md) — read this first.
 - **Product spec:** [`docs/PLANAZO-PROJECT-CONTEXT.md`](docs/PLANAZO-PROJECT-CONTEXT.md).
 - **Decisions:** [`docs/adr/`](docs/adr/) — numbered architecture decision records.
+- **New to the code?** — [`docs/LEARNING-GUIDE.md`](docs/LEARNING-GUIDE.md) walks through HW1 / HW3 / HW4 in plain language, defining each concept and library on first use and pointing at real files.
 - **Tickets:** GitHub Issues. Use `/writing-development-tickets` in Claude Code to scope one, `/executing-development-tickets` to drive it end-to-end.
