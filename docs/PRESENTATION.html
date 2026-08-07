@@ -155,10 +155,16 @@
 <section>
   <h1>Planazo</h1>
   <h3 style="opacity: 0.9;">An agentic event-discovery assistant for Barcelona</h3>
-  <p class="tiny" style="margin-top: 2em;">
+  <p class="tiny" style="margin-top: 1.2em;">
     Recommender · Extractor · Curator · RAG · MLflow tracing · Safety
   </p>
-  <p class="tiny" style="margin-top: 3em; opacity: 0.55;">
+  <p style="margin-top: 2.4em; font-size: 0.85em;">
+    Ciro Gamboa · Daniel Vetencourt · Ana Karla Caballero
+  </p>
+  <p class="tiny" style="opacity: 0.75; margin-top: 0.4em;">
+    Agentic Systems — Harbour Space University
+  </p>
+  <p class="tiny" style="margin-top: 2em; opacity: 0.45;">
     Use ← → or space to navigate. Press <b>S</b> for speaker notes, <b>F</b> for fullscreen, <b>ESC</b> for overview.
   </p>
 </section>
@@ -170,17 +176,14 @@
   <h2>What is Planazo?</h2>
   <p>
     A user asks in natural language for events matching a time window and interests.
-    Planazo searches the catalog, ranks candidates, and — <span style="color: var(--accent-attention);">on explicit approval</span> — drafts a calendar entry.
-  </p>
-  <p class="tiny" style="opacity: 0.65;">
-    Real Google Calendar wiring is planned for v0.2. Today the "create" tool is a JSON-backed reference stub — it validates the exact same shape but writes to <code>var/calendar_events.json</code>, not the Google API.
+    Planazo interprets the intent, retrieves candidates from a validated catalog, ranks them, and returns a bounded answer.
   </p>
   <pre class="mermaid" style="margin-top: 1.2em;">
 flowchart LR
-  U([User]) --> B([Telegram bot])
-  B --> A([Recommender agent])
-  A --> D[(SQLite catalog)]
-  A --> R([Answer + calendar draft])
+  U(["User"]) --> B(["Telegram bot"])
+  B --> A(["Recommender agent"])
+  A --> D[("SQLite catalog")]
+  A --> R(["Ranked answer"])
   R --> U
   style A fill:#254a5b,stroke:#7bd88f,color:#fff
   style R fill:#3a3a2a,stroke:#f5c86a,color:#fff
@@ -206,7 +209,7 @@ flowchart LR
   Rec -.push context.-> Rules
   Rec --> Cat
   Rec --> Mem
-  Rec --> Ans([Answer + calendar draft])
+  Rec --> Ans(["Ranked answer"])
   Ans --> User
 
   Sched[Scheduler tick] --> IG[Instagram source]
@@ -231,9 +234,9 @@ flowchart LR
     <div class="card">
       <h3>Recommender</h3>
       <ul>
-        <li><b>Does:</b> answers a user query, ranks events, drafts a calendar entry</li>
+        <li><b>Does:</b> answers a user query, ranks events, returns a bounded response</li>
         <li><b>Runs:</b> every user turn (bot / CLI)</li>
-        <li><b>Tools:</b> <code>search_events</code>, memory, <code>ask_user</code>, calendar</li>
+        <li><b>Tools:</b> <code>search_events</code>, memory (retrieve / save), <code>ask_user</code></li>
       </ul>
     </div>
     <div class="card">
@@ -266,22 +269,20 @@ flowchart LR
       <tr>
         <th>Tool</th>
         <th>Purpose</th>
-        <th>Gated?</th>
+        <th>Boundary</th>
       </tr>
     </thead>
     <tbody>
-      <tr><td><code>search_events</code></td><td>Read from the catalog (RAG-backed)</td><td>—</td></tr>
-      <tr><td><code>retrieve_memory</code></td><td>Read this user's saved facts</td><td>—</td></tr>
-      <tr><td><code>save_memory</code></td><td>Remember one fact about this user</td><td>—</td></tr>
-      <tr><td><code>retrieve_notes</code></td><td>Read notes on a specific event</td><td>—</td></tr>
-      <tr><td><code>save_note</code></td><td>Save one note against an event</td><td>—</td></tr>
-      <tr><td><code>ask_user</code></td><td>Record one non-blocking clarification</td><td>—</td></tr>
-      <tr><td><code>save_event_candidate</code></td><td>Draft a candidate to <code>var/event_candidates.json</code> (reversible)</td><td>—</td></tr>
-      <tr><td><code>confirm_and_create_calendar_event</code></td><td>Write to <code>var/calendar_events.json</code> — <b>stub</b> for future Google Calendar API wiring</td><td style="color: var(--accent-attention); font-weight: 700;">yes — approval gate</td></tr>
+      <tr><td><code>search_events</code></td><td>Read from the catalog (RAG-backed)</td><td>Read-only</td></tr>
+      <tr><td><code>retrieve_memory</code></td><td>Read this user's saved facts</td><td>Closed over <code>user_id</code></td></tr>
+      <tr><td><code>save_memory</code></td><td>Remember one fact about this user</td><td>Closed over <code>user_id</code></td></tr>
+      <tr><td><code>retrieve_notes</code></td><td>Read notes on a specific event</td><td>Closed over <code>user_id</code></td></tr>
+      <tr><td><code>save_note</code></td><td>Save one note against an event</td><td>Closed over <code>user_id</code></td></tr>
+      <tr><td><code>ask_user</code></td><td>Record one non-blocking clarification</td><td>First valid question wins</td></tr>
     </tbody>
   </table>
   <div class="callout" style="margin-top: 1em;">
-    Memory tools are <b>closures over <code>user_id</code></b> — the LLM can never point them at another user (ADR 0004).
+    Memory tools are <b>closures over <code>user_id</code></b> — the LLM can never point them at another user (ADR 0004). No tool the Recommender exposes today is irreversible or externally visible.
   </div>
 </section>
 
