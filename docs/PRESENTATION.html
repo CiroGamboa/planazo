@@ -625,6 +625,24 @@ uv run python scripts/run_safety_batch.py --run-attacks --force-trace  # 4. 4 at
     flowchart: { curve: 'basis', htmlLabels: true },
   });
 
+  // Render mermaid AFTER Reveal is fully ready — a single Reveal.on('ready')
+  // hook, plus a slidechanged fallback for any diagram that missed the first
+  // pass (e.g. because reveal moved its slide out of the render tree before
+  // mermaid.run got to it). mermaid stamps `data-processed="true"` on nodes
+  // it renders, so re-running is cheap: already-rendered blocks are skipped.
+  const renderMermaidIn = async (root) => {
+    const nodes = root.querySelectorAll('pre.mermaid:not([data-processed])');
+    if (nodes.length === 0) return;
+    try {
+      await mermaid.run({ nodes: [...nodes] });
+    } catch (err) {
+      console.error('mermaid.run failed:', err);
+    }
+  };
+
+  Reveal.on('ready', () => renderMermaidIn(document));
+  Reveal.on('slidechanged', (event) => renderMermaidIn(event.currentSlide));
+
   Reveal.initialize({
     hash: true,
     slideNumber: 'c/t',
@@ -635,8 +653,6 @@ uv run python scripts/run_safety_batch.py --run-attacks --force-trace  # 4. 4 at
     progress: true,
     transition: 'slide',
     plugins: [],
-  }).then(async () => {
-    await mermaid.run({ querySelector: 'pre.mermaid' });
   });
 </script>
 
