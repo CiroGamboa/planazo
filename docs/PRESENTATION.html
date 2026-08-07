@@ -170,7 +170,10 @@
   <h2>What is Planazo?</h2>
   <p>
     A user asks in natural language for events matching a time window and interests.
-    Planazo searches the catalog, ranks candidates, and — <span style="color: var(--accent-attention);">on explicit approval</span> — drafts a Google Calendar entry.
+    Planazo searches the catalog, ranks candidates, and — <span style="color: var(--accent-attention);">on explicit approval</span> — drafts a calendar entry.
+  </p>
+  <p class="tiny" style="opacity: 0.65;">
+    Real Google Calendar wiring is planned for v0.2. Today the "create" tool is a JSON-backed reference stub — it validates the exact same shape but writes to <code>var/calendar_events.json</code>, not the Google API.
   </p>
   <pre class="mermaid" style="margin-top: 1.2em;">
 flowchart LR
@@ -273,8 +276,8 @@ flowchart LR
       <tr><td><code>retrieve_notes</code></td><td>Read notes on a specific event</td><td>—</td></tr>
       <tr><td><code>save_note</code></td><td>Save one note against an event</td><td>—</td></tr>
       <tr><td><code>ask_user</code></td><td>Record one non-blocking clarification</td><td>—</td></tr>
-      <tr><td><code>save_event_candidate</code></td><td>Draft a calendar entry (reversible)</td><td>—</td></tr>
-      <tr><td><code>confirm_and_create_calendar_event</code></td><td>Actually put the event on the calendar</td><td style="color: var(--accent-attention); font-weight: 700;">yes — approval gate</td></tr>
+      <tr><td><code>save_event_candidate</code></td><td>Draft a candidate to <code>var/event_candidates.json</code> (reversible)</td><td>—</td></tr>
+      <tr><td><code>confirm_and_create_calendar_event</code></td><td>Write to <code>var/calendar_events.json</code> — <b>stub</b> for future Google Calendar API wiring</td><td style="color: var(--accent-attention); font-weight: 700;">yes — approval gate</td></tr>
     </tbody>
   </table>
   <div class="callout" style="margin-top: 1em;">
@@ -289,16 +292,17 @@ flowchart LR
   <h2>The agentic loop</h2>
   <pre class="mermaid">
 flowchart LR
-  Obs([observe<br/>read intent + rules + prefs])
-  Reas([reason<br/>ChatOpenAI + bound tools])
-  Act([act<br/>ToolNode dispatch])
-  Ver([verify<br/>Pydantic + typed errors])
+  Obs(["observe<br/>read intent + rules + prefs"])
+  Reas(["reason<br/>ChatOpenAI + bound tools"])
+  Act(["act<br/>ToolNode dispatch"])
+  Ver(["verify<br/>Pydantic + typed errors"])
+  Done(["final answer"])
 
   Obs --> Reas
-  Reas -->|tool call| Act
+  Reas -- "tool call" --> Act
   Act --> Ver
   Ver --> Reas
-  Reas -->|no tool call| Done([final answer])
+  Reas -- "no tool call" --> Done
 
   style Reas fill:#254a5b,stroke:#7bd88f,color:#fff
   style Act fill:#3a2a3a,stroke:#f5c86a,color:#fff
@@ -363,14 +367,14 @@ flowchart LR
   <h2>RAG — search flow</h2>
   <pre class="mermaid">
 flowchart LR
-  Q([Query])
-  HF{{Hard filters<br/>category · city · date · price}}
-  D([Dense retriever<br/>sentence-transformers])
-  B([BM25 retriever<br/>rank-bm25])
-  RRF([Reciprocal Rank Fusion<br/>1 / (60 + rank)])
-  Top20([top-20 candidates])
-  X([Cross-encoder reranker<br/>MiniLM-L-6-v2])
-  Top5([top-5 events])
+  Q(["Query"])
+  HF{{"Hard filters<br/>category · city · date · price"}}
+  D(["Dense retriever<br/>sentence-transformers"])
+  B(["BM25 retriever<br/>rank-bm25"])
+  RRF(["Reciprocal Rank Fusion<br/>1 / (60 + rank)"])
+  Top20(["top-20 candidates"])
+  X(["Cross-encoder reranker<br/>MiniLM-L-6-v2"])
+  Top5(["top-5 events"])
 
   Q --> HF --> D
   HF --> B
